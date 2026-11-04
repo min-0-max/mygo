@@ -76,6 +76,9 @@ func TestMain(m *testing.M) {
 	if os.Getenv("MYGO_TEST_BEFORE_RUN") == "1" {
 		beforeRun()
 	}
+	if os.Getenv("MYGO_TEST_OWNED_APP") == "1" {
+		ownedApp()
+	}
 	App.SetName("MyGoTest")
 	// Keep running when tests close their windows.
 	App.OnWindowAllClosed(func() {})

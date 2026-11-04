@@ -64,6 +64,9 @@ type Application struct {
 	stateStore WindowStateStore
 	finished   sync.Once
 
+	// noSelfActivation is SetSelfActivation(false).
+	noSelfActivation bool
+
 	// quitting is only touched on the main thread.
 	quitting    bool
 	stopping    bool // the quit sequence ran: the event loop is to stop (main thread)
@@ -131,6 +134,7 @@ func (a *Application) start() error {
 		Name:             a.Name(),
 		ActivationPolicy: string(a.ActivationPolicy()),
 		DMABUFRenderer:   string(a.dmabuf),
+		NoSelfActivation: a.noSelfActivation,
 	}); err != nil {
 		return err
 	}
@@ -448,6 +452,21 @@ func (a *Application) SetDMABUFRenderer(r DMABUFRenderer) {
 	}
 	a.mu.Lock()
 	a.dmabuf = r
+	a.mu.Unlock()
+}
+
+// SetSelfActivation sets whether the application activates itself on
+// macOS: as it finishes launching with the regular activation policy, so
+// that a plain executable (go run) comes to the front, and as Window.Show
+// shows a window that is not a panel. It does by default. With false, the
+// launch leaves activation to the system, which activates an application
+// that it launches unless the launch asked it not to (open -g), and
+// Window.Show makes the window key and orders it front without activating
+// the application. Focus and App.Focus still activate it. Call it before
+// Run; other systems ignore it.
+func (a *Application) SetSelfActivation(on bool) {
+	a.mu.Lock()
+	a.noSelfActivation = !on
 	a.mu.Unlock()
 }
 

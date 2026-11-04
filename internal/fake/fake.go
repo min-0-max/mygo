@@ -31,6 +31,8 @@ type Backend struct {
 	signal chan struct{}
 	wake   chan struct{}
 	quit   chan struct{}
+	// AppOptions are the options that Init received.
+	AppOptions platform.AppOptions
 	// IgnoresQuit makes Quit leave the event loop running, as AppKit's
 	// has been seen to; Quits counts the calls.
 	IgnoresQuit bool
@@ -185,8 +187,9 @@ func goroutineID() uint64 {
 
 func (b *Backend) Name() string { return "fake" }
 
-func (b *Backend) Init(h platform.AppHandler, _ platform.AppOptions) error {
+func (b *Backend) Init(h platform.AppHandler, opts platform.AppOptions) error {
 	b.h = h
+	b.AppOptions = opts
 	b.mainID = goroutineID()
 	return nil
 }

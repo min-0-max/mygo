@@ -626,7 +626,9 @@ without a Dock icon, from the start: give it `LSUIElement` in
 `macos.infoPlist` of [`mygo.config.ts`](configuration.md), or set its
 activation policy before `App.Run`, as above. A regular app is activated
 as it launches, as any app the user opens: the first window it shows,
-a panel too, brings it to the front.
+a panel too, brings it to the front. `App.SetSelfActivation(false)` leaves
+that activation to the system ([the Dock and the
+taskbar](app.md#the-dock-and-the-taskbar)).
 
 How each platform shows them:
 

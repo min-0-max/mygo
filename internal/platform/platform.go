@@ -169,6 +169,11 @@ type AppOptions struct {
 	// DMABUFRenderer is "off" (or ""), "on" or "auto": whether WebKitGTK
 	// may draw with its DMA-BUF renderer. Only meaningful on Linux.
 	DMABUFRenderer string
+	// NoSelfActivation keeps the application from activating itself as it
+	// finishes launching and as Window.Show shows a window: the window
+	// becomes key and comes to the front without the application being
+	// activated. Only meaningful on macOS.
+	NoSelfActivation bool
 }
 
 // AppHandler receives application level events from the backend.

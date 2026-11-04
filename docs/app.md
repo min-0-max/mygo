@@ -297,6 +297,14 @@ whatever the app is written in.
   on Windows and Linux. On macOS, `App.Hide` and
   `App.Show` hide and show all its windows, and `App.ShowAboutPanel` shows
   the standard about panel.
+- On macOS, MyGo activates a regular app as it finishes launching, so that
+  a plain executable (`go run`) comes to the front, and `Window.Show`
+  activates the app for a window that is not a panel.
+  `App.SetSelfActivation(false)`, before `App.Run`, leaves the activation
+  at launch to the system, which activates an app it launches unless the
+  launch asked it not to (`open -g`), and makes `Window.Show` make the
+  window key and order it front without activating the app. `Focus` and
+  `App.Focus` still activate it.
 
 ### Jump lists
 
