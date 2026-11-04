@@ -10,7 +10,8 @@
 
 // callRecord(rec *record) is a C function that calls rec.fn with the
 // argument registers and the stack words of rec and stores the result
-// registers in rec.
+// registers in rec; with recordRetainsResult, it retains the object that
+// the call returns.
 TEXT ·callRecord(SB), NOSPLIT|NOFRAME, $0-0
 	SUB	$FRAME, RSP
 	STP	(R29, R30), ARGS(RSP)
@@ -56,6 +57,16 @@ TEXT ·callRecord(SB), NOSPLIT|NOFRAME, $0-0
 	FMOVD	F1, (record_rd+8)(R19)
 	FMOVD	F2, (record_rd+16)(R19)
 	FMOVD	F3, (record_rd+24)(R19)
+
+	// The caller keeps the object that the call returns: take its
+	// reference on the thread that made the call.
+	MOVD	record_flags(R19), R1
+	TBZ	$const_recordRetainsResultBit, R1, return
+	CBZ	R0, return
+	MOVD	$·link(SB), R1
+	MOVD	linkState_retain(R1), R1
+	CALL	R1
+return:
 
 	LDP	(ARGS+16)(RSP), (R19, R27)
 	LDP	ARGS(RSP), (R29, R30)

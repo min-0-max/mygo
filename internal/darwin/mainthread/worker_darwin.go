@@ -12,6 +12,7 @@ import (
 	"unsafe"
 
 	"github.com/ebitengine/purego"
+	"github.com/ebitengine/purego/objc"
 )
 
 // linkState is what the main thread and the worker share; the assembly of
@@ -297,6 +298,41 @@ func Forward[R any](fn uintptr, args ...any) R {
 	forward(rec)
 	runtime.KeepAlive(keep)
 	return result[R](rec, out)
+}
+
+// ForwardRetained runs the native call of fn with args on the main thread
+// as Forward does, and takes the caller's reference to the object that it
+// returns there, inside the forwarded call: an object that the call
+// returns autoreleased is otherwise held only by the autorelease pool of
+// the main thread, whose drain the caller does not wait for. The caller
+// releases the object.
+func ForwardRetained[R any](fn uintptr, args ...any) R {
+	rec, keep, out := prepare(fn, reflect.TypeFor[R](), args)
+	rec.flags |= recordRetainsResult
+	forward(rec)
+	runtime.KeepAlive(keep)
+	return result[R](rec, out)
+}
+
+// Send sends the message sel with args to recv on the main thread through
+// Forward, and returns its result of type R.
+func Send[R any](recv objc.ID, sel objc.SEL, args ...any) R {
+	return Forward[R](msgSend(), append([]any{recv, sel}, args...)...)
+}
+
+// SendRetained sends the message sel with args to recv on the main thread
+// through ForwardRetained, and returns the object that it returns, which
+// the caller releases.
+func SendRetained(recv objc.ID, sel objc.SEL, args ...any) objc.ID {
+	return ForwardRetained[objc.ID](msgSend(), append([]any{recv, sel}, args...)...)
+}
+
+// msgSend returns the address of objc_msgSend.
+func msgSend() uintptr {
+	if err := loadNative(); err != nil {
+		panic(err)
+	}
+	return decisions.msgSend
 }
 
 // forward runs rec on the main thread.

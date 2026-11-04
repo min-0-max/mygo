@@ -5,7 +5,8 @@
 
 // callRecord(rec *record) is a C function that calls rec.fn with the
 // argument registers and the stack words of rec and stores the result
-// registers in rec.
+// registers in rec; with recordRetainsResult, it retains the object that
+// the call returns.
 TEXT ·callRecord(SB), NOSPLIT|NOFRAME, $0-0
 	PUSHQ	BP
 	MOVQ	SP, BP
@@ -66,6 +67,19 @@ TEXT ·callRecord(SB), NOSPLIT|NOFRAME, $0-0
 	MOVQ	DX, (record_r+8)(BX)
 	MOVSD	X0, (record_rx+0)(BX)
 	MOVSD	X1, (record_rx+8)(BX)
+
+	// The caller keeps the object that the call returns: take its
+	// reference on the thread that made the call.
+	MOVQ	record_flags(BX), CX
+	BTQ	$const_recordRetainsResultBit, CX
+	JCC	return
+	TESTQ	AX, AX
+	JZ	return
+	MOVQ	AX, DI
+	MOVQ	$·link(SB), AX
+	MOVQ	linkState_retain(AX), AX
+	CALL	AX
+return:
 	ADDQ	$(const_stackWords*8), SP
 	POPQ	R12
 	POPQ	BX

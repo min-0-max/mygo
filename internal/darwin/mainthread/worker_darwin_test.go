@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ebitengine/purego"
+	"github.com/ebitengine/purego/objc"
 )
 
 // onFakeMain runs fn on a goroutine locked to a thread of its own, which
@@ -150,6 +151,39 @@ func TestTheObjectThatAStepReturnsGoesToThePoolOfTheMainThread(t *testing.T) {
 		direct[uintptr](poolPop, pool)
 		if alive() {
 			t.Error("the object that the step returned outlived the pool of the main thread")
+		}
+	})
+}
+
+// The object that a call forwarded through ForwardRetained returns
+// autoreleased outlives the pool of the main thread until the caller
+// releases it.
+func TestForwardRetainedTakesTheCallersReferenceOnTheMainThread(t *testing.T) {
+	lib := "/usr/lib/libobjc.A.dylib"
+	poolPush, poolPop := dlsym(t, lib, "objc_autoreleasePoolPush"), dlsym(t, lib, "objc_autoreleasePoolPop")
+	initWeak, loadWeak, release := dlsym(t, lib, "objc_initWeak"), dlsym(t, lib, "objc_loadWeakRetained"), dlsym(t, lib, "objc_release")
+	var weak uintptr
+	alive := func() bool {
+		obj := direct[uintptr](loadWeak, &weak)
+		if obj != 0 {
+			direct[uintptr](release, obj)
+		}
+		return obj != 0
+	}
+	onFakeMain(t, func() {
+		pool := direct[uintptr](poolPush)
+		var obj objc.ID
+		RunOnWorker(func() {
+			obj = SendRetained(objc.ID(objc.GetClass("NSMutableArray")), objc.RegisterName("array"))
+		})
+		direct[uintptr](initWeak, &weak, obj)
+		direct[uintptr](poolPop, pool)
+		if !alive() {
+			t.Fatal("the object that ForwardRetained returned did not outlive the pool of the main thread")
+		}
+		direct[uintptr](release, obj)
+		if alive() {
+			t.Error("the object outlived the caller's release")
 		}
 	})
 }

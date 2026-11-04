@@ -24,9 +24,10 @@ type record struct {
 	r     [2]uintptr // rax and rdx of the result
 	rx    [2]uint64  // xmm0 and xmm1 of the result
 
-	// flags says how the worker runs the record: recordStep for a
-	// callback that a trampoline hands to the worker, with
-	// recordReturnsObject for one that returns an object.
+	// flags says how the record runs: recordStep for a callback that a
+	// trampoline hands to the worker, with recordReturnsObject for one
+	// that returns an object, and recordRetainsResult for a call whose
+	// result the caller keeps.
 	flags uintptr
 	// next links the records that threads other than the worker queue
 	// for the main thread, and sem is the Mach semaphore that the main
@@ -37,6 +38,10 @@ type record struct {
 const (
 	recordStep          = 1 << 0
 	recordReturnsObject = 1 << 1
+	// recordRetainsResult has callRecord retain the object that the call
+	// returns, for a caller that keeps it.
+	recordRetainsResultBit = 2
+	recordRetainsResult    = 1 << recordRetainsResultBit
 )
 
 // stackWords is how many words of stack arguments a record carries.
