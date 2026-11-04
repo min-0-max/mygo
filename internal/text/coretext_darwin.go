@@ -17,6 +17,7 @@ import (
 
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/scene"
 	"github.com/go-text/typesetting/segmenter"
 )
@@ -310,9 +311,12 @@ func loadCoreText() error {
 // integer registers and returns in the first two on arm64 and amd64, as
 // SyscallN's r1 and r2.
 func bindDirect(cf, text uintptr, addr func(lib uintptr, name string) uintptr) {
+	// CFRelease and CFRetain run on the calling thread for the strings,
+	// the collections and the Core Text objects of a layout, and on the
+	// main thread for any other object (mainthread.ByReceiver).
 	release, retain := addr(cf, "CFRelease"), addr(cf, "CFRetain")
-	ct.release = func(obj uintptr) { purego.SyscallN(release, obj) }
-	ct.retain = func(obj uintptr) uintptr { r, _, _ := purego.SyscallN(retain, obj); return r }
+	ct.release = func(obj uintptr) { mainthread.ByReceiver(release, obj) }
+	ct.retain = func(obj uintptr) uintptr { return mainthread.ByReceiver(retain, obj) }
 	hash, equal := addr(cf, "CFHash"), addr(cf, "CFEqual")
 	ct.hash = func(obj uintptr) uint { r, _, _ := purego.SyscallN(hash, obj); return uint(r) }
 	ct.equal = func(a, b uintptr) bool { r, _, _ := purego.SyscallN(equal, a, b); return uint8(r) != 0 }
@@ -491,13 +495,14 @@ func fontSmoothing() bool {
 	if cls == 0 {
 		return true
 	}
-	defaults := cls.Send(objc.RegisterName("standardUserDefaults"))
+	// The user defaults run on the main thread.
+	defaults := mainthread.Send[objc.ID](cls, objc.RegisterName("standardUserDefaults"))
 	key := cfString("AppleFontSmoothing")
 	defer ct.release(key)
-	if defaults.Send(objc.RegisterName("objectForKey:"), key) == 0 {
+	if mainthread.Send[objc.ID](defaults, objc.RegisterName("objectForKey:"), key) == 0 {
 		return true
 	}
-	return objc.Send[int](defaults, objc.RegisterName("integerForKey:"), key) != 0
+	return mainthread.Send[int](defaults, objc.RegisterName("integerForKey:"), key) != 0
 }
 
 func cfString(s string) uintptr {
@@ -560,9 +565,9 @@ func (e *coreText) systemFont(size float32, weight int, italic, mono bool) uintp
 	}
 	var font uintptr
 	if cls := objc.ID(objc.GetClass("NSFont")); cls != 0 && objc.Send[bool](cls, objc.RegisterName("respondsToSelector:"), objc.RegisterName(sel)) {
-		if font = uintptr(cls.Send(objc.RegisterName(sel), float64(size), nsWeight(weight))); font != 0 {
-			ct.retain(font)
-		}
+		// NSFont runs on the main thread, which takes this reference to
+		// the font before its autorelease pool drains.
+		font = uintptr(mainthread.SendRetained(cls, objc.RegisterName(sel), float64(size), nsWeight(weight)))
 	}
 	if font == 0 {
 		if mono {
