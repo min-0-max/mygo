@@ -190,7 +190,7 @@ func loadCoreText() error {
 			missing = append(missing, name)
 			return
 		}
-		purego.RegisterFunc(fn, sym)
+		mainthread.BindAddr(fn, sym, name)
 	}
 	// Constants are pointers to CFStringRefs, or callback structs.
 	addr := func(lib uintptr, name string) uintptr {
@@ -293,10 +293,10 @@ func loadCoreText() error {
 	initDelegates(text, optional)
 	// Optional: adding fonts from memory (macOS 10.13), sRGB by name.
 	if sym, err := purego.Dlsym(text, "CTFontManagerCreateFontDescriptorsFromData"); err == nil && sym != 0 {
-		purego.RegisterFunc(&ct.descriptorsFromData, sym)
+		mainthread.BindAddr(&ct.descriptorsFromData, sym, "CTFontManagerCreateFontDescriptorsFromData")
 	}
 	if sym, err := purego.Dlsym(cg, "CGColorSpaceCreateWithName"); err == nil && sym != 0 {
-		purego.RegisterFunc(&ct.colorSpaceWithName, sym)
+		mainthread.BindAddr(&ct.colorSpaceWithName, sym, "CGColorSpaceCreateWithName")
 		if p, err := purego.Dlsym(cg, "kCGColorSpaceSRGB"); err == nil && p != 0 {
 			ct.srgbName = **(**uintptr)(unsafe.Pointer(&p))
 		}
@@ -390,6 +390,17 @@ func bindDirect(cf, text uintptr, addr func(lib uintptr, name string) uintptr) {
 	ct.runGetStringIndices = func(run uintptr, r cfRange, out *int) {
 		purego.SyscallN(runGetStringIndices, run, uintptr(r.location), uintptr(r.length), uintptr(unsafe.Pointer(out)))
 	}
+	mainthread.Check(&ct.hash, "CFHash")
+	mainthread.Check(&ct.equal, "CFEqual")
+	mainthread.Check(&ct.stringWithCharacters, "CFStringCreateWithCharacters")
+	mainthread.Check(&ct.dictionaryCreate, "CFDictionaryCreate")
+	mainthread.Check(&ct.dictionaryGetValue, "CFDictionaryGetValue")
+	mainthread.Check(&ct.arrayGetCount, "CFArrayGetCount")
+	mainthread.Check(&ct.arrayGetValueAtIndex, "CFArrayGetValueAtIndex")
+	mainthread.Check(&ct.numberCreate, "CFNumberCreate")
+	mainthread.Check(&ct.attributedString, "CFAttributedStringCreate")
+	mainthread.Check(&ct.attributedMutable, "CFAttributedStringCreateMutableCopy")
+	mainthread.Check(&ct.attributedSet, "CFAttributedStringSetAttribute")
 }
 
 type coreText struct {
@@ -564,7 +575,11 @@ func (e *coreText) systemFont(size float32, weight int, italic, mono bool) uintp
 		sel = "monospacedSystemFontOfSize:weight:"
 	}
 	var font uintptr
-	if cls := objc.ID(objc.GetClass("NSFont")); cls != 0 && objc.Send[bool](cls, objc.RegisterName("respondsToSelector:"), objc.RegisterName(sel)) {
+	cls := objc.ID(objc.GetClass("NSFont"))
+	if cls != 0 {
+		mainthread.CheckSend(uintptr(cls), uintptr(objc.RegisterName("respondsToSelector:")))
+	}
+	if cls != 0 && objc.Send[bool](cls, objc.RegisterName("respondsToSelector:"), objc.RegisterName(sel)) {
 		// NSFont runs on the main thread, which takes this reference to
 		// the font before its autorelease pool drains.
 		font = uintptr(mainthread.SendRetained(cls, objc.RegisterName(sel), float64(size), nsWeight(weight)))

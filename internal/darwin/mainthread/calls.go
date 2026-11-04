@@ -32,6 +32,15 @@ package mainthread
 // not read.
 const CheckTag = "mainthreadcheck"
 
+// The functions through which a call site binds a native function that
+// runs on the calling thread, which the tag of CheckTag holds to these
+// lists: BindFunc takes a library and a name as purego.RegisterLibFunc
+// does, BindAddrFunc an address as purego.RegisterFunc does, and a name.
+const (
+	BindFunc     = "Bind"
+	BindAddrFunc = "BindAddr"
+)
+
 // The functions of this package that the call sites of mygo reach.
 const (
 	// ForwardFunc names the function that runs a native call on the main

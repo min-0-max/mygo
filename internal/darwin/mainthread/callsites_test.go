@@ -1626,6 +1626,10 @@ func (a *analysis) classifyFunc(o *types.Func, recv ast.Expr) callInfo {
 				return callInfo{kind: callAPI, api: api, recv: recv}
 			}
 			return callInfo{kind: callUnknownAPI, name: o.FullName()}
+		case path == a.r.rules.workerPackage && o.Name() == BindFunc:
+			return callInfo{kind: callBind, name: "RegisterLibFunc"}
+		case path == a.r.rules.workerPackage && o.Name() == BindAddrFunc:
+			return callInfo{kind: callBind, name: "RegisterFunc"}
 		case path == a.r.rules.workerPackage && o.Name() == a.r.rules.forward:
 			return callInfo{kind: callForward}
 		case path == a.r.rules.workerPackage && o.Name() == a.r.rules.byReceiver:
@@ -1936,6 +1940,10 @@ func (a *analysis) bindings() {
 			}
 			info := a.classify(f.pkg, call)
 			if info.kind != callBind {
+				return
+			}
+			// Bind and BindAddr bind what their callers give.
+			if f.pkg.path == a.r.rules.workerPackage && (f.name == BindFunc || f.name == BindAddrFunc) {
 				return
 			}
 			lib := info.name == "RegisterLibFunc"

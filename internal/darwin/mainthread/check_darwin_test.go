@@ -126,6 +126,27 @@ func TestCheckerJudgesWhatBindBinds(t *testing.T) {
 	if msg := panics(func() { count(checkMainLoop()) }); !strings.Contains(msg, "CFArrayGetCount") {
 		t.Errorf("CFArrayGetCount of a run loop: panic %q", msg)
 	}
+	// CFHash takes a Core Text object too, CFArrayGetCount does not.
+	text, err := purego.Dlopen("/System/Library/Frameworks/CoreText.framework/CoreText", purego.RTLD_NOW|purego.RTLD_GLOBAL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stringCreate func(alloc uintptr, s string, encoding uint32) uintptr
+	purego.RegisterLibFunc(&stringCreate, cf, "CFStringCreateWithCString")
+	var createFont func(name uintptr, size float64, matrix uintptr) uintptr
+	purego.RegisterLibFunc(&createFont, text, "CTFontCreateWithName")
+	font := createFont(stringCreate(0, "Helvetica", 0x08000100), 12, 0)
+	var cfHash func(obj uintptr) uint
+	Bind(&cfHash, cf, "CFHash")
+	if msg := panics(func() { cfHash(font) }); msg != "" {
+		t.Errorf("CFHash of a font: %s", msg)
+	}
+	if msg := panics(func() { cfHash(checkMainLoop()) }); !strings.Contains(msg, "CFHash") {
+		t.Errorf("CFHash of a run loop: panic %q", msg)
+	}
+	if msg := panics(func() { count(font) }); !strings.Contains(msg, "CFArrayGetCount") {
+		t.Errorf("CFArrayGetCount of a font: panic %q", msg)
+	}
 	// A function of another package, made of purego.SyscallN.
 	made := func(uintptr) int { return 0 }
 	Check(&made, "CFArrayGetCount")

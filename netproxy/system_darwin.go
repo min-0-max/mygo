@@ -131,7 +131,7 @@ func loadCF() *cfAPI {
 		if err != nil || p == 0 {
 			return nil
 		}
-		purego.RegisterFunc(f.fn, p)
+		mainthread.BindAddr(f.fn, p, f.name)
 	}
 	var err error
 	if a.cfRelease, err = purego.Dlsym(core, "CFRelease"); err != nil {

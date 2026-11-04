@@ -256,16 +256,19 @@ func typeName(obj uintptr) string {
 }
 
 // checkFunction panics unless the object that the function of
-// cfValueFunctions gets is of CFValueTypes. An allocator of 0 and an
+// cfValueFunctions gets is of CFValueTypes. CFHash and CFEqual also take
+// the Core Text objects of CFTypes, whose functions run on the calling
+// thread and which the text engine compares. An allocator of 0 and an
 // argument that holds no address are no object.
 func checkFunction(name string, args []reflect.Value) {
-	n := 1
+	n, compares := 1, name == "CFHash"
 	if name == "CFEqual" {
-		n = 2
+		n, compares = 2, true
 	}
 	for _, a := range args[:min(n, len(args))] {
 		if obj := addressOf(a); obj != 0 {
-			if t := typeName(obj); !slices.Contains(CFValueTypes, t) {
+			t := typeName(obj)
+			if !slices.Contains(CFValueTypes, t) && !(compares && coreTextType(t)) {
 				panic("mainthread: " + name + " runs on the calling thread with a " + t + ", no type of CFValueTypes")
 			}
 		}
@@ -323,11 +326,12 @@ func heldType(t string) bool {
 	if slices.Contains(CFValueTypes, t) || slices.Contains(CFCollectionTypes, t) {
 		return true
 	}
-	return strings.HasPrefix(t, "CT") && cfTypeNamed(t)
+	return coreTextType(t)
 }
 
-func cfTypeNamed(t string) bool {
-	return slices.ContainsFunc(CFTypes, func(c CFType) bool { return c.Name == t })
+// coreTextType reports whether CFTypes names t as a Core Text object.
+func coreTextType(t string) bool {
+	return strings.HasPrefix(t, "CT") && slices.ContainsFunc(CFTypes, func(c CFType) bool { return c.Name == t })
 }
 
 // onMain is the C function of the records that checkedOnMain returns.

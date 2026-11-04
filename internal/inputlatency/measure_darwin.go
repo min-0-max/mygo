@@ -55,13 +55,13 @@ func load() error {
 		libs[path[strings.LastIndex(path, "/")+1:]] = h
 	}
 	objcLib, cg := libs["libobjc.A.dylib"], libs["CoreGraphics"]
-	purego.RegisterLibFunc(&mediaTime, libs["QuartzCore"], "CACurrentMediaTime")
-	purego.RegisterLibFunc(&getMethod, objcLib, "class_getInstanceMethod")
-	purego.RegisterLibFunc(&setImp, objcLib, "method_setImplementation")
-	purego.RegisterLibFunc(&scrollEvent, cg, "CGEventCreateScrollWheelEvent2")
-	purego.RegisterLibFunc(&setField, cg, "CGEventSetIntegerValueField")
-	purego.RegisterLibFunc(&setLocation, cg, "CGEventSetLocation")
-	purego.RegisterLibFunc(&getClass, objcLib, "object_getClass")
+	mainthread.Bind(&mediaTime, libs["QuartzCore"], "CACurrentMediaTime")
+	mainthread.Bind(&getMethod, objcLib, "class_getInstanceMethod")
+	mainthread.Bind(&setImp, objcLib, "method_setImplementation")
+	mainthread.Bind(&scrollEvent, cg, "CGEventCreateScrollWheelEvent2")
+	mainthread.Bind(&setField, cg, "CGEventSetIntegerValueField")
+	mainthread.Bind(&setLocation, cg, "CGEventSetLocation")
+	mainthread.Bind(&getClass, objcLib, "object_getClass")
 	var err error
 	if msgSend, err = purego.Dlsym(objcLib, "objc_msgSend"); err != nil {
 		return err

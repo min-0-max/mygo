@@ -119,8 +119,10 @@ func scan(known map[string]device) []device {
 				found = append(found, d)
 				continue
 			}
+			mainthread.CheckSend(uintptr(c), uintptr(selRetain))
 			d := &gcPad{ctl: c.Send(selRetain)}
 			if v := mainthread.SendRetained(c, selVendor); v != 0 {
+				mainthread.CheckSend(uintptr(v), uintptr(selUTF8))
 				d.title = goString(objc.Send[uintptr](v, selUTF8))
 				mainthread.ByReceiver(msgSend, uintptr(v), uintptr(selRelease))
 			}
@@ -180,6 +182,9 @@ func (d *gcPad) read(s *State) bool {
 		}
 		for b, sel := range buttonSels {
 			// Older systems have no Home or Options button.
+			if sel != 0 {
+				mainthread.CheckSend(uintptr(gp), uintptr(selResponds))
+			}
 			if sel != 0 && objc.Send[bool](gp, selResponds, sel) {
 				s.Buttons[b] = value(mainthread.Send[objc.ID](gp, sel))
 			}
