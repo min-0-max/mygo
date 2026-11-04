@@ -15,6 +15,9 @@ func TestOwnedAppOptions(t *testing.T) {
 	if fb.AppOptions.NoSelfActivation {
 		t.Errorf("AppOptions.NoSelfActivation without SetSelfActivation(false): true, want false")
 	}
+	if fb.AppOptions.NoNotificationDelegate {
+		t.Errorf("AppOptions.NoNotificationDelegate without SetNotificationDelegate(false): true, want false")
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -25,8 +28,9 @@ func TestOwnedAppOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if got := string(out); !strings.Contains(got, "NoSelfActivation: true\n") {
-		t.Errorf("output of SetSelfActivation(false):\n%s", got)
+	if got := string(out); !strings.Contains(got, "NoSelfActivation: true\n") ||
+		!strings.Contains(got, "NoNotificationDelegate: true\n") {
+		t.Errorf("output of SetSelfActivation(false) and SetNotificationDelegate(false):\n%s", got)
 	}
 }
 
@@ -35,8 +39,10 @@ func TestOwnedAppOptions(t *testing.T) {
 // prints the options that the backend received.
 func ownedApp() {
 	App.SetSelfActivation(false)
+	App.SetNotificationDelegate(false)
 	App.WhenReady(func() {
 		fmt.Printf("NoSelfActivation: %v\n", fb.AppOptions.NoSelfActivation)
+		fmt.Printf("NoNotificationDelegate: %v\n", fb.AppOptions.NoNotificationDelegate)
 		os.Exit(0)
 	})
 	if err := App.Run(); err != nil {

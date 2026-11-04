@@ -64,8 +64,12 @@ type Application struct {
 	stateStore WindowStateStore
 	finished   sync.Once
 
-	// noSelfActivation is SetSelfActivation(false).
-	noSelfActivation bool
+	// noSelfActivation is SetSelfActivation(false), noSignalQuit
+	// SetSignalQuit(false) and noNotificationDelegate
+	// SetNotificationDelegate(false).
+	noSelfActivation       bool
+	noSignalQuit           bool
+	noNotificationDelegate bool
 
 	// quitting is only touched on the main thread.
 	quitting    bool
@@ -102,7 +106,7 @@ var App = &Application{readyCh: make(chan struct{}), Dock: &Dock{}, JumpList: &J
 // of main.
 //
 // SIGINT and SIGTERM quit the application like Quit; a second signal exits
-// immediately.
+// immediately. SetSignalQuit(false) leaves the signals to the application.
 //
 // When the MYGO_GENERATE environment variable is set (see `mygo generate`),
 // Run writes the TypeScript client for the bound services to that path, or
@@ -131,10 +135,11 @@ func (a *Application) Run() error {
 func (a *Application) start() error {
 	b := backend()
 	if err := b.Init(appHandler{}, platform.AppOptions{
-		Name:             a.Name(),
-		ActivationPolicy: string(a.ActivationPolicy()),
-		DMABUFRenderer:   string(a.dmabuf),
-		NoSelfActivation: a.noSelfActivation,
+		Name:                   a.Name(),
+		ActivationPolicy:       string(a.ActivationPolicy()),
+		DMABUFRenderer:         string(a.dmabuf),
+		NoSelfActivation:       a.noSelfActivation,
+		NoNotificationDelegate: a.noNotificationDelegate,
 	}); err != nil {
 		return err
 	}
@@ -149,7 +154,9 @@ func (a *Application) start() error {
 	if m := a.Dock.Menu(); m != nil {
 		b.App().SetDockMenu(m.snapshot())
 	}
-	quitOnSignals()
+	if !a.noSignalQuit {
+		quitOnSignals()
+	}
 	// Run whatever was scheduled before the event loop existed.
 	b.Signal()
 	return nil
@@ -467,6 +474,31 @@ func (a *Application) SetDMABUFRenderer(r DMABUFRenderer) {
 func (a *Application) SetSelfActivation(on bool) {
 	a.mu.Lock()
 	a.noSelfActivation = !on
+	a.mu.Unlock()
+}
+
+// SetSignalQuit sets whether Run quits the application on SIGINT and
+// SIGTERM, as Quit does, and exits at once on a second signal, on macOS
+// and Linux. It does by default. With false, Run handles no signal, and
+// the application handles them itself (os/signal), or leaves them to
+// their default action, which ends the process without the quit. Call it
+// before Run; Windows has no such signals.
+func (a *Application) SetSignalQuit(on bool) {
+	a.mu.Lock()
+	a.noSignalQuit = !on
+	a.mu.Unlock()
+}
+
+// SetNotificationDelegate sets whether MyGo sets the delegate of the
+// notification center on macOS, which shows notifications while the
+// application is in front and reports their clicks to the notifications'
+// OnClick listeners and OnNotificationClick. It does by default, as the
+// application launches, so that the click that launched it arrives too.
+// With false, the application sets the delegate itself, and those
+// listeners hear no click. Call it before Run; other systems ignore it.
+func (a *Application) SetNotificationDelegate(on bool) {
+	a.mu.Lock()
+	a.noNotificationDelegate = !on
 	a.mu.Unlock()
 }
 

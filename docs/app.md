@@ -86,7 +86,9 @@ mygo.App.OnActivate(func(hasVisibleWindows bool) {
 - `App.Quit()` closes every window, which `OnClose` listeners can refuse,
   then quits; `OnBeforeQuit` and `OnWillQuit` listeners can cancel it too.
   Cmd+Q, the Quit menu item and Ctrl+C in the terminal (SIGINT and SIGTERM)
-  quit the same way; a second signal exits at once.
+  quit the same way; a second signal exits at once. An app that handles the
+  signals itself calls `App.SetSignalQuit(false)` before `App.Run`, which
+  then handles none (macOS and Linux).
 - `App.Exit(code)` exits right away, without events.
 - `App.Relaunch()` quits, then starts the app again with the same
   arguments, for example after a setting that needs a restart.

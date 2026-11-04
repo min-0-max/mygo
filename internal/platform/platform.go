@@ -174,6 +174,12 @@ type AppOptions struct {
 	// becomes key and comes to the front without the application being
 	// activated. Only meaningful on macOS.
 	NoSelfActivation bool
+	// NoNotificationDelegate keeps the backend from setting the delegate of
+	// the notification center, which the application sets: the backend
+	// then neither shows notifications while the application is in front
+	// nor reports their clicks (AppHandler.NotificationClicked). Only
+	// meaningful on macOS.
+	NoNotificationDelegate bool
 }
 
 // AppHandler receives application level events from the backend.
