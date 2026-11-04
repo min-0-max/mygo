@@ -10,9 +10,10 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/ebitengine/purego"
+
+	"github.com/egoist/mygo/internal/wait"
 )
 
 // loopEnv makes the test binary the helper process of
@@ -38,16 +39,15 @@ func TestMain(m *testing.M) {
 // TestOtherThreadsForwardWhileTheMainThreadRunsALoop. On the main thread
 // it starts the worker, and a step runs, through RunOnMain, the main run
 // loop in a mode of its common modes with a timer of its own, as a modal
-// panel does, while another goroutine forwards a call; the step waits for
-// the goroutine. It prints where that call ran, whether it returned
-// before the run loop ended and whether the run loop ran until its time
-// ended.
+// panel does, for up to wait.Guard, while another goroutine forwards a
+// call and then stops the run loop; the step waits for the goroutine. It
+// prints where that call ran and whether the run loop ended by that stop,
+// which the goroutine makes only once the call returned.
 func loopMain() int {
 	const (
-		cfPath          = "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
-		utf8            = uint32(0x08000100)
-		runLoopTimedOut = 3 // kCFRunLoopRunTimedOut
-		loopSeconds     = 1.0
+		cfPath         = "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+		utf8           = uint32(0x08000100)
+		runLoopStopped = 2 // kCFRunLoopRunStopped
 	)
 	fail := func(err error) int { fmt.Println(err); return 1 }
 	cf, err := purego.Dlopen(cfPath, purego.RTLD_NOW|purego.RTLD_GLOBAL)
@@ -62,6 +62,7 @@ func loopMain() int {
 		now           func() float64
 		timerCreate   func(alloc uintptr, fireDate, interval float64, flags uint, order int, callout, context uintptr) uintptr
 		addTimer      func(rl, timer, mode uintptr)
+		stop          func(rl uintptr)
 	)
 	purego.RegisterLibFunc(&runInMode, cf, "CFRunLoopRunInMode")
 	purego.RegisterLibFunc(&addCommonMode, cf, "CFRunLoopAddCommonMode")
@@ -70,6 +71,7 @@ func loopMain() int {
 	purego.RegisterLibFunc(&now, cf, "CFAbsoluteTimeGetCurrent")
 	purego.RegisterLibFunc(&timerCreate, cf, "CFRunLoopTimerCreate")
 	purego.RegisterLibFunc(&addTimer, cf, "CFRunLoopAddTimer")
+	purego.RegisterLibFunc(&stop, cf, "CFRunLoopStop")
 	pthreadSelf, err := purego.Dlsym(purego.RTLD_DEFAULT, "pthread_self")
 	if err != nil {
 		return fail(err)
@@ -93,9 +95,8 @@ func loopMain() int {
 	}
 	main := self()
 	var (
-		ranOn             uintptr
-		returned, loopEnd time.Time
-		result            int32
+		ranOn  uintptr
+		result int32
 	)
 	forwarded := make(chan struct{})
 	RunOnWorker(func() {
@@ -106,27 +107,25 @@ func loopMain() int {
 			defer runtime.UnlockOSThread()
 			<-looping
 			ranOn = Forward[uintptr](pthreadSelf)
-			returned = time.Now()
+			stop(getMain())
 		}()
 		RunOnMain(func() {
 			close(looping)
-			result = runInMode(mode, loopSeconds, false)
-			loopEnd = time.Now()
+			result = runInMode(mode, wait.Guard.Seconds(), false)
 		})
 		<-forwarded
 	})
 	Stop()
 	fmt.Println("the forwarded call ran on the main thread:", ranOn == main)
-	fmt.Println("it returned before the run loop ended:", returned.Before(loopEnd))
-	fmt.Println("the run loop ran until its time ended:", result == runLoopTimedOut)
+	fmt.Println("the run loop ended by the stop that follows the call:", result == runLoopStopped)
 	return 0
 }
 
 // A call that another goroutine forwards while a step runs the main run
 // loop on the main thread in a mode of its common modes, as a modal panel
-// does, runs on the main thread and returns before that run loop ends.
+// does, runs on the main thread and returns while that run loop runs.
 func TestOtherThreadsForwardWhileTheMainThreadRunsALoop(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*wait.Guard)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^$")
 	cmd.Env = append(os.Environ(), loopEnv+"=1")
@@ -136,8 +135,7 @@ func TestOtherThreadsForwardWhileTheMainThreadRunsALoop(t *testing.T) {
 	}
 	for _, w := range []string{
 		"the forwarded call ran on the main thread: true",
-		"it returned before the run loop ended: true",
-		"the run loop ran until its time ended: true",
+		"the run loop ended by the stop that follows the call: true",
 	} {
 		if !strings.Contains(string(out), w+"\n") {
 			t.Errorf("no %q in the output:\n%s", w, out)

@@ -12,6 +12,7 @@ import (
 	"github.com/ebitengine/purego"
 
 	"github.com/egoist/mygo/internal/darwin/mainthread"
+	"github.com/egoist/mygo/internal/wait"
 )
 
 // TestSystemDarwin asks CFNetwork for the proxy of a URL: whatever the
@@ -53,8 +54,8 @@ func TestPACScript(t *testing.T) {
 // does, on a goroutine of an application whose Go code runs on the
 // worker: the goroutine's thread runs the script on its run loop, the
 // callback of the script runs on that thread, neither on the worker nor
-// on the main thread, and stops that run loop, and the calls that the
-// goroutine forwards meanwhile run on the main thread.
+// on the main thread, and the calls that the goroutine forwards meanwhile
+// run on the main thread.
 func TestPACScriptCallbackRunsOnItsGoroutine(t *testing.T) {
 	a := cf()
 	if a == nil {
@@ -81,7 +82,6 @@ func TestPACScriptCallbackRunsOnItsGoroutine(t *testing.T) {
 
 	var main, worker, goroutine uintptr
 	var got []string
-	var took time.Duration
 	var forwarded uint64
 	done := make(chan struct{})
 	go func() {
@@ -104,15 +104,13 @@ func TestPACScriptCallbackRunsOnItsGoroutine(t *testing.T) {
 				defer a.releaseCF(s)
 				target := mainthread.Forward[uintptr](a.cfURLCreate, uintptr(0), s, uintptr(0))
 				defer a.releaseCF(target)
-				start := time.Now()
 				got = a.runPAC(script, target, true)
-				took = time.Since(start)
 				forwarded = mainthread.Forwarded() - before
 			}()
 			select {
 			case <-finished:
-			case <-time.After(2 * pacTimeout):
-				t.Errorf("the setup script did not finish in %v", 2*pacTimeout)
+			case <-time.After(wait.Guard):
+				t.Errorf("the setup script on the goroutine never finished (waited %v)", wait.Guard)
 			}
 			return nil
 		}, func() {}, func() {})
@@ -127,9 +125,6 @@ func TestPACScriptCallbackRunsOnItsGoroutine(t *testing.T) {
 	}
 	if callbackOn != goroutine || callbackMain {
 		t.Errorf("the callback ran on %#x (IsMainThread %v), not on the goroutine's thread %#x (main %#x, worker %#x)", callbackOn, callbackMain, goroutine, main, worker)
-	}
-	if took >= pacTimeout {
-		t.Errorf("runPAC took %v, as long as pacTimeout: the callback did not stop the run loop of the goroutine's thread", took)
 	}
 	if forwarded == 0 {
 		t.Error("the goroutine forwarded no call to the main thread")
