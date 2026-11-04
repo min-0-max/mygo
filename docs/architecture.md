@@ -4461,12 +4461,12 @@ either.
     falls back to that, and its test fails. It draws into a CAMetalLayer
     it adds to the surface view's layer. The command queue, shaders,
     sampler and placeholder texture are made on demand. A frame that
-    changes the layer (its size, scale or pixel format), or the placement
-    of a web view, a native view element or the system's glass
-    (`scene.Scene.Transact`), which move in the window's transaction,
-    presents with the Core Animation transaction
-    (`presentsWithTransaction`), so a live resize shows no stretched
-    frames; the others present as soon as the GPU has
+    changes the layer (its size, scale or pixel format), the placement
+    (box, clip or covers) of a web view or a native view element, or the
+    placement of a native glass view (`scene.Scene.Transact`), which move
+    in the window's transaction, presents with the Core Animation
+    transaction (`presentsWithTransaction`), so a live resize shows no
+    stretched frames; the others present as soon as the GPU has
     them (`presentDrawable:`), sparing a pass of AppKit's display cycle
     and a commit of the transaction each: an animation at 120 Hz takes
     about half the main thread's time it would. A resize's frame that
@@ -5505,7 +5505,7 @@ which npm allows only for packages that exist: the first release uses an
 | native UI surface | layer-backed NSView, frames from `CADisplayLink` (a timer at the display's rate before macOS 14), input methods through NSTextInputClient | GtkGLArea (GtkDrawingArea without a GPU), GtkIMMulticontext | `MyGoSurface` child window, IMM32 |
 | native UI data drags | NSDraggingSession, NSPasteboardItemDataProvider, NSDraggingDestination | GTK drag contexts, MIME selections, text/uri-list | OLE IDataObject, IDropSource, IDropTarget, Shell drag images |
 | native UI accessibility | `NSAccessibilityElement` subclasses | ATK objects (GObject types registered through purego), bridged to AT-SPI by GTK | UI Automation fragments (COM objects; assembly thunks for the methods taking doubles) |
-| native UI rendering | Metal, into a CAMetalLayer presenting as soon as drawn, or with the Core Animation transaction for frames that resize it or move web views, native view elements or the system's glass | OpenGL 3.3 or ES 3.0 in the GtkGLArea's render signal; on the CPU, painted with cairo, where OpenGL runs on the CPU | Direct3D 11 (WARP without a GPU), flip-model swap chain presenting dirty rectangles |
+| native UI rendering | Metal, into a CAMetalLayer presenting as soon as drawn, or with the Core Animation transaction for frames that resize it or move web views, native view elements or native glass views | OpenGL 3.3 or ES 3.0 in the GtkGLArea's render signal; on the CPU, painted with cairo, where OpenGL runs on the CPU | Direct3D 11 (WARP without a GPU), flip-model swap chain presenting dirty rectangles |
 | web views in native UI | WKWebView in a clip view under the surface; `hitTest:` lets the pointer through | WebKitWebView in a `GtkLayout` under the area in a `GtkOverlay`; an input shape lets the pointer through | WebView2 composition controller in a DirectComposition target under the frames'; the surface sends it the mouse |
 | audio output | Audio Queue on the default output | PulseAudio simple API (PipeWire too), else ALSA `default` | WASAPI shared mode, reopened when the default output changes |
 | gamepads | GameController.framework, extended gamepad profile | evdev, the kernel's gamepad layout, Xbox's X and Y swapped back | XInput, four slots, Guide by `XInputGetStateEx` |
