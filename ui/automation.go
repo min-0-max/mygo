@@ -21,18 +21,7 @@ type automated struct{ h *windowHost }
 
 func (a automated) AutomationTree() (*platform.AccessTree, map[uint64]any) {
 	rt := a.h.rt
-	keys := map[uint64]any{}
-	var walk func(e *node)
-	walk = func(e *node) {
-		for ; e != nil; e = e.next {
-			if e.key != nil {
-				keys[e.id] = e.key
-			}
-			walk(e.first)
-		}
-	}
-	walk(rt.c.root)
-	return rt.windowAccess(rt.accessTree()), keys
+	return rt.windowAccess(rt.accessTree()), rt.elementKeys()
 }
 
 func (a automated) FramePending() bool { return a.h.frameAsked && !a.h.detached }
