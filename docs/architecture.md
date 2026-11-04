@@ -370,6 +370,11 @@ a goroutine locked to a thread other than the main thread.
   that take a block: the first runs it on the worker as a step when the
   main thread calls it, the second on the main thread when the worker
   calls it during a step, and each runs it at once on any other thread.
+- `RunOnMain` runs a Go function on the main thread as one forwarded
+  call. `Backend.Step`, which `await` calls on the worker, runs so: the
+  event loop runs once on the main thread, and the callbacks of the event
+  that it sends run on the worker as nested steps. `Forwarded` counts the
+  forwarded calls.
 - `IsMainThread` answers true on the main thread and on the worker during
   a step. While the worker does not run, every call runs on the calling
   thread, as before `App.Run`.

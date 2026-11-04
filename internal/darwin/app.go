@@ -210,7 +210,12 @@ func (b *Backend) postEvent(subtype int16) {
 	})
 }
 
-func (b *Backend) Step() {
+// Step runs on the main thread as one forwarded call
+// (mainthread.RunOnMain): the event loop runs there once, and the
+// callbacks of the event that it sends run on the worker as nested steps.
+func (b *Backend) Step() { mainthread.RunOnMain(b.step) }
+
+func (b *Backend) step() {
 	b.stepping++
 	defer func() { b.stepping-- }()
 	withPool(func() {

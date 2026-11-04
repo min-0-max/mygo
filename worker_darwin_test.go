@@ -25,15 +25,15 @@ func init() { workerTestMain = workerMain }
 // as the darwin backend has it: Run runs the Go code of App.Run on the
 // worker around an event loop on the main thread, which hands each
 // dispatch to the worker through a trampoline, and Step, which await
-// calls on the worker, waits for an event on the main thread through a
-// forwarded call.
+// calls on the worker, waits for an event on the main thread as one
+// forwarded call (mainthread.RunOnMain), as the darwin backend's does.
 type workerBackend struct {
 	*fake.Backend
-	h                     platform.AppHandler
-	signal, wake, quit    chan struct{}
-	quitOnce              sync.Once
-	ready, dispatch, wait uintptr
-	mainThread            uintptr
+	h                  platform.AppHandler
+	signal, wake, quit chan struct{}
+	quitOnce           sync.Once
+	ready, dispatch    uintptr
+	mainThread         uintptr
 }
 
 var pthreadSelf = sync.OnceValue(func() uintptr {
@@ -50,15 +50,6 @@ func newWorkerBackend() *workerBackend {
 	b := &workerBackend{Backend: fake.New(), signal: make(chan struct{}, 1), wake: make(chan struct{}, 1), quit: make(chan struct{})}
 	b.ready = mainthread.Callback(purego.NewCallback(func() { b.h.Ready() }))
 	b.dispatch = mainthread.Callback(purego.NewCallback(func() { b.h.Dispatch() }))
-	// The wait of the main thread for one event, which Step forwards.
-	b.wait = purego.NewCallback(func() {
-		select {
-		case <-b.signal:
-			purego.SyscallN(b.dispatch)
-		case <-b.wake:
-		case <-b.quit:
-		}
-	})
 	return b
 }
 
@@ -99,7 +90,17 @@ func (b *workerBackend) Wake() {
 	}
 }
 
-func (b *workerBackend) Step() { mainthread.Forward[struct{}](b.wait) }
+// Step waits on the main thread for one event.
+func (b *workerBackend) Step() {
+	mainthread.RunOnMain(func() {
+		select {
+		case <-b.signal:
+			purego.SyscallN(b.dispatch)
+		case <-b.wake:
+		case <-b.quit:
+		}
+	})
+}
 
 func (b *workerBackend) Quit() { b.quitOnce.Do(func() { close(b.quit) }) }
 

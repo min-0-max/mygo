@@ -301,3 +301,49 @@ func TestRunStartsAndStopsTheWorkerAroundTheLoop(t *testing.T) {
 	}()
 	<-done
 }
+
+// RunOnMain runs a Go function on the main thread as one forwarded call:
+// the calls that it makes run there at once, uncounted, and a callback
+// that reaches the main thread meanwhile runs on the worker as a nested
+// step. Anywhere but on the worker during a step it runs the function at
+// once.
+func TestRunOnMainIsOneForwardedCall(t *testing.T) {
+	self := pthreadSelf(t)
+	var callbackOn uintptr
+	whoAmI := Callback(purego.NewCallback(func() uintptr {
+		callbackOn = direct[uintptr](self)
+		return callbackOn
+	}))
+	here := direct[uintptr](self)
+	var at uintptr
+	RunOnMain(func() { at = direct[uintptr](self) })
+	if at != here {
+		t.Errorf("without the worker RunOnMain ran on %#x, not at once on %#x", at, here)
+	}
+	onFakeMain(t, func() {
+		main := direct[uintptr](self)
+		var worker, ranOn, answered, inner uintptr
+		var counted bool
+		var n uint64
+		RunOnWorker(func() {
+			worker = direct[uintptr](self)
+			before := Forwarded()
+			RunOnMain(func() {
+				ranOn = direct[uintptr](self)
+				counted = IsMainThread()
+				inner = Forward[uintptr](self)
+				answered = direct[uintptr](whoAmI)
+			})
+			n = Forwarded() - before
+		})
+		if n != 1 {
+			t.Errorf("RunOnMain on the worker forwarded %d calls, want 1", n)
+		}
+		if ranOn != main || inner != main || !counted {
+			t.Errorf("the function ran on %#x (IsMainThread %v) and its call on %#x, not on the main thread %#x", ranOn, counted, inner, main)
+		}
+		if callbackOn != worker || answered != worker {
+			t.Errorf("the callback of the main thread ran on %#x, not on the worker %#x as a nested step", callbackOn, worker)
+		}
+	})
+}

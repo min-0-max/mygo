@@ -320,6 +320,44 @@ func Run(start func() error, loop func(), finish func()) error {
 	return nil
 }
 
+// mainFuncs holds the functions that RunOnMain runs on the main thread,
+// by the number that its C function takes.
+var mainFuncs struct {
+	sync.Mutex
+	next     uintptr
+	m        map[uintptr]func()
+	callback uintptr
+}
+
+// RunOnMain runs fn on the main thread and returns when it returned: on
+// the worker during a step as one forwarded call of a C function that
+// runs fn, so that the calls that fn makes run on the main thread at once
+// and a callback that reaches the main thread meanwhile runs on the
+// worker as a nested step; anywhere else through Forward, which runs it
+// at once while the worker does not run.
+func RunOnMain(fn func()) {
+	mainFuncs.Lock()
+	if mainFuncs.callback == 0 {
+		mainFuncs.m = map[uintptr]func(){}
+		mainFuncs.callback = purego.NewCallback(func(n uintptr) {
+			mainFuncs.Lock()
+			f := mainFuncs.m[n]
+			mainFuncs.Unlock()
+			f()
+		})
+	}
+	mainFuncs.next++
+	n := mainFuncs.next
+	mainFuncs.m[n] = fn
+	mainFuncs.Unlock()
+	defer func() {
+		mainFuncs.Lock()
+		delete(mainFuncs.m, n)
+		mainFuncs.Unlock()
+	}()
+	Forward[struct{}](mainFuncs.callback, n)
+}
+
 // step is the C function of the steps that RunOnWorker starts.
 var (
 	stepFn       func()
@@ -413,6 +451,15 @@ func msgSend() uintptr {
 	return decisions.msgSend
 }
 
+// forwarded counts the calls that the worker and other threads forwarded
+// to the main thread.
+var forwarded atomic.Uint64
+
+// Forwarded returns how many calls the worker and other threads forwarded
+// to the main thread since the process started: a call that runs at once,
+// on the main thread or while the worker does not run, is not counted.
+func Forwarded() uint64 { return forwarded.Load() }
+
 // forward runs rec on the main thread.
 func forward(rec *record) {
 	tp := threadPointer()
@@ -420,8 +467,10 @@ func forward(rec *record) {
 	case atomic.LoadUintptr(&link.running) == 0 || tp == link.mainThread:
 		run(rec)
 	case tp == link.workerThread && link.depth > 0:
+		forwarded.Add(1)
 		purego.SyscallN(exchangeAddress(), uintptr(unsafe.Pointer(rec)))
 	default:
+		forwarded.Add(1)
 		s := semaphore()
 		rec.sem = uintptr(s)
 		p := uintptr(unsafe.Pointer(rec))

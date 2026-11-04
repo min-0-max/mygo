@@ -1,0 +1,101 @@
+//go:build darwin
+
+package darwin
+
+import (
+	"runtime"
+	"sync"
+	"testing"
+
+	"github.com/ebitengine/purego"
+	"github.com/ebitengine/purego/objc"
+
+	"github.com/egoist/mygo/internal/darwin/mainthread"
+)
+
+// stepApp is a fake application for Step: its event fetch records the
+// thread that runs it and returns an event, and its sendEvent: calls a C
+// callback of mygo, as AppKit calls the methods of mygo for an event.
+var stepApp struct {
+	once                 sync.Once
+	app, event, callback uintptr
+	pthreadSelf          uintptr
+	fetchedOn, sentOn    uintptr
+	callbackOn           uintptr
+	fetchedCounted       bool
+}
+
+func makeStepApp(t *testing.T) {
+	s := &stepApp
+	s.once.Do(func() {
+		var err error
+		if s.pthreadSelf, err = purego.Dlsym(purego.RTLD_DEFAULT, "pthread_self"); err != nil {
+			t.Fatal(err)
+		}
+		self := func() uintptr { r, _, _ := purego.SyscallN(s.pthreadSelf); return r }
+		s.callback = mainthread.Callback(purego.NewCallback(func() { s.callbackOn = self() }))
+		event, err := objc.RegisterClass("MyGoTestStepEvent", objc.GetClass("NSObject"), nil, nil, []objc.MethodDef{
+			{Cmd: objc.RegisterName("type"), Fn: func(objc.ID, objc.SEL) uint { return 1 }},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		app, err := objc.RegisterClass("MyGoTestStepApp", objc.GetClass("NSObject"), nil, nil, []objc.MethodDef{
+			{Cmd: objc.RegisterName("nextEventMatchingMask:untilDate:inMode:dequeue:"), Fn: func(_ objc.ID, _ objc.SEL, _ uint64, _, _ objc.ID, _ bool) objc.ID {
+				s.fetchedOn = self()
+				s.fetchedCounted = mainthread.IsMainThread()
+				return objc.ID(s.event)
+			}},
+			{Cmd: objc.RegisterName("sendEvent:"), Fn: func(_ objc.ID, _ objc.SEL, _ objc.ID) {
+				s.sentOn = self()
+				purego.SyscallN(s.callback)
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.event = uintptr(objc.ID(event).Send(objc.RegisterName("new")))
+		s.app = uintptr(objc.ID(app).Send(objc.RegisterName("new")))
+	})
+}
+
+// The Step of await, which runs on the worker, is one call forwarded to
+// the main thread, which fetches and sends the event there; a callback of
+// mygo that the sent event reaches runs on the worker as a nested step.
+// The application is a fake one, so no window is needed.
+func TestStepIsOneForwardedCall(t *testing.T) {
+	load()
+	makeStepApp(t)
+	s := &stepApp
+	self := func() uintptr { r, _, _ := purego.SyscallN(s.pthreadSelf); return r }
+	b := &Backend{app: id(s.app)}
+	var n uint64
+	var main, worker uintptr
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		main = self()
+		err := mainthread.Run(func() error {
+			worker = self()
+			before := mainthread.Forwarded()
+			b.Step()
+			n = mainthread.Forwarded() - before
+			return nil
+		}, func() {}, func() {})
+		if err != nil {
+			t.Error(err)
+		}
+	}()
+	<-done
+	if n != 1 {
+		t.Errorf("one Step on the worker forwarded %d calls, want 1", n)
+	}
+	if s.fetchedOn != main || !s.fetchedCounted || s.sentOn != main {
+		t.Errorf("Step fetched the event on %#x (IsMainThread %v) and sent it on %#x, not on the main thread %#x", s.fetchedOn, s.fetchedCounted, s.sentOn, main)
+	}
+	if s.callbackOn != worker {
+		t.Errorf("the callback of the sent event ran on %#x, not on the worker %#x as a nested step", s.callbackOn, worker)
+	}
+}
