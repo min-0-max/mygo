@@ -106,6 +106,15 @@ ATK's busy state and UI Automation's `AriaProperties` (`busy=true`);
 `Current` is AppKit's `AXARIACurrent`, ATK's `current` attribute with the
 active state, and `AriaProperties` (`current=page`).
 
+A [test](testing.md#what-assistive-technology-sees) reads them as
+assistive technology gets them, with `Tester.AccessByRole`:
+
+```go
+if a, _ := tt.AccessByRole(ui.RoleGroup, "Messages"); !a.Busy {
+	t.Error("Messages is not busy while loading")
+}
+```
+
 A check box that is mixed as often as not is better built on
 [`CheckboxStateBase`](checkbox.md#without-a-look), which tells it itself
 from its `ui.CheckState`, and checks it as it is pressed.
@@ -116,6 +125,36 @@ from its `ui.CheckState`, and checks it as it is pressed.
 [tooltip](tooltip.md) does, and `Error` marks a value as invalid, for a
 message read with it; a [field](form.md) gives its control the texts below
 it.
+
+## Keyboard shortcuts
+
+`KeyShortcuts(mods, key)` tells screen readers a key that presses or
+focuses the element, as ARIA's `aria-keyshortcuts`: a toolbar button
+whose command the window's shortcut runs, or the button opening a command
+palette, is read with its key after its name. It only tells the key,
+which the view handles itself, as with
+[`c.Shortcut`](input.md#shortcuts); call it once for each key that does:
+
+```go
+if c.Shortcut(ui.Cmd, ui.KeyK) {
+	app.palette = true
+}
+ui.Toolbar(c, func() {
+	if ui.Button(c, "Search").KeyShortcuts(ui.Cmd, ui.KeyK).Clicked() {
+		app.palette = true
+	}
+	ui.Button(c, "Redo").KeyShortcuts(ui.Cmd|ui.Shift, ui.KeyZ).KeyShortcuts(ui.Cmd, ui.KeyY)
+})
+```
+
+The keys are written as the platform's menus write them, separated by
+spaces: `⌘K` and `⇧⌘Z ⌘Y` on macOS, in AppKit's `AXKeyShortcutsValue` as
+WebKit gives it; `Ctrl+K` and `Ctrl+Shift+Z Ctrl+Y` on Linux, in ATK's
+`keyshortcuts` object attribute, and on Windows, in UI Automation's
+`AcceleratorKey`, where Super is `Win`. A
+[test](testing.md#what-assistive-technology-sees) reads them in the
+`KeyShortcuts` of `Tester.AccessByRole`'s answer, and the
+[automation plugin](../plugins/automation.md) in a node's `keyShortcuts`.
 
 ## Formats of text
 

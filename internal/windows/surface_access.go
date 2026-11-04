@@ -109,6 +109,7 @@ const (
 	uiaControlTypeProperty      = 30003
 	uiaLocalizedControlProperty = 30004
 	uiaNameProperty             = 30005
+	uiaAcceleratorKeyProperty   = 30006
 	uiaHasKeyboardFocusProperty = 30008
 	uiaIsFocusableProperty      = 30009
 	uiaIsEnabledProperty        = 30010
@@ -301,8 +302,10 @@ func (e *uiaElement) supports(i int) bool {
 	case ifaceRangeValue:
 		return n.Role.Ranged()
 	case ifaceValue:
+		// A range with a text for its value (aria-valuetext) gives it
+		// as the Value pattern's beside RangeValue, as Core-AAM maps it.
 		return n.Role == platform.RoleTextField || n.Role == platform.RolePopUpButton || n.Role == platform.RoleComboBox ||
-			n.Role == platform.RoleColorWell
+			n.Role == platform.RoleColorWell || n.Role.Ranged() && n.Value != ""
 	case ifaceText:
 		// Text fields' text, by characters, formats, words and lines,
 		// with the formats of a rich text's runs; a password's is not.
@@ -1145,6 +1148,10 @@ func (e *uiaElement) property(id int, v *variant) {
 		}
 	case uiaFullDescriptionProperty:
 		str(n.Description)
+	case uiaAcceleratorKeyProperty:
+		// The keys that press or focus it (aria-keyshortcuts), as
+		// Chromium's.
+		str(n.KeyShortcuts)
 	case uiaItemStatusProperty:
 		// The order of the column a table is sorted by, as Chromium says.
 		switch {

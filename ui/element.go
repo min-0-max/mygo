@@ -340,7 +340,11 @@ type node struct {
 	translatePct     [2]float32 // TranslatePercent's
 	originX, originY float32
 	originSet        bool
-	world            scene.Affine
+	// originAttached puts the origin on the element's point on its target
+	// as its layout attaches it (AttachedOrigin).
+	originAttached bool
+
+	world scene.Affine
 	// content is how its content changes (ContentTransition), when set.
 	content    ContentTransition
 	contentSet bool
@@ -415,6 +419,7 @@ type node struct {
 	// Input the element takes itself (HandleInput), and where the caret of
 	// the text it takes is (TextCaret).
 	inputFn    func(InputEvent) bool
+	observeFn  func(InputEvent) // the input in it (ObserveInput)
 	textClient TextInputClient
 	caret      Rect
 	takesText  bool
@@ -444,6 +449,9 @@ type node struct {
 	maximizeButton bool
 	fit            Fit
 	gray           bool
+	// objectPos is where ObjectPosition puts the picture in its box, from
+	// its middle: 0, 0 by default.
+	objectPos [2]float32
 	// ringOffset and ringColor are the offset and the color of the
 	// element's focus ring, where ringSet says it sets them.
 	ringOffset float32
@@ -485,6 +493,9 @@ type node struct {
 	accFill func(n *platform.AccessNode)
 	// accStep is how far the keys move the value of a range.
 	accStep float64
+	// keyShortcuts are the keys that press or focus the element, as the
+	// platform writes them (KeyShortcuts).
+	keyShortcuts string
 
 	// Layout results, in DIPs relative to the window.
 	x, y, w, h float32
@@ -588,11 +599,21 @@ type node struct {
 	// animates (1 if it was in its parent's flow, 2 if absolute), and
 	// ghosts an element holding such copies; lift one flying with a
 	// Match, which paints over the rest of its layer (matches.lifted).
-	// attach is where Attach puts the element, 0 for nowhere.
+	// attach is where Attach puts the element, 0 for nowhere, and placed
+	// where AttachTo put it as this frame laid it out, on whichever side
+	// of its target, flips the sides it went to (flipAcross, flipDown).
 	leaving uint8
 	ghosts  bool
 	lift    bool
 	attach  attachment
+	placed  attachment
+	flips   uint8
+	// zIndex orders the element's painting and its hits among its
+	// siblings (ZIndex); zOrder is set on an element with a child having
+	// one, which paints and commits its children in that order alone
+	// (zindex.go).
+	zIndex int32
+	zOrder bool
 	// serial is the order the pass made the element in: of overlays, the
 	// one made last shows on top.
 	serial int32
@@ -1087,6 +1108,41 @@ type attachment uint8
 
 func (a attachment) anchors() (at, self Anchor) { return Anchor((a - 1) / 15), Anchor((a - 1) % 15) }
 
+// flipped returns a with its anchors on the other side across (x) and
+// down (y) their boxes.
+func (a attachment) flipped(x, y bool) attachment {
+	at, self := a.anchors()
+	if x {
+		at, self = at.acrossFlipped(), self.acrossFlipped()
+	}
+	if y {
+		at, self = at.downFlipped(), self.downFlipped()
+	}
+	return attachment(1 + at*15 + self)
+}
+
+// acrossFlipped returns the anchor on the other side across a box: the
+// right for the left, the end for the start.
+func (a Anchor) acrossFlipped() Anchor {
+	switch {
+	case a < AnchorTopStart:
+		return a/3*3 + 2 - a%3
+	case a < AnchorTopEnd:
+		return a + 3
+	}
+	return a - 3
+}
+
+// downFlipped returns the anchor on the other side down a box: the bottom
+// for the top.
+func (a Anchor) downFlipped() Anchor {
+	if a < AnchorTopStart {
+		return (2-a/3)*3 + a%3
+	}
+	base := AnchorTopStart + (a-AnchorTopStart)/3*3
+	return base + 2 - (a - base)
+}
+
 // Attach takes the element out of its parent's layout, as Absolute does,
 // and puts its point self on the point at of the parent's padding box:
 // Attach(ui.AnchorTopRight, ui.AnchorCenter) centers a badge on the top
@@ -1113,7 +1169,8 @@ func (e *node) Attach(at, self Anchor) *node {
 //
 // The element is target's popover: its elements follow target as Tab
 // moves, and a press on target is not outside it (PressedOutside). Build
-// target before it, in the same frame.
+// target before it, in the same frame. AttachedAnchors tells the side it
+// went to.
 func (e *node) AttachTo(target *node, at, self Anchor) *node {
 	if target == nil {
 		return e
@@ -1125,6 +1182,45 @@ func (e *node) AttachTo(target *node, at, self Anchor) *node {
 		// Built in an Overlay, it reads as what it is attached to.
 		e.setDir(target.rtl(), false)
 	}
+	return e
+}
+
+// AttachedAnchors returns the points of its target's box and of its own
+// that AttachTo put together as the layout placed the element: those
+// asked for, or, where it went to the other side of target or the other
+// way along it to stay in the window, those across or down from them, as
+// Floating UI's placement: AnchorTop and AnchorBottom for a panel asked
+// below its button, with AttachTo(button, ui.AnchorBottom, ui.AnchorTop),
+// that went above it. Start and end anchors stay start and end ones. The
+// view reads the last frame's, which are those asked for until the
+// element is laid out, as in the frame it first shows; Draw reads this
+// frame's. From that first frame, AttachedOrigin puts the element's
+// transform origin on its own point, and a Motion's Flip mirrors its
+// Enter and Exit, on the side the layout chose. An element not attached
+// to another returns its Attach anchors, or AnchorTopLeft twice without
+// them.
+func (e *node) AttachedAnchors() (at, self Anchor) {
+	a := e.placed
+	if a == 0 && e.attach != 0 && e.hasState() && e.st.asked == e.attach {
+		a = e.st.placed
+	}
+	if a == 0 {
+		a = e.attach
+	}
+	if a == 0 {
+		return AnchorTopLeft, AnchorTopLeft
+	}
+	return a.anchors()
+}
+
+// AttachedOrigin sets the transform origin on the element's own point
+// that AttachTo puts on its target, on whichever side of it the layout
+// puts the element (AttachedAnchors), from the frame it shows: a tooltip
+// or a menu scaling in, or out, grows from the edge nearest its trigger,
+// as Radix's popper transform origin. It replaces TransformOrigin on an
+// element attached to another.
+func (e *node) AttachedOrigin() *node {
+	e.originAttached = true
 	return e
 }
 
@@ -1525,7 +1621,8 @@ func (e *node) TextBackground(c Color) *node {
 func (e *node) Strikethrough() *node { e.ts.strike = true; e.ts.set |= setStrike; return e }
 
 // LetterSpacing adds v DIPs after every character of text, or tightens it
-// with a negative v, as for labels in capitals.
+// with a negative v, as for labels in capitals; 0 takes away that of the
+// text around it, as for a number within such a label.
 func (e *node) LetterSpacing(v float32) *node {
 	e.ts.spacing = v
 	e.ts.set |= setSpacing
@@ -1746,6 +1843,9 @@ func (e *node) add(child *node) {
 	e.forgetIntrinsic()
 	child.parent = e
 	child.depth = e.depth + 1
+	if child.zIndex != 0 {
+		e.zOrder = true // set before it was added, as on a copy leaving (ghostOf)
+	}
 	if e.last == nil {
 		e.first = child
 	} else {

@@ -132,6 +132,7 @@ var elementChains = map[string]bool{
 	"AspectRatio":          true,
 	"Attach":               true,
 	"AttachTo":             true,
+	"AttachedOrigin":       true,
 	"AutoFocus":            true,
 	"BackfaceHidden":       true,
 	"Background":           true,
@@ -240,6 +241,7 @@ var elementChains = map[string]bool{
 	"KeepOpen":             true,
 	"KeepScrollbars":       true,
 	"Key":                  true,
+	"KeyShortcuts":         true,
 	"Label":                true,
 	"Lang":                 true,
 	"Left":                 true,
@@ -257,6 +259,7 @@ var elementChains = map[string]bool{
 	"MaskConicGradient":    true,
 	"MaskLinearGradient":   true,
 	"MaskRadialGradient":   true,
+	"Masks":                true,
 	"Material":             true,
 	"MaxHeight":            true,
 	"MaxHeightPercent":     true,
@@ -272,6 +275,8 @@ var elementChains = map[string]bool{
 	"Mixed":                true,
 	"Modal":                true,
 	"NoWrap":               true,
+	"ObjectPosition":       true,
+	"ObserveInput":         true,
 	"OnChange":             true,
 	"OnClick":              true,
 	"OnPaste":              true,
@@ -360,6 +365,7 @@ var elementChains = map[string]bool{
 	"WidthPercent":         true,
 	"Wrap":                 true,
 	"WrapReverse":          true,
+	"ZIndex":               true,
 }
 
 // uiParts lists package ui's custom parts types.

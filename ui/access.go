@@ -171,7 +171,8 @@ func (e *node) Current(kind Current) *node {
 }
 
 // Value sets what assistive technology reads as the element's value, as
-// the choice a button opening a popup shows.
+// the choice a button opening a popup shows, or the text of a range's
+// value beside its number (aria-valuetext), as "3 of 10 steps".
 func (e *node) Value(s string) *node {
 	e.accValue = s
 	return e
@@ -189,6 +190,31 @@ func (e *node) Range(lo, hi, value float64) *node {
 // highest, or how deep an item of a tree is, from 1 at the top.
 func (e *node) Level(n int) *node {
 	e.level = max(n, 0)
+	return e
+}
+
+// KeyShortcuts tells assistive technology a key, with exactly the
+// modifiers mods, that presses or focuses the element, as ARIA's
+// aria-keyshortcuts: the window's shortcut that runs a toolbar button's
+// command, or opens a command palette, which screen readers read with the
+// element's name. It is written as the platform's menus write it ("⌘K"
+// for Cmd+K on macOS, "Ctrl+K" elsewhere). It only tells the key: handle
+// it with Shortcut on the context, or OnWindowShortcut. Call it once for
+// each key that does.
+func (e *node) KeyShortcuts(mods Modifiers, key Key) *node {
+	s := shortcutText(accelerator(mods, key))
+	if s == "" {
+		return e
+	}
+	for k := range strings.FieldsSeq(e.keyShortcuts) {
+		if k == s {
+			return e
+		}
+	}
+	if e.keyShortcuts != "" {
+		s = e.keyShortcuts + " " + s
+	}
+	e.keyShortcuts = s
 	return e
 }
 
@@ -499,6 +525,7 @@ func (rt *engine) accessDetails(e *node, n *platform.AccessNode) {
 	n.Current = platform.AccessCurrent(e.current)
 	n.Level = e.level
 	n.Value = e.accValue
+	n.KeyShortcuts = e.keyShortcuts
 	if e.hasRange {
 		n.Min, n.Max, n.Now, n.Step = e.accRange[0], e.accRange[1], e.accRange[2], e.accStep
 	}

@@ -68,6 +68,35 @@ func TestNativeViewElement(t *testing.T) {
 	}
 }
 
+// TestNativeViewZIndex checks that the order of native view elements and
+// what covers each follow the order they paint in, not the order they are
+// built in.
+func TestNativeViewZIndex(t *testing.T) {
+	tt := coreNewTester(func(c *context) {
+		coreBox(c).Fill().Children(func() {
+			coreNativeView(c, 7, 7).Absolute().Left(0).Top(0).Size(100, 100).ZIndex(1)
+			coreNativeView(c, 9, 9).Absolute().Left(0).Top(0).Size(100, 100)
+			coreButtonBase(c).Absolute().Left(10).Top(10).Size(20, 20).ZIndex(-1)
+			coreButtonBase(c).Absolute().Left(40).Top(40).Size(20, 20).ZIndex(2)
+		})
+	}, 300, 240)
+	placed := tt.rt.webViewPlacements()
+	if len(placed) != 2 {
+		t.Fatalf("placed %+v, want two", placed)
+	}
+	under, over := placed[0], placed[1]
+	if u, o := under.v.(nativeElement), over.v.(nativeElement); u.view != 9 || o.view != 7 {
+		t.Fatalf("placed %d then %d, want 9 under 7", u.view, o.view)
+	}
+	want := []platform.RectF{{X: 40, Y: 40, W: 20, H: 20}}
+	if !slices.Equal(over.covers, want) {
+		t.Fatalf("the raised view is covered by %+v, want %+v", over.covers, want)
+	}
+	if !slices.Contains(under.covers, platform.RectF{X: 0, Y: 0, W: 100, H: 100}) {
+		t.Fatalf("the lower view is covered by %+v, want the raised view", under.covers)
+	}
+}
+
 // TestNativeViewKey checks that the key view of an element is its view
 // unless it names another.
 func TestNativeViewKey(t *testing.T) {

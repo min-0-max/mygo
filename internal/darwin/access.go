@@ -218,6 +218,11 @@ func toggle(r platform.AccessRole) bool {
 	return false
 }
 
+// valueText reports whether a node of a range has a text for its value, as
+// aria-valuetext, which Core-AAM maps to AXValueDescription beside the
+// number.
+func valueText(n platform.AccessNode) bool { return n.Role.Ranged() && n.Value != "" }
+
 // valueOf returns the value of a node as AppKit wants it: a number for
 // toggles, disclosures and ranges, a string for texts.
 func valueOf(n platform.AccessNode) id {
@@ -658,6 +663,14 @@ func registerAccessClass() {
 			if el.node.Current != platform.CurrentNone {
 				sendHere(all, "addObject:", uintptr(nsString("AXARIACurrent")))
 			}
+			if valueText(el.node) {
+				sendHere(all, "addObject:", uintptr(nsString("AXValueDescription")))
+			}
+			// The keys that press or focus it, as WebKit's elements say
+			// aria-keyshortcuts.
+			if el.node.KeyShortcuts != "" {
+				sendHere(all, "addObject:", uintptr(nsString("AXKeyShortcutsValue")))
+			}
 			return autorelease(all)
 		}),
 		method("accessibilityAttributeValue:", func(self id, cmd objc.SEL, attr id) id {
@@ -679,6 +692,14 @@ func registerAccessClass() {
 				case "AXARIACurrent":
 					if c := el.node.Current; c != platform.CurrentNone {
 						return nsString(c.String())
+					}
+				case "AXValueDescription":
+					if valueText(el.node) {
+						return nsString(el.node.Value)
+					}
+				case "AXKeyShortcutsValue":
+					if el.node.KeyShortcuts != "" {
+						return nsString(el.node.KeyShortcuts)
 					}
 				}
 			}
