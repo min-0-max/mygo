@@ -441,6 +441,10 @@ type System struct {
 	subpixel bool
 	// rooms counts MakeRoom calls during the frame.
 	rooms int
+	// reviewed is the frame Review last ran in, and reviewing tells that it
+	// asked for the MakeRoom to come.
+	reviewed  uint64
+	reviewing bool
 	// Buffers layouts reuse: the first runes of clusters (line), and the
 	// advances and text of a line ending with an ellipsis (ellipsize).
 	starts     []int

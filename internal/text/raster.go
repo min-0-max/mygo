@@ -129,6 +129,7 @@ func (s *System) BeginFrame() {
 func (s *System) forgetLeftOut() {
 	s.full, s.want = [2]bool{}, [2]int{}
 	s.wantSize = [2]image.Point{}
+	s.reviewing = false
 	clear(s.outGlyphs)
 	clear(s.outRuns)
 	clear(s.outMasks)
@@ -152,24 +153,96 @@ func (s *System) Full() bool {
 	return s.full[0] || s.full[1]
 }
 
+// Atlas review: nothing but a full atlas evicts, and an atlas never fills
+// again after what made it large is gone. So every atlasReviewFrames a
+// frame painted in full measures what the atlases hold for frames now.
+const (
+	atlasReviewFrames = 120
+	// atlasLiveFrames is how recently a window that took its turn drew what
+	// it still shows.
+	atlasLiveFrames = 8
+	// An atlas with a sixteenth of it in use halves. What it holds then
+	// takes at most a quarter, which leaves it room before it must grow.
+	atlasShrinkFill = 16
+	atlasSmallest   = 256
+)
+
+// Review closes a frame painted in full, which has drawn what its window
+// shows: an atlas that holds far more room than the frames use reports
+// full, so that MakeRoom lets go of what no frame draws any more and of
+// the memory it took. A frame painted in part drew too little to tell.
+func (s *System) Review() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.frame-s.reviewed < atlasReviewFrames {
+		return
+	}
+	s.reviewed = s.frame
+	since := s.liveSince()
+	var used [2]int
+	add := func(color bool, g GlyphImage) {
+		i := 0
+		if color {
+			i = 1
+		}
+		used[i] += (int(g.W) + 1) * (int(g.H) + 1)
+	}
+	for _, e := range s.masks {
+		if e.used >= since {
+			add(false, e.GlyphImage)
+		}
+	}
+	for _, e := range s.glyphs {
+		if e.OK && e.used >= since {
+			add(e.inColor(), e.GlyphImage)
+		}
+	}
+	for _, e := range s.runs {
+		if e.used >= since {
+			add(e.inColor(), e.GlyphImage)
+		}
+	}
+	for _, g := range s.transient {
+		add(false, g)
+	}
+	for i, a := range [2]*scene.Atlas{s.MaskAtlas, s.ColorAtlas} {
+		if min(a.W, a.H) >= 2*atlasSmallest && used[i]*atlasShrinkFill <= a.W*a.H {
+			s.full[i], s.reviewing = true, true
+		}
+	}
+}
+
+// liveSince returns the first frame whose drawing an atlas review keeps.
+func (s *System) liveSince() uint64 {
+	if s.frame < atlasLiveFrames {
+		return 0
+	}
+	return s.frame - atlasLiveFrames + 1
+}
+
 // MakeRoom makes room in the atlases that filled up: it keeps what the
 // frame being painted drew, growing the atlas when that and what the frame
 // still needs take much of it, or when room made for the frame before did
-// not suffice, and forgets everything else. Everything kept moves, so the
-// frame must be painted again.
+// not suffice, shrinking it when they take little of it, and forgets
+// everything else. Everything kept moves, so the frame must be painted
+// again.
 func (s *System) MakeRoom() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rooms++
+	since := s.frame
+	if s.reviewing {
+		since = s.liveSince()
+	}
 	for i, color := range [2]bool{false, true} {
 		if s.full[i] {
-			s.makeRoom(color, s.want[i], s.wantSize[i], s.rooms > 1)
+			s.makeRoom(color, s.want[i], s.wantSize[i], s.rooms > 1, since)
 		}
 	}
 	s.forgetLeftOut()
 }
 
-func (s *System) makeRoom(color bool, want int, size image.Point, grow bool) {
+func (s *System) makeRoom(color bool, want int, size image.Point, grow bool, since uint64) {
 	a := s.MaskAtlas
 	if color {
 		a = s.ColorAtlas
@@ -183,7 +256,7 @@ func (s *System) makeRoom(color bool, want int, size image.Point, grow bool) {
 		clear(s.transient)
 		a.ResetTransient()
 		for k, e := range s.masks {
-			if e.used != s.frame {
+			if e.used < since {
 				delete(s.masks, k)
 				continue
 			}
@@ -194,7 +267,7 @@ func (s *System) makeRoom(color bool, want int, size image.Point, grow bool) {
 		if !e.OK || e.inColor() != color {
 			continue // blank glyphs take no room
 		}
-		if e.used != s.frame {
+		if e.used < since {
 			delete(s.glyphs, k)
 			continue
 		}
@@ -204,7 +277,7 @@ func (s *System) makeRoom(color bool, want int, size image.Point, grow bool) {
 		if e.inColor() != color {
 			continue
 		}
-		if e.used != s.frame {
+		if e.used < since {
 			delete(s.runs, k)
 			continue
 		}
@@ -221,7 +294,16 @@ func (s *System) makeRoom(color bool, want int, size image.Point, grow bool) {
 	}
 	for (need*2 > a.W*a.H || size.X > a.W || size.Y > a.H) && a.Grow() {
 	}
-	pos, ok := a.Repack(rects)
+	w, h := a.W, a.H
+	for !grow && min(w, h) >= 2*atlasSmallest && need*atlasShrinkFill <= w*h && max(size.X, size.Y) <= min(w, h)/2 {
+		w, h = w/2, h/2
+	}
+	pos, ok := a.RepackTo(w, h, rects)
+	if !ok {
+		// A tall bitmap keeps the atlas from halving, though little of it is
+		// in use.
+		pos, ok = a.Repack(rects)
+	}
 	if !ok {
 		a.Reset()
 		for k, e := range s.glyphs {
