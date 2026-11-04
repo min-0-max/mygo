@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -23,21 +22,6 @@ import (
 // wakeEnv makes the test binary the helper process of
 // TestStepReturnsWithTheWakeEvent.
 const wakeEnv = "MYGO_DARWIN_TEST_WAKE"
-
-func init() {
-	if os.Getenv(wakeEnv) == "1" {
-		// The main goroutine stays on the main thread, where AppKit's
-		// event queue is.
-		runtime.LockOSThread()
-	}
-}
-
-func TestMain(m *testing.M) {
-	if os.Getenv(wakeEnv) == "1" {
-		os.Exit(wakeMain())
-	}
-	os.Exit(m.Run())
-}
 
 // wakeApp records what the event fetch of the helper process of
 // TestStepReturnsWithTheWakeEvent returned and what it sent.
