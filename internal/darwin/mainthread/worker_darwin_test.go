@@ -3,6 +3,7 @@
 package mainthread
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"runtime"
@@ -253,4 +254,50 @@ func TestABrokenProtocolPanicsWithTheState(t *testing.T) {
 			t.Errorf("%s: the process ended without the state:\n%s", kind, out)
 		}
 	}
+}
+
+// Run starts the worker, runs start and finish on it as steps around the
+// loop, which runs on the calling thread, and ends the worker; an error
+// of start ends it before the loop.
+func TestRunStartsAndStopsTheWorkerAroundTheLoop(t *testing.T) {
+	self := pthreadSelf(t)
+	type ran struct {
+		thread uintptr
+		main   bool
+	}
+	where := func() ran { return ran{direct[uintptr](self), IsMainThread()} }
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		defer func() { link.mainThread = 0 }()
+		main := direct[uintptr](self)
+		var start, loop, finish ran
+		var runningInLoop bool
+		err := Run(func() error { start = where(); return nil }, func() {
+			loop = where()
+			runningInLoop = link.running != 0
+		}, func() { finish = where() })
+		if err != nil {
+			t.Error(err)
+		}
+		if start.thread == main || !start.main || finish.thread != start.thread || !finish.main {
+			t.Errorf("start ran on %+v and finish on %+v, not as steps on the worker; the main thread is %#x", start, finish, main)
+		}
+		if loop.thread != main || !runningInLoop {
+			t.Errorf("the loop ran on %#x (worker running %v), not on the main thread %#x with the worker", loop.thread, runningInLoop, main)
+		}
+		if link.running != 0 {
+			t.Error("the worker runs on after Run returned")
+		}
+
+		failed := errors.New("start failed")
+		var looped, finished bool
+		err = Run(func() error { return failed }, func() { looped = true }, func() { finished = true })
+		if err != failed || looped || finished || link.running != 0 {
+			t.Errorf("after a failed start Run returned %v, ran the loop %v and finish %v, and left the worker running %v", err, looped, finished, link.running != 0)
+		}
+	}()
+	<-done
 }

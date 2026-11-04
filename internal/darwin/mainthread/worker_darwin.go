@@ -300,6 +300,26 @@ func Stop() {
 	stopped = make(chan struct{})
 }
 
+// Run runs the Go code of an application around its event loop: it
+// starts the worker (Start), runs start on it as a step, runs loop on the
+// calling thread, the main thread, runs finish on the worker as another
+// step and ends the worker (Stop) before it returns. An error of start
+// ends Run before loop and finish.
+func Run(start func() error, loop func(), finish func()) error {
+	if err := Start(); err != nil {
+		return err
+	}
+	defer Stop()
+	var err error
+	RunOnWorker(func() { err = start() })
+	if err != nil {
+		return err
+	}
+	loop()
+	RunOnWorker(finish)
+	return nil
+}
+
 // step is the C function of the steps that RunOnWorker starts.
 var (
 	stepFn       func()
