@@ -5,6 +5,7 @@ package mainthread
 import (
 	"bytes"
 	"sync"
+	"sync/atomic"
 
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
@@ -28,10 +29,12 @@ var decisions struct {
 	stringGetCString        func(s uintptr, buf *byte, size int, encoding uint32) bool
 	objectGetClass          func(obj uintptr) uintptr
 	classIsMetaClass        func(cls uintptr) bool
+	classGetName            func(cls uintptr) string
 	classGetSuperclass      func(cls uintptr) uintptr
 	classConformsToProtocol func(cls, proto uintptr) bool
 	sendBool                func(obj uintptr, sel objc.SEL, arg uintptr) bool
 	isKindOfClass           objc.SEL
+	autorelease             uintptr
 }
 
 // decidedGroup is a group of CallingThreadReceivers with the messages of
@@ -72,6 +75,7 @@ func loadDecisions(cf uintptr) error {
 	purego.RegisterLibFunc(&d.stringGetCString, cf, "CFStringGetCString")
 	purego.RegisterLibFunc(&d.objectGetClass, libObjC, "object_getClass")
 	purego.RegisterLibFunc(&d.classIsMetaClass, libObjC, "class_isMetaClass")
+	purego.RegisterLibFunc(&d.classGetName, libObjC, "class_getName")
 	purego.RegisterLibFunc(&d.classGetSuperclass, libObjC, "class_getSuperclass")
 	purego.RegisterLibFunc(&d.classConformsToProtocol, libObjC, "class_conformsToProtocol")
 	purego.RegisterFunc(&d.sendBool, d.msgSend)
@@ -79,6 +83,7 @@ func loadDecisions(cf uintptr) error {
 	purego.RegisterLibFunc(&getClass, libObjC, "objc_getClass")
 	purego.RegisterLibFunc(&getProtocol, libObjC, "objc_getProtocol")
 	d.isKindOfClass = objc.RegisterName("isKindOfClass:")
+	d.autorelease = uintptr(objc.RegisterName("autorelease"))
 	d.selectors = map[uintptr]string{}
 	for _, s := range ByReceiverSelectors {
 		d.selectors[uintptr(objc.RegisterName(s))] = s
@@ -119,7 +124,10 @@ func loadDecisions(cf uintptr) error {
 // ByReceiverSelectors or a function of ByReceiverFunctions whose first
 // argument is the receiver, on the calling thread when the receiver is
 // one for which CallingThreadReceivers or CFTypes say so, or a block that
-// mygo made, and through Forward otherwise.
+// mygo made, and through Forward otherwise. An autorelease that Forward
+// would run for a thread other than the worker panics: the only owner of
+// the object would be a pool of the main thread, which drains without
+// that thread.
 func ByReceiver(fn uintptr, args ...uintptr) uintptr {
 	if err := loadNative(); err != nil {
 		panic(err)
@@ -127,6 +135,11 @@ func ByReceiver(fn uintptr, args ...uintptr) uintptr {
 	if len(args) == 0 || args[0] == 0 || callingThread(fn, args) {
 		r, _, _ := purego.SyscallN(fn, args...)
 		return r
+	}
+	d := &decisions
+	if fn == d.msgSend && len(args) > 1 && args[1] == d.autorelease &&
+		atomic.LoadUintptr(&link.running) != 0 && !IsMainThread() {
+		panic("mainthread: autorelease of " + d.classGetName(d.objectGetClass(args[0])) + " off the worker")
 	}
 	all := make([]any, len(args))
 	for i, a := range args {

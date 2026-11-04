@@ -121,6 +121,26 @@ var offWorkerCalls = []offWorkerCall{
 		w.Close()
 		return nil
 	}},
+	// An object that ByReceiver would autorelease on the main thread
+	// from here lives in a pool that this goroutine cannot see: it panics
+	// here, not in the one forwarded call that may do it. The release
+	// and that call are what this case forwards.
+	{"Autorelease", 2, func(*Backend, string) error {
+		obj := sendHere(class("NSObject"), "new")
+		defer release(obj)
+		mainthread.RunOnMain(func() {
+			withPool(func() { autorelease(sendHere(class("NSObject"), "new")) })
+		})
+		got := func() (p any) {
+			defer func() { p = recover() }()
+			autorelease(obj)
+			return nil
+		}()
+		if s, ok := got.(string); !ok || !strings.Contains(s, "NSObject") {
+			return fmt.Errorf("an autorelease forwarded off the worker: panic %v", got)
+		}
+		return nil
+	}},
 }
 
 // drainAfterEachCall makes the method of cls that an off-worker call
@@ -208,6 +228,14 @@ func offWorkerMain() int {
 			if err := <-done; err != nil {
 				return fmt.Errorf("%s: %w", c.name, err)
 			}
+		}
+		// SaveLocale makes an array that it forwards to autorelease, on
+		// the worker in a step, which may.
+		before := mainthread.Forwarded()
+		b.App().SaveLocale("x-test")
+		b.App().SaveLocale("")
+		if mainthread.Forwarded() == before {
+			return fmt.Errorf("SaveLocale forwarded no call")
 		}
 		return nil
 	}, func() {}, func() {})
