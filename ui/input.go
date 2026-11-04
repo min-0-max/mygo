@@ -21,7 +21,7 @@ func (rt *engine) event(ev platform.SurfaceEvent) (taken bool) {
 		rt.redraw = false
 	}
 	switch ev.Kind {
-	case platform.SurfaceFrame, platform.SurfaceResize, platform.SurfaceShown:
+	case platform.SurfaceFrame, platform.SurfaceResize, platform.SurfaceShown, platform.SurfaceHidden:
 	default:
 		// Input, which the next frame builds even out of sight.
 		rt.input = true
@@ -45,6 +45,11 @@ func (rt *engine) event(ev platform.SurfaceEvent) (taken bool) {
 		rt.surfaceFrame()
 	case platform.SurfaceResize:
 		rt.requestFrame()
+	case platform.SurfaceHidden:
+		// The frame asked for waits until some of the window shows.
+		if rt.host.occluded() {
+			rt.host.framesHeld()
+		}
 	case platform.SurfaceShown:
 		// A video goes on from where it stood out of sight.
 		rt.shown = rt.now()

@@ -69,9 +69,36 @@ type DamageSurface interface {
 // frames: the content then draws nothing that moves until it shows again.
 type OccludableSurface interface {
 	// Occluded reports whether nothing of the surface shows on screen. The
-	// surface sends SurfaceShown once some of it shows again.
+	// surface sends SurfaceHidden once none of it shows, and SurfaceShown
+	// once some of it shows again.
 	Occluded() bool
 }
+
+// Presentation is what came of the frame that was to show a scene of a
+// window's content (surface.Conn.AfterPresent): it presented, or why it
+// presented nothing. A frame dropped for one drawn after it, which shows
+// what it would have, answers nothing: the frame after it does.
+type Presentation uint8
+
+const (
+	// Presented tells that the present of the frame ran.
+	Presented Presentation = iota
+	// PresentNoDamage tells that the scene changed nothing of the frame
+	// before, and no frame presented.
+	PresentNoDamage
+	// PresentNoDrawable tells that the frame found no drawable to draw
+	// into, as when the display held them all past the wait for one.
+	PresentNoDrawable
+	// PresentHeld tells that the window holds its frames, as while
+	// nothing of it shows.
+	PresentHeld
+	// PresentClosed tells that the window closed before the frame
+	// presented.
+	PresentClosed
+	// PresentFailed tells that drawing the frame failed, with the error
+	// that came with it.
+	PresentFailed
+)
 
 // WideGamutSurface is a Surface that tells whether its window's screen
 // shows colors outside the sRGB gamut (macOS's).
@@ -290,6 +317,9 @@ const (
 	// SurfaceShown reports that some of an OccludableSurface shows again
 	// after none did.
 	SurfaceShown
+	// SurfaceHidden reports that none of an OccludableSurface shows any
+	// more.
+	SurfaceHidden
 	// DataDragOver queries a destination; DataDrop commits a transfer.
 	// DataDragLeave clears its hover state. Drag carries the query/result.
 	DataDragOver

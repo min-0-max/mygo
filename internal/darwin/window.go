@@ -2300,8 +2300,13 @@ func registerWindowClasses() {
 				}
 			}),
 			method("windowDidChangeOcclusionState:", func(self id, _ objc.SEL, n id) {
-				if w := b().windowFor(self); w != nil && w.surface != nil && w.surface.visible() {
+				w := b().windowFor(self)
+				switch {
+				case w == nil || w.surface == nil:
+				case w.surface.visible():
 					w.surface.send(platform.SurfaceEvent{Kind: platform.SurfaceShown})
+				default:
+					w.surface.send(platform.SurfaceEvent{Kind: platform.SurfaceHidden})
 				}
 			}),
 			method("windowDidMiniaturize:", func(self id, _ objc.SEL, n id) {

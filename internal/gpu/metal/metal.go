@@ -28,6 +28,7 @@ import (
 
 	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/gpu"
+	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/internal/scene"
 )
 
@@ -1390,7 +1391,7 @@ func (r *Renderer) begin(cb, target id, load uintptr, s *scene.Scene, b *gpu.Bui
 	send(ca, "setStoreAction:", storeActionStore)
 	c := s.Clear.Premul(1)
 	msgSetClearColor(ca, sel("setClearColor:"), mtlClearColor{float64(c[0]), float64(c[1]), float64(c[2]), float64(c[3])})
-	enc := send(cb, "renderCommandEncoderWithDescriptor:", rpd)
+	enc := renderEncoder(cb, rpd)
 	if !r.checked {
 		if err := need(enc, "render encoder", "setRenderPipelineState:", "setVertexBytes:length:atIndex:", "setVertexBuffer:offset:atIndex:",
 			"setFragmentBuffer:offset:atIndex:", "setFragmentBytes:length:atIndex:", "setFragmentTexture:atIndex:", "setFragmentSamplerState:atIndex:",
@@ -1625,15 +1626,35 @@ func or(a, b id) id {
 }
 
 // Render draws s into the layer and presents it.
-func (r *Renderer) Render(s *scene.Scene) (err error) {
+func (r *Renderer) Render(s *scene.Scene) error {
 	if s.Width <= 0 || s.Height <= 0 || r.layer == 0 {
 		return nil
 	}
-	pool(func() { err = r.render(s) })
+	return r.RenderNotice(s, func(platform.Presentation, error) {}, func() {})
+}
+
+// RenderNotice draws s into the layer and presents it, as Render does, and
+// gives done what came of the frame, once, on the main thread: Presented
+// once its drawable's present ran, inside Core Animation's transaction for
+// a frame presenting with it, else why it presented nothing, with the
+// error of a frame that failed (platform.PresentFailed). done runs before
+// RenderNotice returns, or, for a frame waiting for its drawable
+// (present.go), once it drew into it. Such a frame dropped, as the
+// renderer trims its drawables or is let go, calls again instead, for the
+// frame drawn after it, which shows what it would have, to answer it.
+// When RenderNotice returns an error, neither has run and neither does.
+func (r *Renderer) RenderNotice(s *scene.Scene, done func(platform.Presentation, error), again func()) (err error) {
+	switch {
+	case r.layer == 0:
+		return errors.New("metal: the renderer was let go")
+	case s.Width <= 0 || s.Height <= 0:
+		return fmt.Errorf("metal: no frame of %d×%d pixels to present", s.Width, s.Height)
+	}
+	pool(func() { err = r.render(s, done, again) })
 	return err
 }
 
-func (r *Renderer) render(s *scene.Scene) error {
+func (r *Renderer) render(s *scene.Scene, done func(platform.Presentation, error), again func()) error {
 	if r.err != nil {
 		return r.err
 	}
@@ -1687,12 +1708,13 @@ func (r *Renderer) render(s *scene.Scene) error {
 	damage, known := r.diff.Diff(s)
 	if known && len(damage) == 0 && !sync {
 		r.redrew = redrewNothing
+		done(platform.PresentNoDamage, nil)
 		return nil
 	}
 	if !sync && r.fetched != nil && !r.pre.ready(r.fetched) {
 		// The next drawable is being fetched: the frame is built now and
 		// drawn into it once the presenter has it.
-		return r.stash(s, damage, known)
+		return r.stash(s, damage, known, done, again)
 	}
 	var drawable id
 	cb, err := r.drawFrame(s, damage, known, func() id {
@@ -1708,7 +1730,7 @@ func (r *Renderer) render(s *scene.Scene) error {
 			drawable = r.prefetched()
 		}
 		if drawable == 0 {
-			drawable = send(r.layer, "nextDrawable")
+			drawable = frameDrawable(r.layer)
 		}
 		if drawable == 0 {
 			return 0
@@ -1723,6 +1745,7 @@ func (r *Renderer) render(s *scene.Scene) error {
 		// drawn.
 		byReceiver(cb, "commit")
 		r.track(cb)
+		done(platform.PresentNoDrawable, nil)
 		return nil
 	}
 	if sync {
@@ -1741,6 +1764,9 @@ func (r *Renderer) render(s *scene.Scene) error {
 	if r.frame%120 == 0 {
 		r.sweep()
 	}
+	// The transaction a frame presented with is still open: what the
+	// notice changes shows with the frame.
+	done(platform.Presented, nil)
 	return nil
 }
 

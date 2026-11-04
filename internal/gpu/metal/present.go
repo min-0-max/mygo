@@ -11,6 +11,7 @@ import (
 	"github.com/ebitengine/purego"
 
 	"github.com/egoist/mygo/internal/darwin/mainthread"
+	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/internal/scene"
 )
 
@@ -50,9 +51,14 @@ const qosUserInteractive = 0x21
 var (
 	qosOnce sync.Once
 	setQoS  func(class uint32, priority int32) int32
-	// nextDrawable returns the layer's next drawable, autoreleased; tests
-	// replace it.
-	nextDrawable = func(layer id) id { return send(layer, "nextDrawable") }
+	// nextDrawable returns the layer's next drawable, autoreleased, for
+	// the presenter, and frameDrawable for a frame that takes its own, on
+	// the main thread. renderEncoder returns a command buffer's encoder
+	// for a render pass, autoreleased. The renderer never changes them;
+	// only tests replace them, to stand for the system giving none.
+	nextDrawable  = func(layer id) id { return send(layer, "nextDrawable") }
+	frameDrawable = func(layer id) id { return send(layer, "nextDrawable") }
+	renderEncoder = func(cb, pass id) id { return send(cb, "renderCommandEncoderWithDescriptor:", pass) }
 )
 
 // start has the thread fetch the next drawable, unless it is or has one.
@@ -168,6 +174,9 @@ type pendingFrame struct {
 	// drawn: it is drawn whole.
 	size  scene.Scene
 	whole bool
+	// done and again are the frame's notice (RenderNotice).
+	done  func(platform.Presentation, error)
+	again func()
 }
 
 // SetPost gives the renderer post, which runs a function on the main
@@ -202,8 +211,9 @@ func (r *Renderer) layerChanges(s *scene.Scene, scale float64) bool {
 }
 
 // stash builds the frame s, which changed damage since the last one, to
-// draw once its drawable comes (finishPending).
-func (r *Renderer) stash(s *scene.Scene, damage []image.Rectangle, known bool) error {
+// draw once its drawable comes (finishPending), then tell done, or call
+// again once dropped (dropPending).
+func (r *Renderer) stash(s *scene.Scene, damage []image.Rectangle, known bool, done func(platform.Presentation, error), again func()) error {
 	cb, _, err := r.prepare(s)
 	if err != nil {
 		r.forgetFrames()
@@ -211,7 +221,7 @@ func (r *Renderer) stash(s *scene.Scene, damage []image.Rectangle, known bool) e
 	}
 	damage = r.pipelineDamage(damage, known)
 	r.ages.Add(damage, !known)
-	r.pending = pendingFrame{cb: send(cb, "retain"), whole: len(s.Effects) > 0}
+	r.pending = pendingFrame{cb: send(cb, "retain"), whole: len(s.Effects) > 0, done: done, again: again}
 	r.pending.size.Width, r.pending.size.Height, r.pending.size.Clear = s.Width, s.Height, s.Clear
 	r.diff.Remember(s)
 	r.pipelines.Remember()
@@ -227,7 +237,7 @@ func (r *Renderer) finishPending(prefetch bool) error {
 	defer r.wakeContent()
 	drawable := r.prefetched()
 	if drawable == 0 {
-		drawable = send(r.layer, "nextDrawable")
+		drawable = frameDrawable(r.layer)
 	}
 	if drawable == 0 {
 		// None came within a second: the frame is skipped, what it drew
@@ -236,6 +246,7 @@ func (r *Renderer) finishPending(prefetch bool) error {
 		byReceiver(p.cb, "commit")
 		r.track(p.cb)
 		release(&p.cb)
+		p.done(platform.PresentNoDrawable, nil)
 		return nil
 	}
 	tex := send(drawable, "texture")
@@ -246,6 +257,7 @@ func (r *Renderer) finishPending(prefetch bool) error {
 	if err := r.drawBuilt(p.cb, &p.size, tex, &r.drawState, r.partIn(p.size.Width, p.size.Height, tex, backdrops)); err != nil {
 		r.forgetFrames()
 		release(&p.cb)
+		p.done(platform.PresentFailed, err)
 		return err
 	}
 	send(p.cb, "presentDrawable:", drawable)
@@ -257,12 +269,14 @@ func (r *Renderer) finishPending(prefetch bool) error {
 	release(&p.cb)
 	r.lastRender = time.Now()
 	r.armTrim()
+	p.done(platform.Presented, nil)
 	return nil
 }
 
 // dropPending drops the frame pending, committing what it drew before its
-// drawable: the next draws whole. What Ready was given meanwhile runs, as
-// the frame waiting for this one, which never comes, can draw now.
+// drawable: the next draws whole, and answers its notice (again). What
+// Ready was given meanwhile runs, as the frame waiting for this one, which
+// never comes, can draw now.
 func (r *Renderer) dropPending() {
 	if r.pending.cb == 0 {
 		return
@@ -271,7 +285,9 @@ func (r *Renderer) dropPending() {
 	byReceiver(r.pending.cb, "commit")
 	r.track(r.pending.cb)
 	release(&r.pending.cb)
+	again := r.pending.again
 	r.pending = pendingFrame{}
+	again()
 	r.wakeContent()
 }
 

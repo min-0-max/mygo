@@ -23,6 +23,10 @@ type host interface {
 	// occluded reports whether nothing of the window shows, as when other
 	// windows cover it.
 	occluded() bool
+	// framesHeld tells that the window holds the frame asked for, as
+	// nothing of it shows: what waits for that frame (Window.AfterPresent)
+	// hears so.
+	framesHeld()
 	present(s *scene.Scene)
 	requestFrame()
 	// setFrameRate tells the surface how many frames a second come while
@@ -806,6 +810,7 @@ func (rt *engine) next() {
 	switch {
 	case moving && rt.host.occluded():
 		rt.held = true
+		rt.host.framesHeld()
 	case rt.animating:
 		rt.pace(0)
 		rt.host.requestFrame()
@@ -927,6 +932,7 @@ func (rt *engine) holdFrame() bool {
 		return false
 	}
 	rt.held = true
+	rt.host.framesHeld()
 	rt.redraw, rt.repaintDue = false, time.Time{}
 	// The time the display asked for this frame at, as one waiting for
 	// the GPU renderer (windowHost.waitDisplay), is not that of the frame

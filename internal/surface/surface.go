@@ -98,6 +98,12 @@ type Conn struct {
 	// changed, and reports whether it did build one. The window calls
 	// it before it shows, to show at that size.
 	Fit func() bool
+	// AfterPresent has fn run once on the main thread with what came of
+	// the next frame the surface asks for, built anew: after its present
+	// ran, inside Core Animation's transaction for a frame presenting with
+	// it, or with why it presented nothing, and the error of a frame that
+	// failed (platform.PresentFailed). The content sets it.
+	AfterPresent func(fn func(platform.Presentation, error))
 
 	// Event receives the surface's events, and Focus and Blur of the
 	// window. It reports whether the content takes dragged files, as
