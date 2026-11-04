@@ -12,6 +12,8 @@ import (
 
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
+
+	"github.com/egoist/mygo/internal/wait"
 )
 
 // onFakeMain runs fn on a goroutine locked to a thread of its own, which
@@ -222,9 +224,29 @@ func TestAFullTrampolineTablePanicsWithTheCall(t *testing.T) {
 // process of its own here.
 func TestABrokenProtocolPanicsWithTheState(t *testing.T) {
 	if kind := os.Getenv("MAINTHREAD_TEST_VIOLATION"); kind != "" {
+		parked := make(chan struct{}, 1)
+		if kind == "full" {
+			if err := loadNative(); err != nil {
+				t.Fatal(err)
+			}
+			semaphoreWait := link.semaphoreWait
+			link.semaphoreWait = purego.NewCallback(func(sem uintptr) uintptr {
+				if sem == link.workerSem {
+					select {
+					case parked <- struct{}{}:
+					default:
+					}
+				}
+				r, _, _ := purego.SyscallN(semaphoreWait, sem)
+				return r
+			})
+		}
 		onFakeMain(t, func() {
 			switch kind {
 			case "full":
+				// The worker reads its slot as it starts and each time it
+				// wakes: only one that waits leaves the record alone.
+				wait.For(t, "the worker to wait", parked)
 				link.toWorker = 0x1230
 			case "wrong":
 				RunOnWorker(func() {
