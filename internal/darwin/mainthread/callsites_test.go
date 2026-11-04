@@ -2186,6 +2186,10 @@ type frameVar struct {
 	ctx *ectx
 }
 
+// elemsOf keys the evaluation of the elements of a package-level variable
+// or a field.
+type elemsOf struct{ v *types.Var }
+
 // frameExpr is an expression in the frame that ctx binds.
 type frameExpr struct {
 	e   ast.Expr
@@ -2556,6 +2560,15 @@ func (a *analysis) evalIndex(p *srcPackage, e *ast.IndexExpr, ctx *ectx) val {
 			shared := v.IsField() || (v.Pkg() != nil && v.Parent() == v.Pkg().Scope())
 			ectxOf := ctx
 			if shared {
+				// The fresh ectx gives a local that reads and assigns an
+				// element a frame of its own at each turn, so the cycle
+				// is cut here, on the elements of the field.
+				key := elemsOf{v}
+				if a.inFlight[key] {
+					return unknown(v.Name() + " depends on itself")
+				}
+				a.inFlight[key] = true
+				defer delete(a.inFlight, key)
 				ectxOf = &ectx{}
 			}
 			var out []val

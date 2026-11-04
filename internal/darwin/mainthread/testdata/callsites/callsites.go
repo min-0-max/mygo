@@ -238,3 +238,16 @@ func register() {
 		}},
 	})
 }
+
+// cache holds a view by key, which it makes the first time: the local that
+// reads an element of views is what the element is assigned.
+type cache struct{ views map[int]uintptr }
+
+func (c *cache) show(key int) {
+	v := c.views[key]
+	if v == 0 {
+		v = Send(class("NSView"), sel("new"))
+		c.views[key] = v
+	}
+	send(v, "width") // want: sends width to a receiver outside Forward
+}
