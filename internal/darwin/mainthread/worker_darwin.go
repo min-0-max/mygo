@@ -179,7 +179,7 @@ func resolve() error {
 	link.poolPop = sym(libObjC, "objc_autoreleasePoolPop")
 	link.retain = sym(libObjC, "objc_retain")
 	link.autorelease = sym(libObjC, "objc_autorelease")
-	link.semaphoreSignal = sym(libSystem, "semaphore_signal")
+	link.semaphoreSignal = checkedSignal(sym(libSystem, "semaphore_signal"))
 	link.semaphoreWait = sym(libSystem, "semaphore_wait")
 	link.violation = purego.NewCallback(violation)
 	if err != nil {
@@ -338,6 +338,7 @@ var mainFuncs struct {
 // callback of Go on the main thread: that step waits for the worker, which
 // may be waiting for the caller.
 func RunOnMain(fn func()) {
+	fn = checkedRunOnMain(fn)
 	mainFuncs.Lock()
 	if mainFuncs.callback == 0 {
 		mainFuncs.m = map[uintptr]func(){}
@@ -515,6 +516,7 @@ func entry(target, flags uintptr) uintptr {
 	targets[i] = target
 	targetFlags[i] = flags | recordStep
 	tableIndex[key] = i
+	noteEntry(target, false)
 	return trampolineAddress(i)
 }
 
@@ -556,6 +558,7 @@ func Callback(fn uintptr) uintptr { return entry(fn, 0) }
 // method_setImplementation. returnsObject says that the method returns an
 // object, which the step hands to the autorelease pool of the main thread.
 func Method(imp uintptr, returnsObject bool) uintptr {
+	noteEntry(imp, true)
 	if returnsObject {
 		return entry(imp, recordReturnsObject)
 	}

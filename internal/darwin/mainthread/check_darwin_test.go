@@ -18,10 +18,22 @@ import (
 )
 
 // checkEnv makes the test binary the helper process of
-// TestCheckerFindsAForwardedCallOffTheMainThread.
-const checkEnv = "MYGO_MAINTHREAD_TEST_CHECK"
+// TestCheckerFindsAForwardedCallOffTheMainThread, and checkStepEnv and
+// checkMethodEnv those of TestCheckerFindsACallbackInARunOnMainOffTheWorker.
+const (
+	checkEnv       = "MYGO_MAINTHREAD_TEST_CHECK"
+	checkStepEnv   = "MYGO_MAINTHREAD_TEST_CHECK_STEP"
+	checkMethodEnv = "MYGO_MAINTHREAD_TEST_CHECK_METHOD"
+)
 
-func init() { helpers[checkEnv] = checkHelper }
+// checkPackage is the package of these tests in the name of a function.
+const checkPackage = "github.com/egoist/mygo/internal/darwin/mainthread"
+
+func init() {
+	helpers[checkEnv] = checkHelper
+	helpers[checkStepEnv] = checkStepHelper
+	helpers[checkMethodEnv] = checkMethodHelper
+}
 
 // checkLoad opens the frameworks of the receivers of these tests and
 // returns Core Foundation.
@@ -221,6 +233,67 @@ func TestCheckerFindsAForwardedCallOffTheMainThread(t *testing.T) {
 	if !strings.Contains(string(out), "off the main thread") {
 		t.Fatalf("%v:\n%s", err, out)
 	}
+}
+
+// A callback of Go that reaches the main thread inside a RunOnMain of a
+// goroutine waits for the worker, which here waits for that goroutine: the
+// check ends it with the place of the callback, or the selector of a
+// method, not with a hang.
+func TestCheckerFindsACallbackInARunOnMainOffTheWorker(t *testing.T) {
+	for env, want := range map[string]string{
+		checkStepEnv:   "the callback made by " + checkPackage + ".checkStepHelper",
+		checkMethodEnv: "the method mainthreadCheckStep made by " + checkPackage + ".checkMethodHelper",
+	} {
+		ctx, cancel := context.WithTimeout(t.Context(), 2*wait.Guard)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^$")
+		cmd.Env = append(os.Environ(), env+"=1")
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Fatalf("%s: the helper ended well:\n%s", env, out)
+		}
+		if !strings.Contains(string(out), "RunOnMain off the worker") || !strings.Contains(string(out), want) {
+			t.Fatalf("%s: %v, want %q:\n%s", env, err, want, out)
+		}
+	}
+}
+
+// checkStepHelper calls a callback of Go in a RunOnMain.
+func checkStepHelper() int {
+	callback := Callback(purego.NewCallback(func() {}))
+	return inRunOnMain(func() { purego.SyscallN(callback) })
+}
+
+// checkMethodHelper sends a message to a method of Go in a RunOnMain.
+func checkMethodHelper() int {
+	sel := objc.RegisterName("mainthreadCheckStep")
+	c, err := RegisterClass("MainthreadCheckStep", objc.GetClass("NSObject"), nil, nil, []objc.MethodDef{{
+		Cmd: sel,
+		Fn:  func(self objc.ID, cmd objc.SEL) {},
+	}})
+	if err != nil {
+		return 2
+	}
+	return inRunOnMain(func() { objc.ID(c).Send(objc.RegisterName("new")).Send(sel) })
+}
+
+// inRunOnMain runs fn in a RunOnMain of the worker, which is a nested step,
+// and then in a RunOnMain of a goroutine while the worker waits for it.
+func inRunOnMain(fn func()) int {
+	err := Run(func() error {
+		RunOnMain(fn)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			RunOnMain(fn)
+		}()
+		<-done
+		return nil
+	}, func() {}, func() {})
+	if err != nil {
+		return 2
+	}
+	return 0
 }
 
 // checkHelper runs the record of a forwarded call on a goroutine. A panic
