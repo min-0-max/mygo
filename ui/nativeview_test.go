@@ -324,3 +324,50 @@ func TestNativeViewAccessNode(t *testing.T) {
 	}
 	t.Errorf("no node of the view in %+v", tree.Nodes)
 }
+
+// glassSurface is a surface that draws the system's glass.
+type glassSurface struct {
+	*occludedSurface
+	log *[]string
+}
+
+func (s glassSurface) NativeGlassSupported() bool { return true }
+func (s glassSurface) PlaceGlass([]platform.GlassPlacement) {
+	*s.log = append(*s.log, "glass")
+}
+
+// holeGlass is a material the system's glass draws.
+type holeGlass struct{}
+
+func (holeGlass) PaintMaterial(p *Painter, box Rect, radii [4]float32) { p.Hole(box, radii) }
+func (holeGlass) NativeGlass() (NativeGlassSpec, bool)                 { return NativeGlassSpec{}, true }
+
+// TestGlassMovesWithItsFrame checks that the system's glass moves before
+// the frame that leaves its hole presents, in the transaction of the
+// frame, and that a frame leaving it where it was presents alone.
+func TestGlassMovesWithItsFrame(t *testing.T) {
+	n := newNativeHost(t)
+	n.conn.Surface = glassSurface{n.s, &n.log}
+	left := float32(0)
+	n.rt = newRuntime(func(c *context) {
+		coreBox(c).Absolute().Left(left).Size(50, 50).Material(holeGlass{})
+	}, n.windowHost)
+	n.frame()
+	if want := []string{"glass", "present"}; !slices.Equal(n.log, want) {
+		t.Fatalf("the frame ran %v, want %v", n.log, want)
+	}
+	if !n.lastTransact(t) {
+		t.Fatal("the frame placing the glass presented on its own")
+	}
+	n.rt.changed()
+	n.frame()
+	if n.lastTransact(t) {
+		t.Fatal("a frame leaving the glass where it was presented with the transaction")
+	}
+	left = 20
+	n.rt.changed()
+	n.frame()
+	if !n.lastTransact(t) {
+		t.Fatal("the frame moving the glass presented on its own")
+	}
+}

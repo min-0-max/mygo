@@ -287,7 +287,7 @@ func (p *Painter) element(e *node) {
 		return
 	}
 	saved := p.opacity
-	if e.flags&flagDisabled != 0 {
+	if e.flags&flagDisabled != 0 && !e.undimmed {
 		p.opacity *= 0.5
 	}
 	if e.opacitySet {
@@ -1293,6 +1293,12 @@ func scrollThumb(pos, track, view, content, offset float32) Rect {
 // Fill paints a rounded rectangle.
 func (p *Painter) Fill(r Rect, c Color, radius float32) {
 	p.fill(r, [4]float32{radius, radius, radius, radius}, c, 0, Color{})
+}
+
+// FillRadii paints a rounded rectangle whose corners have radii of their
+// own, clockwise from the top left, as Element.Radius does.
+func (p *Painter) FillRadii(r Rect, radii [4]float32, c Color) {
+	p.fill(r, radii, c, 0, Color{})
 }
 
 // FillGradient paints a rounded rectangle with a gradient.

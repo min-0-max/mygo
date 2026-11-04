@@ -90,6 +90,12 @@ type host interface {
 	// and reports whether it took them: a frame not presenting tells
 	// nothing.
 	placeWebViews(views []placedWebView) bool
+	// nativeGlass reports whether the surface draws the system's glass.
+	nativeGlass() bool
+	// placeGlass shows the system's glass where the frame about to present
+	// shows it, and hides the rest, and reports whether it took them, as
+	// placeWebViews.
+	placeGlass(places []platform.GlassPlacement) bool
 	// tabIntoWebView gives the page of v the keyboard as Tab does, from
 	// its end when back (platform.WebView.TabInto).
 	tabIntoWebView(v NativeWebView, back bool)
@@ -211,6 +217,10 @@ type engine struct {
 	webPlaces []webPlace
 	webOut    []placedWebView
 	webShown  bool
+	// glassPlaces are where the frame shows the system's glass, and
+	// glassShown tells that the last frame showed some.
+	glassPlaces []platform.GlassPlacement
+	glassShown  bool
 	// maxButton is where the frame shows the window's maximize button
 	// (MaximizeButton), and maxSent what the host got of it, in the
 	// window's DIPs.
@@ -742,6 +752,7 @@ func (rt *engine) runFrame() {
 	rt.insp.lap(2)
 	// Before the frame presents, which shows them with it.
 	rt.placeWebViews()
+	rt.placeNativeGlass()
 	rt.host.present(&rt.scene)
 	// The window hit-tests its maximize button in its own DIPs.
 	if r := rt.windowRect(rt.maxButton); r != rt.maxSent {
@@ -973,6 +984,7 @@ func (rt *engine) repaintFrame(w, h, scale float32) {
 	rt.stats.lap(phasePaint)
 	rt.insp.repainted(time.Since(start))
 	rt.placeWebViews()
+	rt.placeNativeGlass()
 	rt.host.present(&rt.scene)
 	rt.stats.lap(phasePresent)
 	rt.text.EndFrame()
@@ -1210,6 +1222,8 @@ func (rt *engine) commit(root *node, w, h float32) {
 	rt.posed = rt.posed[:0]
 	clear(rt.webPlaces)
 	rt.webPlaces = rt.webPlaces[:0]
+	clear(rt.glassPlaces)
+	rt.glassPlaces = rt.glassPlaces[:0]
 	rt.maxButton = Rect{}
 	rt.focusOrder, rt.focusScopes = rt.focusOrder[:0], rt.focusScopes[:0]
 	rt.modal, rt.modalLayer, rt.commitScope, rt.commitPage = 0, 0, focusScope{}, 0
@@ -1332,6 +1346,11 @@ func (rt *engine) commitElement(e *node, clip Rect, hidden bool) {
 	}
 	if e.webView != nil {
 		rt.noteWebView(e, clip, invisible)
+	}
+	if m, ok := e.material.(NativeGlassMaterial); ok && rt.host.nativeGlass() && !rt.preferences().ReduceTransparency {
+		if spec, ok := m.NativeGlass(); ok {
+			rt.noteNativeGlass(e, clip, invisible, spec)
+		}
 	}
 	if e.maximizeButton && !noInput && rt.maxButton == (Rect{}) && v.W > 0 && v.H > 0 {
 		rt.maxButton = v
