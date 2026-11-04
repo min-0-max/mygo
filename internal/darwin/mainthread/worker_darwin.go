@@ -5,8 +5,10 @@ package mainthread
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -38,6 +40,9 @@ type linkState struct {
 	semaphoreSignal, semaphoreWait uintptr
 	poolPush, poolPop              uintptr
 	retain, autorelease            uintptr
+	// violation is the C callback that exchange calls when the other side
+	// breaks the protocol, which panics with the state.
+	violation uintptr
 }
 
 var link linkState
@@ -82,7 +87,13 @@ func RunOnMainAddress() uintptr { return runOnMainAddress() }
 
 // trampolines is how many trampolines trampolineTable holds; targets and
 // targetFlags hold the C function that each one calls and the record flags
-// of its steps.
+// of its steps. A trampoline is made once for each target and flags
+// (entry), and each target is a C callback or a method implementation
+// that purego made, of which purego makes at most 2000 in a process and
+// never frees them (the blocks of one Go function type share their invoke
+// function and all blocks one dispose function), or an assembly function
+// of this package. 2048 holds every callback that purego can make and the
+// assembly functions, so the table runs out only after purego did.
 const trampolines = 2048
 
 var (
@@ -170,10 +181,30 @@ func resolve() error {
 	link.autorelease = sym(libObjC, "objc_autorelease")
 	link.semaphoreSignal = sym(libSystem, "semaphore_signal")
 	link.semaphoreWait = sym(libSystem, "semaphore_wait")
+	link.violation = purego.NewCallback(violation)
 	if err != nil {
 		return err
 	}
 	return loadDecisions(cf)
+}
+
+// violation panics with the state of a broken protocol: kind 1 when the
+// other side handed back done a record (got) other than the one that this
+// side handed it (want), kind 2 when the slot of the other side still held
+// a record (got) when this side handed it one (want).
+func violation(kind, onMain, want, got uintptr) {
+	side, other := "worker", "main thread"
+	if onMain != 0 {
+		side, other = other, side
+	}
+	what := fmt.Sprintf("the %s handed record %#x to the %s and got record %#x back", side, want, other, got)
+	if want == 0 {
+		what = fmt.Sprintf("the %s, which handed the %s no record, got record %#x back", side, other, got)
+	}
+	if kind == 2 {
+		what = fmt.Sprintf("the %s handed %#x to the %s, whose slot still held %#x", side, want, other, got)
+	}
+	panic(fmt.Sprintf("mainthread: protocol violation: %s; link %+v", what, link))
 }
 
 func newSemaphore() (uint32, error) {
@@ -404,7 +435,7 @@ func entry(target, flags uintptr) uintptr {
 		return trampolineAddress(i)
 	}
 	if tableUsed == trampolines {
-		panic("mainthread: no trampoline left")
+		panic(fmt.Sprintf("mainthread: all %d trampolines are taken; %s asked for one for %#x", trampolines, registeringCall(), target))
 	}
 	i := uintptr(tableUsed)
 	tableUsed++
@@ -412,6 +443,28 @@ func entry(target, flags uintptr) uintptr {
 	targetFlags[i] = flags | recordStep
 	tableIndex[key] = i
 	return trampolineAddress(i)
+}
+
+// registeringCall names the call that asked for a trampoline: the first
+// call on the stack from a file that is not a source file of this package
+// (a test of the package among them), with the function of this package
+// that it called.
+func registeringCall() string {
+	pcs := make([]uintptr, 32)
+	frames := runtime.CallersFrames(pcs[:runtime.Callers(2, pcs)])
+	_, self, _, _ := runtime.Caller(0)
+	dir := filepath.Dir(self)
+	called := "an unknown function"
+	for {
+		f, more := frames.Next()
+		if filepath.Dir(f.File) != dir || strings.HasSuffix(f.File, "_test.go") {
+			return fmt.Sprintf("%s at %s:%d, calling %s,", f.Function, f.File, f.Line, called)
+		}
+		called = f.Function
+		if !more {
+			return "an unknown call, calling " + called + ","
+		}
+	}
 }
 
 // isTrampoline reports whether fn is a trampoline of the table.

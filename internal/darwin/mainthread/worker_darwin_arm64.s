@@ -55,7 +55,9 @@ worker:
 
 start:
 	CBZ	R19, loop
-	STLR	R19, (R23)
+	MOVD	R19, R1
+	SWPALD	R1, (R23), R0
+	CBNZ	R0, full
 	MOVW	R25, R0
 	MOVD	linkState_semaphoreSignal(R21), R1
 	CALL	R1
@@ -77,6 +79,13 @@ got:
 	AND	$~1, R26
 	CMP	R19, R26
 	BEQ	done
+	// The other side handed back a record that this side did not hand it.
+	MOVD	$1, R0
+	MOVD	R20, R1
+	MOVD	R19, R2
+	MOVD	R26, R3
+	MOVD	linkState_violation(R21), R4
+	CALL	R4
 	UNDEF
 
 runit:
@@ -111,8 +120,9 @@ onmain:
 	CALL	·callRecord(SB)
 
 post:
-	ORR	$1, R26, R0
-	STLR	R0, (R23)
+	ORR	$1, R26, R1
+	SWPALD	R1, (R23), R0
+	CBNZ	R0, full
 	MOVW	R25, R0
 	MOVD	linkState_semaphoreSignal(R21), R1
 	CALL	R1
@@ -129,6 +139,16 @@ done:
 	LDP	0(RSP), (R29, R30)
 	ADD	$96, RSP
 	RET
+
+full:
+	// The slot of the other side held R0 when this side handed it R1.
+	MOVD	R0, R3
+	MOVD	R1, R2
+	MOVD	$2, R0
+	MOVD	R20, R1
+	MOVD	linkState_violation(R21), R4
+	CALL	R4
+	UNDEF
 
 // drainQueue(info uintptr) is a C function, the perform function of the
 // run loop source of the main thread: it runs each record that threads

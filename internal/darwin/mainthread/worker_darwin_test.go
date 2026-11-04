@@ -3,7 +3,10 @@
 package mainthread
 
 import (
+	"os"
+	"os/exec"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/ebitengine/purego"
@@ -186,4 +189,68 @@ func TestForwardRetainedTakesTheCallersReferenceOnTheMainThread(t *testing.T) {
 			t.Error("the object outlived the caller's release")
 		}
 	})
+}
+
+// A full trampoline table is a panic that names its size and the call
+// that asked for one more, never a trampoline reused or a target called
+// directly.
+func TestAFullTrampolineTablePanicsWithTheCall(t *testing.T) {
+	tableMu.Lock()
+	used := tableUsed
+	tableUsed = trampolines
+	tableMu.Unlock()
+	defer func() {
+		tableMu.Lock()
+		tableUsed = used
+		tableMu.Unlock()
+	}()
+	var msg string
+	func() {
+		defer func() { msg, _ = recover().(string) }()
+		Callback(0x10)
+	}()
+	for _, want := range []string{"all 2048 trampolines are taken", "TestAFullTrampolineTablePanicsWithTheCall", "worker_darwin_test.go"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("the panic %q does not say %q", msg, want)
+		}
+	}
+}
+
+// A side that finds the slot of the other side full, or gets back a record
+// that it did not hand over, panics with the state of the link, in a
+// process of its own here.
+func TestABrokenProtocolPanicsWithTheState(t *testing.T) {
+	if kind := os.Getenv("MAINTHREAD_TEST_VIOLATION"); kind != "" {
+		onFakeMain(t, func() {
+			switch kind {
+			case "full":
+				link.toWorker = 0x1230
+			case "wrong":
+				RunOnWorker(func() {
+					// The worker, once the step ended, finds a call
+					// answered that it did not make; the main thread
+					// touches the link no more.
+					link.toWorker = 0x4561
+				})
+				select {}
+			}
+			RunOnWorker(func() {})
+		})
+		return
+	}
+	for kind, want := range map[string]string{
+		"full":  "mainthread: protocol violation: the main thread handed",
+		"wrong": "mainthread: protocol violation: the worker, which handed the main thread no record, got record 0x4560 back",
+	} {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestABrokenProtocolPanicsWithTheState$")
+		cmd.Env = append(os.Environ(), "MAINTHREAD_TEST_VIOLATION="+kind)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Errorf("%s: the process went on after the protocol broke:\n%s", kind, out)
+			continue
+		}
+		if !strings.Contains(string(out), want) || !strings.Contains(string(out), "link {") {
+			t.Errorf("%s: the process ended without the state:\n%s", kind, out)
+		}
+	}
 }

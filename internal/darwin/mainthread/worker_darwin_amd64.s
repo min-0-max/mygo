@@ -66,8 +66,12 @@ worker:
 start:
 	TESTQ	BX, BX
 	JZ	loop
-	MOVQ	PEERSLOT(SP), AX
-	MOVQ	BX, (AX)
+	MOVQ	PEERSLOT(SP), CX
+	MOVQ	BX, DX
+	MOVQ	DX, AX
+	XCHGQ	AX, (CX)
+	TESTQ	AX, AX
+	JNZ	full
 	MOVL	PEERSEM(SP), DI
 	MOVQ	linkState_semaphoreSignal(R14), AX
 	CALL	AX
@@ -93,6 +97,13 @@ got:
 	ANDQ	$~1, AX
 	CMPQ	AX, BX
 	JEQ	done
+	// The other side handed back a record that this side did not hand it.
+	MOVQ	AX, CX
+	MOVQ	BX, DX
+	MOVQ	$1, DI
+	MOVQ	R12, SI
+	MOVQ	linkState_violation(R14), AX
+	CALL	AX
 	BYTE	$0x0f; BYTE $0x0b // UD2
 
 runit:
@@ -128,10 +139,13 @@ onmain:
 	CALL	·callRecord(SB)
 
 post:
-	MOVQ	MSG(SP), AX
-	ORQ	$1, AX
+	MOVQ	MSG(SP), DX
+	ORQ	$1, DX
 	MOVQ	PEERSLOT(SP), CX
-	MOVQ	AX, (CX)
+	MOVQ	DX, AX
+	XCHGQ	AX, (CX)
+	TESTQ	AX, AX
+	JNZ	full
 	MOVL	PEERSEM(SP), DI
 	MOVQ	linkState_semaphoreSignal(R14), AX
 	CALL	AX
@@ -148,6 +162,15 @@ done:
 	POPQ	BX
 	POPQ	BP
 	RET
+
+full:
+	// The slot of the other side held AX when this side handed it DX.
+	MOVQ	AX, CX
+	MOVQ	$2, DI
+	MOVQ	R12, SI
+	MOVQ	linkState_violation(R14), AX
+	CALL	AX
+	BYTE	$0x0f; BYTE $0x0b // UD2
 
 // drainQueue(info uintptr) is a C function, the perform function of the
 // run loop source of the main thread: it runs each record that threads
