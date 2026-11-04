@@ -376,6 +376,17 @@ var CFValueTypes = []string{
 // cfValueFunctions are the functions of CFValueTypes, which run on the
 // calling thread for an object of one of those types: a run time check
 // reads the type of the object that each of them gets.
+//
+// CFHash and CFEqual also take the Core Text objects of CFTypes. They read
+// an object that the caller does not change. Apple's Core Text Programming
+// Guide, Core Text Overview: "Core Text functions may be invoked from
+// multiple threads simultaneously provided that the client is not mutating
+// any parameters such as attributed strings that are shared between
+// threads." and, under Font Objects: "Core Text font objects are immutable,
+// so they can be used simultaneously by multiple operations, work queues,
+// or threads." Threading Programming Guide, Thread Safety Summary, Core
+// Foundation: "It is thread-safe in the common cases, such as when you
+// query, retain, release, and pass around immutable objects."
 var cfValueFunctions = FunctionGroup{
 	Name:     "Core Foundation functions of the value objects",
 	Names:    []string{"CFHash", "CFEqual"},

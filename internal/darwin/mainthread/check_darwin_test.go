@@ -153,8 +153,27 @@ func TestCheckerJudgesWhatBindBinds(t *testing.T) {
 	if msg := panics(func() { cfHash(font) }); msg != "" {
 		t.Errorf("CFHash of a font: %s", msg)
 	}
-	if msg := panics(func() { cfHash(checkMainLoop()) }); !strings.Contains(msg, "CFHash") {
-		t.Errorf("CFHash of a run loop: panic %q", msg)
+	var cfEqual func(a, b uintptr) bool
+	Bind(&cfEqual, cf, "CFEqual")
+	if msg := panics(func() { cfEqual(font, font) }); msg != "" {
+		t.Errorf("CFEqual of fonts: %s", msg)
+	}
+	// Neither takes an object that is no value object and no Core Text.
+	var createSource func(alloc uintptr, order int, context *[10]uintptr) uintptr
+	purego.RegisterLibFunc(&createSource, cf, "CFRunLoopSourceCreate")
+	for name, object := range map[string]uintptr{
+		"run loop":        checkMainLoop(),
+		"run loop source": createSource(0, 0, new([10]uintptr)),
+	} {
+		if msg := panics(func() { cfHash(object) }); !strings.Contains(msg, "CFHash") {
+			t.Errorf("CFHash of a %s: panic %q", name, msg)
+		}
+		if msg := panics(func() { cfEqual(object, font) }); !strings.Contains(msg, "CFEqual") {
+			t.Errorf("CFEqual of a %s and a font: panic %q", name, msg)
+		}
+		if msg := panics(func() { cfEqual(font, object) }); !strings.Contains(msg, "CFEqual") {
+			t.Errorf("CFEqual of a font and a %s: panic %q", name, msg)
+		}
 	}
 	if msg := panics(func() { count(font) }); !strings.Contains(msg, "CFArrayGetCount") {
 		t.Errorf("CFArrayGetCount of a font: panic %q", msg)
