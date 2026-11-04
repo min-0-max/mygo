@@ -267,3 +267,54 @@ TEXT ·trampolineAddress(SB), NOSPLIT, $0-16
 	ADD	R1<<3, R0
 	MOVD	R0, ret+8(FP)
 	RET
+
+// invokeBlock(block) is a C function that calls a block that takes no
+// arguments: the invoke function of the block, with the block.
+TEXT ·invokeBlock(SB), NOSPLIT|NOFRAME, $0-0
+	MOVD	const_blockInvoke(R0), R17
+	JMP	(R17)
+
+// runOnMain(block) is a C function. Called on the worker during a step, it
+// hands the main thread a record that calls invokeBlock with the block and
+// returns once the main thread ran it; anywhere else it calls invokeBlock
+// at once.
+TEXT ·runOnMain(SB), NOSPLIT|NOFRAME, $0-0
+	MRS_TP_R17
+	AND	$~7, R17
+	MOVD	$·link(SB), R9
+	MOVD	linkState_workerThread(R9), R10
+	CMP	R10, R17
+	BNE	now
+	MOVD	linkState_depth(R9), R10
+	CBZ	R10, now
+	SUB	$TFRAME, RSP
+	STP	(R29, R30), const_trampolineRecord(RSP)
+	STP	(R19, R20), (const_trampolineRecord+16)(RSP)
+	ADD	$const_trampolineRecord, RSP, R29
+	MOVD	RSP, R19
+	MOVD	R0, (record_x+0)(R19)
+	MOVD	$·invokeBlock(SB), R10
+	MOVD	R10, record_fn(R19)
+	MOVD	ZR, record_flags(R19)
+	MOVD	ZR, record_next(R19)
+	MOVD	ZR, record_sem(R19)
+	MOVD	R19, R0
+	CALL	·exchange(SB)
+	LDP	(const_trampolineRecord+16)(RSP), (R19, R20)
+	LDP	const_trampolineRecord(RSP), (R29, R30)
+	ADD	$TFRAME, RSP
+	RET
+now:
+	JMP	·invokeBlock(SB)
+
+// func invokeBlockAddress() uintptr
+TEXT ·invokeBlockAddress(SB), NOSPLIT, $0-8
+	MOVD	$·invokeBlock(SB), R0
+	MOVD	R0, ret+0(FP)
+	RET
+
+// func runOnMainAddress() uintptr
+TEXT ·runOnMainAddress(SB), NOSPLIT, $0-8
+	MOVD	$·runOnMain(SB), R0
+	MOVD	R0, ret+0(FP)
+	RET

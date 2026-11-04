@@ -311,3 +311,52 @@ TEXT ·trampolineAddress(SB), NOSPLIT, $0-16
 	ADDQ	CX, AX
 	MOVQ	AX, ret+8(FP)
 	RET
+
+// invokeBlock(block) is a C function that calls a block that takes no
+// arguments: the invoke function of the block, with the block.
+TEXT ·invokeBlock(SB), NOSPLIT|NOFRAME, $0-0
+	MOVQ	const_blockInvoke(DI), R11
+	JMP	R11
+
+// runOnMain(block) is a C function. Called on the worker during a step, it
+// hands the main thread a record that calls invokeBlock with the block and
+// returns once the main thread ran it; anywhere else it calls invokeBlock
+// at once.
+TEXT ·runOnMain(SB), NOSPLIT|NOFRAME, $0-0
+	GS0_AX
+	CMPQ	AX, ·link+linkState_workerThread(SB)
+	JNE	now
+	CMPQ	·link+linkState_depth(SB), $0
+	JEQ	now
+	PUSHQ	BP
+	MOVQ	SP, BP
+	SUBQ	$TFRAME, SP
+	MOVQ	BX, SAVED(SP)
+	MOVQ	SP, BX
+	MOVQ	DI, (record_x+0)(BX)
+	MOVQ	$0, record_al(BX)
+	MOVQ	$·invokeBlock(SB), AX
+	MOVQ	AX, record_fn(BX)
+	MOVQ	$0, record_flags(BX)
+	MOVQ	$0, record_next(BX)
+	MOVQ	$0, record_sem(BX)
+	MOVQ	BX, DI
+	CALL	·exchange(SB)
+	MOVQ	SAVED(SP), BX
+	ADDQ	$TFRAME, SP
+	POPQ	BP
+	RET
+now:
+	JMP	·invokeBlock(SB)
+
+// func invokeBlockAddress() uintptr
+TEXT ·invokeBlockAddress(SB), NOSPLIT, $0-8
+	MOVQ	$·invokeBlock(SB), AX
+	MOVQ	AX, ret+0(FP)
+	RET
+
+// func runOnMainAddress() uintptr
+TEXT ·runOnMainAddress(SB), NOSPLIT, $0-8
+	MOVQ	$·runOnMain(SB), AX
+	MOVQ	AX, ret+0(FP)
+	RET

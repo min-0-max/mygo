@@ -60,6 +60,24 @@ func drainQueueAddress() uintptr
 func trampolineAddress(i uintptr) uintptr
 func threadPointer() uintptr
 
+// The C functions of the host, in the assembly of each architecture.
+func invokeBlock()
+func runOnMain()
+func invokeBlockAddress() uintptr
+func runOnMainAddress() uintptr
+
+// RunOnWorkerAddress returns the address of a C function that takes a
+// block that takes no arguments and runs it on the worker as a step when
+// the main thread calls it while the worker runs, and at once anywhere
+// else. The main thread waits for the step and meanwhile runs the calls
+// that the worker forwards to it.
+func RunOnWorkerAddress() uintptr { return entry(invokeBlockAddress(), 0) }
+
+// RunOnMainAddress returns the address of a C function that takes a block
+// that takes no arguments and runs it on the main thread when the worker
+// calls it during a step, and at once anywhere else.
+func RunOnMainAddress() uintptr { return runOnMainAddress() }
+
 //go:generate go run gen_trampolines.go
 
 // trampolines is how many trampolines trampolineTable holds; targets and
