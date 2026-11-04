@@ -202,11 +202,19 @@ const (
 	wakeSubtype                   = 0x6d67 // 'mg'
 )
 
+// postEvent posts an application-defined event of subtype, from any
+// thread, as one call on the main thread (mainthread.RunOnMain): the event
+// is autoreleased in a pool of that call. Made and posted by two calls
+// forwarded from another thread, it would be autoreleased in the pool of
+// the run loop's pass that ran the first, which the main thread drains
+// before it runs the second.
 func (b *Backend) postEvent(subtype int16) {
-	withPool(func() {
-		ev := msgOtherEvent(class("NSEvent"), sel("otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:"),
-			nsEventTypeApplicationDefined, NSPoint{}, 0, 0, 0, 0, subtype, 0, 0)
-		send(b.app, "postEvent:atStart:", uintptr(ev), 1)
+	mainthread.RunOnMain(func() {
+		withPool(func() {
+			ev := msgOtherEvent(class("NSEvent"), sel("otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:"),
+				nsEventTypeApplicationDefined, NSPoint{}, 0, 0, 0, 0, subtype, 0, 0)
+			send(b.app, "postEvent:atStart:", uintptr(ev), 1)
+		})
 	})
 }
 
