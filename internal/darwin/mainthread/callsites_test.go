@@ -162,18 +162,25 @@ const assemblyAddress = "Address"
 // rules is what the reader holds the call sites to: the data of calls.go,
 // and the package of the worker's functions.
 type rules struct {
-	workerPackage  string
-	forward        string
-	byReceiver     string
-	messageSends   map[string]bool
-	receiverSels   map[string]bool
-	receiverFuncs  map[string]bool
-	collections    []string
-	selectors      map[string]bool
-	anySelectors   map[string]bool
-	classMessages  map[string]bool
-	instances      map[string]bool
-	classGroups    map[string]*Receivers
+	workerPackage string
+	forward       string
+	byReceiver    string
+	sendFuncs     []string
+	messageSends  map[string]bool
+	receiverSels  map[string]bool
+	receiverFuncs map[string]bool
+	collections   []string
+	selectors     map[string]bool
+	anySelectors  map[string]bool
+	classMessages map[string]bool
+	instances     map[string]bool
+	classGroups   map[string]*Receivers
+	groups        map[string]*Receivers
+	// anyResults holds, by selector, the group of the receiver that a
+	// message of Results without Of returns, and results, by the group of
+	// the receiver and the selector, that of a message with Of.
+	anyResults     map[string]string
+	results        map[[2]string]string
 	functions      []FunctionGroup
 	excludePrefix  []string
 	purego, objcPk string
@@ -184,6 +191,7 @@ func defaultRules() rules {
 		workerPackage: reflect.TypeFor[Receivers]().PkgPath(),
 		forward:       ForwardFunc,
 		byReceiver:    ByReceiverFunc,
+		sendFuncs:     SendFuncs,
 		messageSends:  set(MessageSendFunctions),
 		receiverSels:  set(ByReceiverSelectors),
 		receiverFuncs: set(ByReceiverFunctions),
@@ -193,14 +201,25 @@ func defaultRules() rules {
 		classMessages: map[string]bool{},
 		instances:     map[string]bool{},
 		classGroups:   map[string]*Receivers{},
+		groups:        map[string]*Receivers{},
+		anyResults:    map[string]string{},
+		results:       map[[2]string]string{},
 		functions:     CallingThreadFunctions,
 		purego:        "github.com/ebitengine/purego",
 		objcPk:        "github.com/ebitengine/purego/objc",
 	}
 	for i := range CallingThreadReceivers {
 		g := &CallingThreadReceivers[i]
+		r.groups[g.Name] = g
 		for _, c := range g.Classes {
 			r.classGroups[c] = g
+		}
+		for _, res := range g.Results {
+			if res.Of == "" {
+				r.anyResults[res.Selector] = g.Name
+			} else {
+				r.results[[2]string{res.Of, res.Selector}] = g.Name
+			}
 		}
 		for _, s := range g.Selectors {
 			if g.AnyObject {
@@ -248,8 +267,6 @@ func (r *rules) callingThreadFunction(name, pkg string) bool {
 	return false
 }
 
-// knownReceiver reports whether the reader knows the class of each
-// receiver that recv may be.
 // returnsMembers reports whether the objects that the messages to the
 // receiver r return belong to its group.
 func (r *rules) returnsMembers(recv string) bool {
@@ -258,6 +275,36 @@ func (r *rules) returnsMembers(recv string) bool {
 	return g != nil && g.ReturnsMembers
 }
 
+// groupOf returns the group of the receiver recv, an instance of a class
+// of a group or a member of a group ("member:" and the name of the group),
+// or nil.
+func (r *rules) groupOf(recv string) *Receivers {
+	kind, name, _ := strings.Cut(recv, ":")
+	switch kind {
+	case "instance":
+		return r.classGroups[name]
+	case "member":
+		return r.groups[name]
+	}
+	return nil
+}
+
+// result returns the receiver that the message s to recv returns, by
+// Results, or "".
+func (r *rules) result(recv, s string) string {
+	if g := r.anyResults[s]; g != "" {
+		return "member:" + g
+	}
+	if g := r.groupOf(recv); g != nil {
+		if res := r.results[[2]string{g.Name, s}]; res != "" {
+			return "member:" + res
+		}
+	}
+	return ""
+}
+
+// knownReceiver reports whether the reader knows the class or the group
+// of each receiver that recv may be.
 func knownReceiver(recv val) bool {
 	return !recv.unknown && !recv.open() && len(recv.names) > 0
 }
@@ -273,6 +320,8 @@ func (r *rules) callingThreadReceiver(recv val, s string) bool {
 		case kind == "class" && r.classMessages[class]:
 		case kind == "instance" && r.instances[class]:
 		case kind == "instance" && g != nil && slices.Contains(g.Selectors, s):
+		case kind == "member" && r.groups[class].AllMessages:
+		case kind == "member" && slices.Contains(r.groups[class].Selectors, s):
 		default:
 			return false
 		}
@@ -287,9 +336,12 @@ func receiverText(recv val) string {
 	list := recv.sortedNames()
 	for i, n := range list {
 		kind, class, _ := strings.Cut(n, ":")
-		if kind == "class" {
+		switch kind {
+		case "class":
 			list[i] = "the class " + class
-		} else {
+		case "member":
+			list[i] = "one of the " + class
+		default:
 			list[i] = "an instance of " + class
 		}
 	}
@@ -702,11 +754,15 @@ type pref struct {
 
 // A val is what the reader knows of a value: constant names (of symbols,
 // selectors or strings), parameters it depends on, or that it is unknown.
+// zero says that it may be the constant 0: as a receiver nil, to which a
+// message does nothing on any thread, and as a function or a selector a
+// constant that names none.
 type val struct {
 	names   map[string]bool
 	params  map[pref]bool
 	unknown bool
 	why     string
+	zero    bool
 }
 
 func names(s ...string) val {
@@ -718,6 +774,10 @@ func names(s ...string) val {
 }
 
 func unknown(why string) val { return val{unknown: true, why: why} }
+
+// notAString is why the reader does not follow a constant other than a
+// string and 0.
+const notAString = "a constant that is not a string"
 
 func param(p pref) val { return val{params: map[pref]bool{p: true}} }
 
@@ -761,6 +821,7 @@ func union(vs ...val) val {
 		if v.unknown && !out.unknown {
 			out.unknown, out.why = true, v.why
 		}
+		out.zero = out.zero || v.zero
 	}
 	return out
 }
@@ -788,6 +849,9 @@ func (v val) key() string {
 	b.WriteString(strings.Join(ps, ","))
 	if v.unknown {
 		b.WriteString("?")
+	}
+	if v.zero {
+		b.WriteString("0")
 	}
 	return b.String()
 }
@@ -857,20 +921,28 @@ type elemAssign struct {
 	rhs   ast.Expr
 }
 
+type derefAssign struct {
+	ptr *types.Var
+	as  assign
+}
+
 type binding struct {
 	target *types.Var
 	value  val
 }
 
 type analysis struct {
-	r        *reader
-	pkgs     []*srcPackage
-	fns      []*fn
-	byObj    map[*types.Func]*fn
-	byLit    map[*ast.FuncLit]*fn
-	params   map[*types.Var]paramInfo
-	assigns  map[*types.Var][]assign
-	elems    map[*types.Var][]elemAssign
+	r       *reader
+	pkgs    []*srcPackage
+	fns     []*fn
+	byObj   map[*types.Func]*fn
+	byLit   map[*ast.FuncLit]*fn
+	params  map[*types.Var]paramInfo
+	assigns map[*types.Var][]assign
+	elems   map[*types.Var][]elemAssign
+	// derefs are the assignments through a pointer variable (*p = x),
+	// which resolveDerefs records for what the variable points to.
+	derefs   []derefAssign
 	litVars  map[*types.Var][]*fn // variables holding function literals
 	bound    map[*types.Var][]val
 	inFlight map[any]bool
@@ -906,6 +978,7 @@ func (a *analysis) run() {
 	for _, p := range a.pkgs {
 		a.index(p)
 	}
+	a.resolveDerefs()
 	for _, p := range a.pkgs {
 		a.indexSites(p)
 	}
@@ -1106,8 +1179,8 @@ func (a *analysis) target(p *srcPackage, e ast.Expr) (v *types.Var, elem *types.
 		v, _ := p.info.Uses[e.Sel].(*types.Var)
 		return v, nil, 0
 	case *ast.IndexExpr:
-		if id, ok := ast.Unparen(e.X).(*ast.Ident); ok {
-			if arr, ok := a.object(p, id).(*types.Var); ok {
+		{
+			if arr := a.varOf(p, e.X); arr != nil {
 				index := -1
 				if tv := p.info.Types[e.Index]; tv.Value != nil {
 					if i, ok := constant.Int64Val(constant.ToInt(tv.Value)); ok {
@@ -1124,6 +1197,12 @@ func (a *analysis) target(p *srcPackage, e ast.Expr) (v *types.Var, elem *types.
 func (a *analysis) indexAssign(p *srcPackage, lhs, rhs []ast.Expr, tok token.Token) {
 	if tok != token.ASSIGN && tok != token.DEFINE {
 		for _, l := range lhs {
+			if st, ok := ast.Unparen(l).(*ast.StarExpr); ok {
+				if ptr := a.varOf(p, st.X); ptr != nil {
+					a.derefs = append(a.derefs, derefAssign{ptr, assign{pkg: p, result: -1}})
+				}
+				continue
+			}
 			if v, _, _ := a.target(p, l); v != nil {
 				a.assigns[v] = append(a.assigns[v], assign{pkg: p, result: -1})
 			}
@@ -1138,6 +1217,12 @@ func (a *analysis) indexAssign(p *srcPackage, lhs, rhs []ast.Expr, tok token.Tok
 		case len(rhs) == 1:
 			as = assign{pkg: p, rhs: rhs[0], result: i}
 		default:
+			continue
+		}
+		if st, ok := ast.Unparen(l).(*ast.StarExpr); ok {
+			if ptr := a.varOf(p, st.X); ptr != nil {
+				a.derefs = append(a.derefs, derefAssign{ptr, as})
+			}
 			continue
 		}
 		v, arr, index := a.target(p, l)
@@ -1983,7 +2068,10 @@ func (a *analysis) eval(p *srcPackage, e ast.Expr, ctx *ectx) val {
 		if tv.Value.Kind() == constant.String {
 			return names(constant.StringVal(tv.Value))
 		}
-		return unknown("a constant that is not a string")
+		if tv.Value.Kind() == constant.Int && constant.Sign(tv.Value) == 0 {
+			return val{zero: true}
+		}
+		return unknown(notAString)
 	}
 	switch e := e.(type) {
 	case *ast.ParenExpr:
@@ -2025,6 +2113,24 @@ func (a *analysis) eval(p *srcPackage, e ast.Expr, ctx *ectx) val {
 		return unknown("not a variable")
 	case *ast.IndexExpr:
 		return a.evalIndex(p, e, ctx)
+	case *ast.StarExpr:
+		// What a pointer variable points to, which each of its
+		// assignments takes the address of.
+		if v := a.varOf(p, e.X); v != nil {
+			if targets, ok := a.pointees(v); ok {
+				shared := v.IsField() || (v.Pkg() != nil && v.Parent() == v.Pkg().Scope())
+				in := ctx
+				if shared {
+					in = &ectx{}
+				}
+				var out []val
+				for _, t := range targets {
+					out = append(out, a.eval(t.pkg, t.rhs, in))
+				}
+				return union(out...)
+			}
+		}
+		return unknown("a pointer the reader does not follow")
 	case *ast.BinaryExpr:
 		if e.Op != token.ADD {
 			break
@@ -2100,12 +2206,102 @@ func (a *analysis) evalVar(p *srcPackage, v *types.Var, ctx *ectx) (result val) 
 	if shared {
 		// A cycle that the evaluation cut leaves the value unknown, which
 		// the memo keeps: the reader then rejects more, never less.
-		if result.open() {
-			result = val{names: result.names, unknown: true, why: v.Name() + " holds a parameter of a function"}
-		}
+		result = a.closeParams(result, v.Name())
 		a.varMemo[v] = result
 	}
 	return result
+}
+
+// closeParams returns what a value that a package-level variable or a
+// field holds is at each call that the reader follows of the functions
+// whose parameters it depends on, through the callers of those calls in
+// turn, or unknown when a function is used where the reader cannot follow
+// its arguments or the value still depends on a parameter after
+// maxCallers callers.
+func (a *analysis) closeParams(v val, name string) val {
+	for range maxCallers {
+		if !v.open() || v.unknown {
+			break
+		}
+		fns := map[*fn]bool{}
+		for p := range v.params {
+			if pi, ok := a.params[p.v]; ok {
+				fns[pi.fn] = true
+			}
+		}
+		for f := range fns {
+			if len(f.escapes) > 0 || len(f.sites) == 0 {
+				return val{names: v.names, unknown: true, why: name + " holds a parameter of " + f.name + ", whose calls the reader does not all follow"}
+			}
+			var out []val
+			for _, s := range f.sites {
+				out = append(out, a.subst(v, f, s))
+			}
+			v = union(out...)
+		}
+	}
+	if v.open() {
+		return val{names: v.names, unknown: true, why: name + " holds a parameter of a function"}
+	}
+	return v
+}
+
+// maxCallers bounds the callers through which closeParams follows a
+// parameter.
+const maxCallers = 8
+
+// pointees returns the expressions whose address each assignment of the
+// pointer variable v takes (p = &x), or false when an assignment takes
+// none.
+func (a *analysis) pointees(v *types.Var) ([]assign, bool) {
+	var out []assign
+	for _, as := range a.assigns[v] {
+		u, ok := ast.Unparen(as.rhs).(*ast.UnaryExpr)
+		if as.rhs == nil || as.result >= 0 || as.elem || !ok || u.Op != token.AND {
+			return nil, false
+		}
+		out = append(out, assign{pkg: as.pkg, rhs: u.X, result: -1})
+	}
+	return out, len(out) > 0
+}
+
+// resolveDerefs records each assignment through a pointer variable for
+// what the variable points to. An assignment through a pointer that a
+// parameter holds, or that the reader does not follow, is not recorded,
+// as an assignment through a pointer is not otherwise.
+func (a *analysis) resolveDerefs() {
+	for _, d := range a.derefs {
+		targets, ok := a.pointees(d.ptr)
+		if !ok {
+			continue
+		}
+		for _, t := range targets {
+			v, arr, index := a.target(t.pkg, t.rhs)
+			switch {
+			case v != nil:
+				a.assigns[v] = append(a.assigns[v], d.as)
+			case arr != nil:
+				a.elems[arr] = append(a.elems[arr], elemAssign{pkg: d.as.pkg, index: index, rhs: d.as.rhs})
+			}
+		}
+	}
+}
+
+// varOf returns the variable or the field that e names, or nil.
+func (a *analysis) varOf(p *srcPackage, e ast.Expr) *types.Var {
+	switch e := ast.Unparen(e).(type) {
+	case *ast.Ident:
+		v, _ := a.object(p, e).(*types.Var)
+		return v
+	case *ast.SelectorExpr:
+		if s := p.info.Selections[e]; s != nil {
+			v, _ := s.Obj().(*types.Var)
+			return v
+		}
+		v, _ := p.info.Uses[e.Sel].(*types.Var)
+		return v
+	}
+	return nil
 }
 
 func (a *analysis) assignedValue(v *types.Var, ctx *ectx) val {
@@ -2164,25 +2360,32 @@ func (a *analysis) elementsOf(p *srcPackage, over ast.Expr, ctx *ectx, name stri
 }
 
 func (a *analysis) evalIndex(p *srcPackage, e *ast.IndexExpr, ctx *ectx) val {
-	id, ok := ast.Unparen(e.X).(*ast.Ident)
-	if ok {
-		if v, ok := a.object(p, id).(*types.Var); ok {
-			if recs := a.elems[v]; len(recs) > 0 {
-				index := -1
-				if tv := p.info.Types[e.Index]; tv.Value != nil {
-					if i, ok := constant.Int64Val(constant.ToInt(tv.Value)); ok {
-						index = int(i)
-					}
+	if v := a.varOf(p, e.X); v != nil {
+		if recs := a.elems[v]; len(recs) > 0 {
+			index := -1
+			if tv := p.info.Types[e.Index]; tv.Value != nil {
+				if i, ok := constant.Int64Val(constant.ToInt(tv.Value)); ok {
+					index = int(i)
 				}
-				var out []val
-				for _, r := range recs {
-					if index < 0 || r.index < 0 || r.index == index {
-						out = append(out, a.eval(r.pkg, r.rhs, ctx))
-					}
+			}
+			// The elements of a field are assigned in other functions,
+			// whose bindings ctx does not hold.
+			shared := v.IsField() || (v.Pkg() != nil && v.Parent() == v.Pkg().Scope())
+			ectxOf := ctx
+			if shared {
+				ectxOf = &ectx{}
+			}
+			var out []val
+			for _, r := range recs {
+				if index < 0 || r.index < 0 || r.index == index {
+					out = append(out, a.eval(r.pkg, r.rhs, ectxOf))
 				}
-				if len(out) > 0 {
-					return union(out...)
+			}
+			if len(out) > 0 {
+				if shared {
+					return a.closeParams(union(out...), v.Name())
 				}
+				return union(out...)
 			}
 		}
 	}
@@ -2286,7 +2489,7 @@ func classNames(v val) val { return wrapNames(v, "class:") }
 // wrapNames marks the names of v, and the names that its parameters will
 // hold, as the names of classes or of their instances.
 func wrapNames(v val, wrap string) val {
-	out := val{unknown: v.unknown, why: v.why}
+	out := val{unknown: v.unknown, why: v.why, zero: v.zero}
 	for n := range v.names {
 		if strings.Contains(n, ":") && !strings.HasSuffix(n, ":") {
 			return unknown("a class whose name the reader does not follow")
@@ -2312,7 +2515,9 @@ func wrapNames(v val, wrap string) val {
 // messageResult returns what the reader knows of the result of a message
 // send: an instance of class X ("instance:X") for alloc, new or
 // allocWithZone: sent to the class X, and for an init message sent to
-// such an instance.
+// such an instance; the receiver for retain and autorelease, which return
+// it; and a member of a group ("member:" and its name) for a message that
+// Results of the group list.
 func (a *analysis) messageResult(p *srcPackage, call *ast.CallExpr, info callInfo, ctx *ectx) (val, bool) {
 	var fnv, recv, sel val
 	switch info.kind {
@@ -2329,6 +2534,22 @@ func (a *analysis) messageResult(p *srcPackage, call *ast.CallExpr, info callInf
 		}
 		fnv = names(info.api.natives...)
 		recv, sel = a.apiArgs(p, call, info, ctx)
+	case callByReceiver:
+		if len(call.Args) < 3 {
+			return val{}, false
+		}
+		fnv, recv, sel = a.eval(p, call.Args[0], ctx), a.eval(p, call.Args[1], ctx), a.eval(p, call.Args[2], ctx)
+	case callGo:
+		// A message that a function of SendFuncs sends on the main thread.
+		if len(info.fns) != 1 || info.fns[0].obj == nil || len(call.Args) < 2 {
+			return val{}, false
+		}
+		o := info.fns[0].obj.Origin()
+		if o.Pkg() == nil || o.Pkg().Path() != a.r.rules.workerPackage || !slices.Contains(a.r.rules.sendFuncs, o.Name()) {
+			return val{}, false
+		}
+		fnv = names("objc_msgSend")
+		recv, sel = a.eval(p, call.Args[0], ctx), a.eval(p, call.Args[1], ctx)
 	default:
 		return val{}, false
 	}
@@ -2340,13 +2561,28 @@ func (a *analysis) messageResult(p *srcPackage, call *ast.CallExpr, info callInf
 			return unknown("the result of a native call"), true
 		}
 	}
+	// A message that returns a member of a group to any receiver.
+	members := val{names: map[string]bool{}}
+	for s := range sel.names {
+		if g := a.r.rules.anyResults[s]; g != "" {
+			members.names["member:"+g] = true
+		}
+	}
+	if len(members.names) == len(sel.names) {
+		return members, true
+	}
 	if recv.unknown || (len(recv.names) == 0 && len(recv.params) == 0) {
 		return unknown("the result of a message to a receiver the reader does not follow"), true
 	}
 	out := val{names: map[string]bool{}}
 	for s := range sel.names {
+		if g := a.r.rules.anyResults[s]; g != "" {
+			out.names["member:"+g] = true
+			continue
+		}
 		for p := range recv.params {
 			switch {
+			case s == "retain" || s == "autorelease":
 			case (s == "alloc" || s == "new" || s == "allocWithZone:") && p.wrap == "class:":
 				p.wrap = "instance:"
 			case strings.HasPrefix(s, "init") && p.wrap == "instance:":
@@ -2357,6 +2593,10 @@ func (a *analysis) messageResult(p *srcPackage, call *ast.CallExpr, info callInf
 		}
 		for r := range recv.names {
 			switch {
+			case s == "retain" || s == "autorelease":
+				out.names[r] = true
+			case a.r.rules.result(r, s) != "":
+				out.names[a.r.rules.result(r, s)] = true
 			case (s == "alloc" || s == "new" || s == "allocWithZone:") && strings.HasPrefix(r, "class:"):
 				out.names["instance:"+strings.TrimPrefix(r, "class:")] = true
 			case strings.HasPrefix(s, "init") && strings.HasPrefix(r, "instance:"):
@@ -2656,7 +2896,7 @@ func (a *analysis) subst(v val, f *fn, s site) val {
 		return v
 	}
 	var bind map[*types.Var]paramVal
-	out := val{names: v.names, unknown: v.unknown, why: v.why}
+	out := val{names: v.names, unknown: v.unknown, why: v.why, zero: v.zero}
 	for p := range v.params {
 		pi, ok := a.params[p.v]
 		if !ok || pi.fn != f {
@@ -2699,11 +2939,20 @@ func (a *analysis) judge(t tmpl, at token.Pos) {
 		fail("calls a native function that no constant symbol binds: " + t.fn.why)
 		return
 	}
+	if t.fn.zero {
+		fail("calls a native function that no constant symbol binds: " + notAString)
+		return
+	}
 	ok := true
 	for _, name := range t.fn.sortedNames() {
 		if rules.messageSends[name] {
 			if t.arg1.unknown {
 				fail("sends a message whose selector is not a constant: " + t.arg1.why)
+				ok = false
+				continue
+			}
+			if t.arg1.zero {
+				fail("sends a message whose selector is not a constant: " + notAString)
 				ok = false
 				continue
 			}

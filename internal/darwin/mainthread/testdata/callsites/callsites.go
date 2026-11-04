@@ -30,6 +30,11 @@ func Forward(fn uintptr, args ...uintptr) uintptr {
 	return r
 }
 
+// Send sends a message on the main thread through Forward.
+func Send(recv uintptr, s objc.SEL, args ...uintptr) uintptr {
+	return Forward(msgSend, append([]uintptr{recv, uintptr(s)}, args...)...)
+}
+
 // ByReceiver runs a native call on the calling thread or the main thread
 // by its receiver.
 func ByReceiver(fn uintptr, args ...uintptr) uintptr {
@@ -147,8 +152,62 @@ func metal() {
 	layer := send(allocated, "init")                  // want: sends init to an instance of CAMetalLayer outside Forward
 	send(layer, "setPixelFormat:", 80)                // want: sends setPixelFormat: to an instance of CAMetalLayer outside Forward
 	drawable := send(layer, "nextDrawable")
-	send(drawable, "texture")
-	send(drawable, "present") // want: sends present to a receiver outside Forward
+	tex := send(drawable, "texture")
+	send(tex, "width")
+	send(drawable, "present") // want: sends present to one of the drawables of a CAMetalLayer outside Forward
+	cb := send(send(device(), "newCommandQueue"), "commandBuffer")
+	held := send(cb, "retain")
+	send(held, "status")
+	send(ByReceiver(msgSend, held, uintptr(sel("autorelease"))), "error")
+	send(send(cb, "error"), "localizedDescription") // want: sends localizedDescription to a receiver outside Forward
+	send(device(), "width")                         // want: sends width to a receiver outside Forward
+	send(send(device(), "texture"), "width")        // want: sends width to a receiver outside Forward
+}
+
+// device returns an object whose class the reader does not know.
+var device func() uintptr
+
+// A holder holds objects in fields, which its methods assign.
+type holder struct {
+	cbs      [2]uintptr
+	buf, obj uintptr
+	layer    uintptr
+}
+
+func (h *holder) keep(cb uintptr) { h.cbs[0] = send(cb, "retain") }
+
+func (h *holder) fields() {
+	h.keep(send(send(device(), "newCommandQueue"), "commandBuffer"))
+	send(h.cbs[0], "status")
+	send(h.cbs[1], "status") // want: sends status to a receiver outside Forward
+	b := &h.buf
+	*b = send(device(), "newBufferWithLength:options:", 16, 0)
+	send(*b, "contents")
+	send(h.buf, "contents")
+	h.obj = device()
+	o := &h.obj
+	send(*o, "contents") // want: sends contents to a receiver outside Forward
+	h.layer = Send(Send(class("CAMetalLayer"), sel("alloc")), sel("init"))
+	tex := send(send(h.layer, "nextDrawable"), "texture")
+	send(tex, "width")
+	send(Send(device(), sel("texture")), "width") // want: sends width to a receiver outside Forward
+}
+
+// buffer returns a command buffer, or nil.
+func buffer(ok bool) uintptr {
+	if !ok {
+		return 0
+	}
+	return send(send(device(), "newCommandQueue"), "commandBuffer")
+}
+
+func zero(ok bool) {
+	send(buffer(ok), "status")
+	fn := uintptr(0)
+	if ok {
+		fn = cfRelease
+	}
+	purego.SyscallN(fn, 0) // want: calls a native function that no constant symbol binds: a constant that is not a string
 }
 
 func register() {

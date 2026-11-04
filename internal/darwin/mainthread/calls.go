@@ -39,6 +39,11 @@ const (
 	ByReceiverFunc = "ByReceiver"
 )
 
+// SendFuncs name the functions that send a message through the function
+// named ForwardFunc: their first argument is the receiver and their second
+// the selector.
+var SendFuncs = []string{"Send", "SendRetained"}
+
 // MessageSendFunctions are the functions of the Objective-C runtime whose
 // call is a message send: their first argument is the receiver (for the
 // super variants, a struct objc_super that holds it) and their second the
@@ -103,6 +108,18 @@ type Receivers struct {
 	// receivers return belong to the group, as the attachment descriptors
 	// and the descriptor arrays that a Metal descriptor returns.
 	ReturnsMembers bool
+	// Results are the messages whose result is a receiver of the group,
+	// as the command buffer that commandBuffer returns.
+	Results []Result
+}
+
+// Result is a message whose result is a receiver of a group. A message
+// with no Of returns one to any receiver, so it is listed only when each
+// class or protocol that declares it in the macOS SDK returns one; Of
+// names the group of the receivers to which it returns one otherwise.
+type Result struct {
+	Selector string
+	Of       string
 }
 
 // CallingThreadReceivers are the receivers whose messages run on the
@@ -141,6 +158,16 @@ var CallingThreadReceivers = []Receivers{
 			"synchronizeResource:", "waitUntilCompleted", "waitUntilScheduled",
 		},
 		Decided: []string{"commit", "release", "autorelease"},
+		Results: []Result{
+			{Selector: "newCommandQueue"}, {Selector: "commandBuffer"},
+			{Selector: "renderCommandEncoderWithDescriptor:"}, {Selector: "blitCommandEncoder"},
+			{Selector: "newBufferWithBytes:length:options:"}, {Selector: "newBufferWithLength:options:"},
+			{Selector: "newTextureWithDescriptor:"},
+			{Selector: "newLibraryWithData:error:"}, {Selector: "newLibraryWithSource:options:error:"},
+			{Selector: "newFunctionWithName:"}, {Selector: "newFunctionWithName:constantValues:error:"},
+			{Selector: "newRenderPipelineStateWithDescriptor:error:"}, {Selector: "newSamplerStateWithDescriptor:"},
+			{Selector: "texture", Of: "drawables of a CAMetalLayer"},
+		},
 	},
 	{
 		Name: "Metal descriptors",
@@ -162,6 +189,7 @@ var CallingThreadReceivers = []Receivers{
 		Protocols: []string{"CAMetalDrawable"},
 		Selectors: []string{"texture"},
 		Decided:   []string{"release", "autorelease"},
+		Results:   []Result{{Selector: "nextDrawable", Of: "CAMetalLayer"}},
 	},
 	{
 		Name:      "CAMetalLayer",
