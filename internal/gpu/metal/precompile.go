@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"sync"
 	"unsafe"
+
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 )
 
 // PrecompileShader starts making what a shader of package ui/shader draws
@@ -22,7 +24,7 @@ func PrecompileShader(src string) {
 		shaders.byKey = map[string]*shaderEntry{}
 		shaders.sem = make(chan struct{}, max(1, runtime.NumCPU()-1))
 		if load() == nil {
-			shaders.device = createDevice() // owned, for the program's life
+			shaders.device = mainthread.Forward[id](createDevice) // owned, for the program's life
 		}
 	})
 	if shaders.device == 0 {
