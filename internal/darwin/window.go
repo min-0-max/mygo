@@ -682,6 +682,9 @@ func (w *window) cleanup() {
 		return
 	}
 	w.closeWebViews()
+	if w.surface != nil {
+		w.surface.closeNativeView()
+	}
 	w.closed = true
 	if contextWindow == w {
 		contextWindow = nil
@@ -2161,6 +2164,9 @@ func registerWindowClasses() {
 		return func(self id, cmd objc.SEL, view id) {
 			if w := webViewOf(view); w != nil && w.host != nil {
 				w.tabOut(back)
+				return
+			}
+			if w := theBackend.byNSWindow[self]; w != nil && w.tabOutOfNativeView(view, back) {
 				return
 			}
 			sendSuper(self, class, cmd, uintptr(view))
