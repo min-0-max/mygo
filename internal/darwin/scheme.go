@@ -127,9 +127,10 @@ func (st *schemeTask) Respond(status int, h map[string][]string) {
 			clear(schemeDispositions)
 		}
 		schemeDispositions[goString(send(send(send(st.task, "request"), "URL"), "absoluteString"))] = header.Get("Content-Disposition")
-		fields := send(class("NSMutableDictionary"), "dictionary")
+		fields := newDictionary()
+		defer release(fields)
 		for k, vs := range header {
-			send(fields, "setObject:forKey:", uintptr(nsString(strings.Join(vs, ", "))), uintptr(nsString(k)))
+			setObject(fields, nsString(strings.Join(vs, ", ")), nsString(k))
 		}
 		url := send(send(st.task, "request"), "URL")
 		resp := send(send(class("NSHTTPURLResponse"), "alloc"), "initWithURL:statusCode:HTTPVersion:headerFields:",
@@ -165,8 +166,9 @@ func (st *schemeTask) Fail(err error) {
 		return
 	}
 	withPool(func() {
-		info := send(class("NSMutableDictionary"), "dictionary")
-		send(info, "setObject:forKey:", uintptr(nsString(err.Error())), uintptr(nsString("NSLocalizedDescription")))
+		info := newDictionary()
+		defer release(info)
+		setObject(info, nsString(err.Error()), nsString("NSLocalizedDescription"))
 		nserr := send(class("NSError"), "errorWithDomain:code:userInfo:", uintptr(nsString("mygo")), ^uintptr(0), uintptr(info))
 		send(st.task, "didFailWithError:", uintptr(nserr))
 	})

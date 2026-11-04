@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"image"
 	pngenc "image/png"
-	"runtime"
 	"structs"
 	"sync"
 	"time"
@@ -16,6 +15,7 @@ import (
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
 
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/transfer"
 )
@@ -41,21 +41,18 @@ type cgRect struct {
 const nsNotFound = uint(1<<63 - 1)
 
 var (
-	surfaceOnce        sync.Once
-	msgConvertRectView func(obj id, sel objc.SEL, r NSRect, view id) NSRect
-	msgInitTracking    func(obj id, sel objc.SEL, r NSRect, options uint, owner, info id) id
-	msgTimer           func(cls id, sel objc.SEL, interval float64, target id, selector objc.SEL, info id, repeats bool) id
-	cgColorSpaceSRGB   uintptr
-	cgImageCreate      uintptr
-	cgImageRelease     uintptr
-	cgProviderCreate   uintptr
-	cgProviderRelease  uintptr
-	cfDataCreate       uintptr
+	surfaceOnce       sync.Once
+	cgColorSpaceSRGB  uintptr
+	cgImageCreate     uintptr
+	cgImageRelease    uintptr
+	cgProviderCreate  uintptr
+	cgProviderRelease uintptr
+	cfDataCreate      func(alloc uintptr, bytes unsafe.Pointer, length int) uintptr
 	// Read the keyboard type from each event, so an external ISO keyboard
 	// does not inherit the built-in keyboard's ANSI mapping.
 	cgEventGetIntegerValueField func(event uintptr, field uint32) int64
-	kbGetLayoutType             func(keyboardType int16) uint32
-	lmGetKbdType                func() uint8
+	kbGetLayoutTypeFn           uintptr
+	lmGetKbdTypeFn              uintptr
 
 	// caPass counts the passes of the main run loop, past Core Animation's
 	// commit of each: frames drawn in the same pass go into the same
@@ -81,34 +78,47 @@ const (
 
 func loadSurface() {
 	surfaceOnce.Do(func() {
-		stret := msgSendAddr
-		if runtime.GOARCH == "amd64" {
-			stret = mustDlsym(libObjC, "objc_msgSend_stret")
-		}
-		purego.RegisterFunc(&msgConvertRectView, stret)
-		purego.RegisterFunc(&msgInitTracking, msgSendAddr)
-		purego.RegisterFunc(&msgTimer, msgSendAddr)
 		cgImageCreate = mustDlsym(libCG, "CGImageCreate")
 		cgImageRelease = mustDlsym(libCG, "CGImageRelease")
 		cgProviderCreate = mustDlsym(libCG, "CGDataProviderCreateWithCFData")
 		cgProviderRelease = mustDlsym(libCG, "CGDataProviderRelease")
-		cfDataCreate = mustDlsym(libCF, "CFDataCreate")
-		purego.RegisterLibFunc(&cgEventGetIntegerValueField, libCG, "CGEventGetIntegerValueField")
-		purego.RegisterLibFunc(&kbGetLayoutType, libCarbon, "KBGetLayoutType")
-		purego.RegisterLibFunc(&lmGetKbdType, libCarbon, "LMGetKbdType")
+		mainthread.Bind(&cfDataCreate, libCF, "CFDataCreate")
+		mainthread.Bind(&cgEventGetIntegerValueField, libCG, "CGEventGetIntegerValueField")
+		kbGetLayoutTypeFn = mustDlsym(libCarbon, "KBGetLayoutType")
+		lmGetKbdTypeFn = mustDlsym(libCarbon, "LMGetKbdType")
 		p := mustDlsym(libCG, "kCGColorSpaceSRGB")
 		name := **(**uintptr)(unsafe.Pointer(&p))
 		cgColorSpaceSRGB, _, _ = purego.SyscallN(mustDlsym(libCG, "CGColorSpaceCreateWithName"), name)
 		// An observer after Core Animation's counts the transactions it
 		// committed (armPass).
-		purego.RegisterLibFunc(&observerCreate, libCF, "CFRunLoopObserverCreate")
-		purego.RegisterLibFunc(&addObserver, libCF, "CFRunLoopAddObserver")
-		caPassCallout = purego.NewCallback(func(observer, activity, info uintptr) {
+		mainthread.Bind(&observerCreate, libCF, "CFRunLoopObserverCreate")
+		mainthread.Bind(&addObserver, libCF, "CFRunLoopAddObserver")
+		caPassCallout = mainthread.Callback(purego.NewCallback(func(observer, activity, info uintptr) {
 			caPass++
 			caPassArmed = false
-		})
+		}))
 	})
 }
+
+// The messages and functions of the surface that take or return floats
+// or structs, which run on the main thread (mainthread.Forward).
+func msgConvertRectView(obj id, sel objc.SEL, r NSRect, view id) NSRect {
+	return mainthread.Forward[NSRect](msgSendStretAddr, obj, sel, r, view)
+}
+
+func msgInitTracking(obj id, sel objc.SEL, r NSRect, options uint, owner, info id) id {
+	return mainthread.Forward[id](msgSendAddr, obj, sel, r, options, owner, info)
+}
+
+func msgTimer(cls id, sel objc.SEL, interval float64, target id, selector objc.SEL, info id, repeats bool) id {
+	return mainthread.Forward[id](msgSendAddr, cls, sel, interval, target, selector, info, repeats)
+}
+
+func kbGetLayoutType(keyboardType int16) uint32 {
+	return mainthread.Forward[uint32](kbGetLayoutTypeFn, keyboardType)
+}
+
+func lmGetKbdType() uint8 { return mainthread.Forward[uint8](lmGetKbdTypeFn) }
 
 // armPass has the end of this pass of the main run loop counted (caPass),
 // once: a frame drawn in it calls it.
@@ -206,7 +216,7 @@ func (w *window) createSurface(content NSRect) {
 	s.tracking = msgInitTracking(send(class("NSTrackingArea"), "alloc"), sel("initWithRect:options:owner:userInfo:"), NSRect{}, options, s.view, 0)
 	send(s.view, "addTrackingArea:", uintptr(s.tracking))
 	if respondsTo(s.view, "displayLinkWithTarget:selector:") {
-		s.link = retain(send(s.view, "displayLinkWithTarget:selector:", uintptr(s.view), uintptr(sel("mygoTick:"))))
+		s.link = sendRetained(s.view, "displayLinkWithTarget:selector:", uintptr(s.view), uintptr(sel("mygoTick:")))
 		send(s.link, "setPaused:", 1)
 		send(s.link, "addToRunLoop:forMode:", uintptr(send(class("NSRunLoop"), "mainRunLoop")), kCFRunLoopCommonModes)
 	}
@@ -447,7 +457,7 @@ func (s *surface) PresentPixels(pix []byte, stride, width, height int) {
 	if len(pix) < stride*height || width == 0 || height == 0 {
 		return
 	}
-	data, _, _ := purego.SyscallN(cfDataCreate, 0, uintptr(unsafe.Pointer(&pix[0])), uintptr(stride*height))
+	data := cfDataCreate(0, unsafe.Pointer(&pix[0]), stride*height)
 	provider, _, _ := purego.SyscallN(cgProviderCreate, data)
 	const bitmapInfo = 2 | 2<<12 // premultiplied alpha first, 32-bit little endian: BGRA
 	img, _, _ := purego.SyscallN(cgImageCreate, uintptr(width), uintptr(height), 8, 32, uintptr(stride), cgColorSpaceSRGB, bitmapInfo, provider, 0, 0, 0)

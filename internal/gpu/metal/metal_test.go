@@ -145,7 +145,7 @@ func TestTrimDrawables(t *testing.T) {
 		t.Skip("no Metal:", err)
 	}
 	var layer id
-	pool(func() { layer = send(class("CALayer"), "new") })
+	pool(func() { layer = sendMain(class("CALayer"), "new") })
 	if layer == 0 {
 		t.Skip("no Core Animation")
 	}
@@ -157,7 +157,7 @@ func TestTrimDrawables(t *testing.T) {
 	defer r.Release()
 	pool(func() {
 		r.fit(800, 600, 1)
-		if n := send(r.layer, "maximumDrawableCount"); n != 3 {
+		if n := sendMain(r.layer, "maximumDrawableCount"); n != 3 {
 			t.Errorf("drawable count = %d, want 3", n)
 		}
 		r.trim()

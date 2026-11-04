@@ -77,6 +77,7 @@ framework safely. Read it before changing anything under `internal/`.
 ├── internal/
 │   ├── platform/       the contract every backend implements
 │   ├── darwin/         macOS: AppKit + WKWebView through the Objective-C runtime
+│   ├── darwin/mainthread/ the worker of macOS: Go off the main thread, native calls on it
 │   ├── linux/          Linux: GTK 3 + WebKitGTK through dlopen
 │   ├── windows/        Windows: Win32 + WebView2 through syscall and COM
 │   ├── schemehost/     maps custom scheme URLs to the http://*.localhost URLs WebView2 serves them at
@@ -190,7 +191,9 @@ rules are:
 
 1. **The main goroutine is locked to the main thread** (`runtime.LockOSThread`
    in `mygo.go`'s `init`), and `App.Run` must be called from it. `Run`
-   initializes the backend and blocks in the native event loop. Before
+   hands `Backend.Run` its Go code: `start`, which initializes the
+   backend, then the native event loop, in which `Run` blocks, then
+   `finish`. Before
    that no backend is initialized (the Linux one has not even loaded GTK),
    yet `main` already runs on the main thread, where `onMain` calls
    functions directly, and generate mode never initializes it. So a public
@@ -235,6 +238,12 @@ rules are:
    input (for example `WindowOptions.BackgroundColor`) is checked before
    hopping to the main thread, so the panic points at the user's call.
 
+On macOS the main thread of these rules is where `IsMainThread` answers
+true: the main thread, and the worker while it runs a step (see
+[The worker of the main thread](#the-worker-of-the-main-thread)). The Go
+code of the app runs on the worker, and the native calls that it makes run
+on the main thread.
+
 Main-thread-only fields are marked as such in comments (for example
 `Window.native`, `Window.trusted`). Fields shared with other goroutines are
 guarded by a mutex or atomic.
@@ -265,9 +274,12 @@ purego gives three primitives, used everywhere:
 
 - `objc.go` loads the frameworks, caches selectors and classes, and wraps
   `objc_msgSend`: `send(obj, "selector:", args...)` for integer arguments and
-  pre-registered typed variants (`msgRect`, `msgSetFloat`, `msgInitWindow`,
-  …) for the rest. On amd64, methods returning structs larger than 16 bytes go
-  through `objc_msgSend_stret`.
+  typed variants (`msgRect`, `msgSetFloat`, `msgInitWindow`, …) for the
+  rest, all of which run on the main thread through the worker
+  (`mainthread.Send` and `mainthread.Forward`); `sendRetained` takes the
+  caller's reference to a result that it keeps, and `sendHere` sends to a
+  value object on the calling thread. On amd64, methods returning structs
+  larger than 16 bytes go through `objc_msgSend_stret`.
 - Classes are defined at run time with `objc.RegisterClass`: `MyGoWindow`
   (borderless-friendly `NSWindow`), `MyGoWebView` (records the last
   `mouseDown:` for drag regions; `window_drag.go` follows the press with a
@@ -293,7 +305,10 @@ purego gives three primitives, used everywhere:
   on.
 - **Memory is managed by hand.** Objects created with `alloc`/`init` are owned
   (+1) and must be released; convenience constructors return autoreleased
-  objects. Code that creates temporary objects runs inside `withPool`,
+  objects. Arrays and dictionaries are made with `alloc` and an `init`
+  message (`nsArray`, `newDictionary`), and `release`, `autorelease` and
+  `cfRelease` go through `mainthread.ByReceiver`, which runs them on the
+  calling thread only for the receivers that allow it. Code that creates temporary objects runs inside `withPool`,
   which keeps the goroutine on its thread until it pops the pool: a pool
   belongs to the thread that pushed it, and a goroutine other than the
   main one, as those reading the bundle for `App.Name`, may otherwise
@@ -301,10 +316,11 @@ purego gives three primitives, used everywhere:
   Delegates and windows are released with `autorelease` from
   `windowWillClose:` because AppKit still uses them while closing.
 - **Blocks.** Completion handlers passed to Apple APIs are created with
-  `objc.NewBlock` and released right after the call (the callee copies
-  them). Blocks received from Apple (decision and completion handlers) are
-  invoked with `callBlock`; when they are called later they are
-  `_Block_copy`d first and released after use.
+  `newBlock` (`objc.NewBlock` through `mainthread.Block`) and released
+  right after the call (the callee copies them). Blocks received from
+  Apple (decision and completion handlers) are invoked with `callBlock`,
+  on the main thread; when they are called later they are copied with
+  `blockCopy` first and released with `blockRelease` after use.
 - **Coordinates.** AppKit's origin is the bottom-left of the primary screen;
   MyGo's is the top-left. `rectToMac`/`rectFromMac` convert.
 - **Quitting.** Cmd+Q ends in `applicationShouldTerminate:`, which runs the
@@ -313,6 +329,72 @@ purego gives three primitives, used everywhere:
   (Dock > Quit, AppleScript, logout) are handled by our own handler installed
   in `applicationWillFinishLaunching:`, so senders get a success reply, or
   error -128 when a listener cancels.
+
+### The worker of the main thread
+
+`internal/darwin/mainthread` runs the Go code of a macOS app on a worker:
+a goroutine locked to a thread other than the main thread.
+
+- `Backend.Run` hands `mainthread.Run` its Go code: `start`, which returns
+  the event loop, `run` of the shared application that it made, as a
+  native call (`Call`). `mainthread.Run` starts the worker (`Start`) and
+  makes one native call on the main thread (`runApp`): it hands the
+  worker `start` as a step, makes the call of the event loop, hands the
+  worker `finish` as another step and then the step that ends the worker.
+  So the main thread runs no Go code from the step of `start` until the
+  worker returned from its last step. `TestTheMainThreadIsTheWorker`
+  runs `App.Run` so on a fake backend and holds listeners, `onMain`,
+  `RunOnMain` and `await` to the worker. The main thread waits for a
+  step on its own stack and meanwhile runs the calls that the worker
+  forwards to it.
+- Each method of a class that mygo registers (`mainthread.RegisterClass`
+  sets each implementation to `mainthread.Method`), each block that it makes
+  (`mainthread.Block`) and each C callback that it passes
+  (`mainthread.Callback`) enters through an assembly trampoline. Called on
+  the main thread while the worker runs, a trampoline hands the call to
+  the worker as a step and waits for its result; a call that the main
+  thread runs for the worker during a step (a modal panel, a menu,
+  `sendEvent:`) delivers its callbacks as nested steps. Called on any
+  other thread, it enters Go on that thread.
+- `Forward` runs a native call on the main thread: at once on the main
+  thread, through the main thread that waits for the step on the worker,
+  and through a run loop source of the main thread, added in the common
+  modes, on any other thread. `ForwardRetained` and `SendRetained` take
+  the caller's reference to the result there, because the main autorelease
+  pool may drain before a caller off the worker's steps retains it.
+- The calls that run on the calling thread are listed in `calls.go`:
+  Metal and its descriptors, Core Text and Core Graphics, the Objective-C
+  runtime, the Foundation value objects and their Core Foundation
+  functions, libdispatch, the run loop functions that the worker and
+  `netproxy` use, a few functions of libSystem and the keychain.
+  `ByReceiver` decides `release`, `autorelease`, `commit`, `CFRetain`,
+  `CFRelease`, `_Block_copy` and `_Block_release` by the class or the Core
+  Foundation type of the receiver.
+- `RunOnWorkerAddress` and `RunOnMainAddress` give C code two functions
+  that take a block: the first runs it on the worker as a step when the
+  main thread calls it, the second on the main thread when the worker
+  calls it during a step, and each runs it at once on any other thread.
+- `RunOnMain` runs a Go function on the worker: during a step as part of
+  it, and from the main thread or another thread as a step of its own,
+  which the main thread starts from its run loop for another thread. The
+  function's native calls run on the main thread one forwarded call each,
+  so no Go code runs on the main thread. A step that waits for another
+  thread's `RunOnMain` without running the main run loop waits for good;
+  `await` runs it through `Backend.Step`, whose Go runs on the worker
+  while the event loop runs once on the main thread, and the callbacks of
+  the event that it sends run on the worker as nested steps. `Forwarded`
+  counts the forwarded calls, and `Queued` those that threads other than
+  the worker and the main thread hand the main thread.
+- `IsMainThread` answers true on the main thread and on the worker during
+  a step. While the worker does not run, every call runs on the calling
+  thread, as before `App.Run`.
+- `TestCallSitesGoThroughTheWorker` reads every package of the module and
+  fails for a native call site that neither goes through `Forward` (and
+  the functions built on it) nor runs on the calling thread as `calls.go`
+  decides, for a `purego.NewCallback`, `objc.NewBlock` or `objc.NewIMP`
+  that is not the argument of `Callback`, `Block` or `Method`, and for a
+  class registered with `objc.RegisterClass` instead of
+  `mainthread.RegisterClass`.
 
 ### Linux (`internal/linux`)
 

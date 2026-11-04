@@ -26,6 +26,7 @@ import (
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
 
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/gpu"
 	"github.com/egoist/mygo/internal/scene"
 )
@@ -109,16 +110,13 @@ var (
 
 	msgSend           uintptr
 	poolPush, poolPop uintptr
-	createDevice      func() id
+	msgSendStret      uintptr // the messages returning structs over 16 bytes
+	createDevice      uintptr // MTLCreateSystemDefaultDevice, on the main thread
 	srgb              uintptr
 	extendedSRGB      uintptr
 	msgReplaceRegion  func(obj id, sel objc.SEL, r mtlRegion, level uint, bytes unsafe.Pointer, bytesPerRow uint)
 	msgGetBytes       func(obj id, sel objc.SEL, bytes unsafe.Pointer, bytesPerRow uint, r mtlRegion, level uint)
 	msgSetClearColor  func(obj id, sel objc.SEL, c mtlClearColor)
-	msgSetSize        func(obj id, sel objc.SEL, s cgSize)
-	msgSetRect        func(obj id, sel objc.SEL, r cgRect)
-	msgRect           func(obj id, sel objc.SEL) cgRect
-	msgSetFloat       func(obj id, sel objc.SEL, v float64)
 	selMu             sync.Mutex
 	selectors         = map[string]objc.SEL{}
 	renderPass        id // MTLRenderPassDescriptor
@@ -176,7 +174,7 @@ func load() error {
 		msgSend = sym(objcLib, "objc_msgSend")
 		poolPush = sym(objcLib, "objc_autoreleasePoolPush")
 		poolPop = sym(objcLib, "objc_autoreleasePoolPop")
-		create := sym(metalLib, "MTLCreateSystemDefaultDevice")
+		createDevice = sym(metalLib, "MTLCreateSystemDefaultDevice")
 		name := sym(cg, "kCGColorSpaceSRGB")
 		extendedName := sym(cg, "kCGColorSpaceExtendedSRGB")
 		colorSpace := sym(cg, "CGColorSpaceCreateWithName")
@@ -197,30 +195,25 @@ func load() error {
 		modes := sym(cf, "kCFRunLoopCommonModes")
 		// Methods returning structs larger than 16 bytes use another entry
 		// point on amd64.
-		stret := msgSend
+		msgSendStret = msgSend
 		if runtime.GOARCH == "amd64" {
-			stret = sym(objcLib, "objc_msgSend_stret")
+			msgSendStret = sym(objcLib, "objc_msgSend_stret")
 		}
 		if errLoad != nil {
 			return
 		}
-		purego.RegisterFunc(&createDevice, create)
-		purego.RegisterFunc(&cfAbsoluteTimeGetCurrent, timeNow)
-		purego.RegisterFunc(&cfRunLoopTimerCreate, timerCreate)
-		purego.RegisterFunc(&cfRunLoopTimerSetNextFireDate, timerSetNext)
+		mainthread.BindAddr(&cfAbsoluteTimeGetCurrent, timeNow, "CFAbsoluteTimeGetCurrent")
+		mainthread.BindAddr(&cfRunLoopTimerCreate, timerCreate, "CFRunLoopTimerCreate")
+		mainthread.BindAddr(&cfRunLoopTimerSetNextFireDate, timerSetNext, "CFRunLoopTimerSetNextFireDate")
 		commonModes = *(*uintptr)(ptr(modes))
-		trimCallback = purego.NewCallback(func(timer, info uintptr) {
+		trimCallback = mainthread.Callback(purego.NewCallback(func(timer, info uintptr) {
 			if r := trimTimers[info]; r != nil {
 				r.trimIfIdle()
 			}
-		})
-		purego.RegisterFunc(&msgReplaceRegion, msgSend)
-		purego.RegisterFunc(&msgGetBytes, msgSend)
-		purego.RegisterFunc(&msgSetClearColor, msgSend)
-		purego.RegisterFunc(&msgSetSize, msgSend)
-		purego.RegisterFunc(&msgSetRect, msgSend)
-		purego.RegisterFunc(&msgSetFloat, msgSend)
-		purego.RegisterFunc(&msgRect, stret)
+		}))
+		mainthread.BindAddr(&msgReplaceRegion, msgSend, "objc_msgSend")
+		mainthread.BindAddr(&msgGetBytes, msgSend, "objc_msgSend")
+		mainthread.BindAddr(&msgSetClearColor, msgSend, "objc_msgSend")
 		renderPass = class("MTLRenderPassDescriptor")
 		selSetPipeline = sel("setRenderPipelineState:")
 		selSetFragmentTexture = sel("setFragmentTexture:atIndex:")
@@ -256,6 +249,7 @@ func ptr(a uintptr) unsafe.Pointer { return *(*unsafe.Pointer)(unsafe.Pointer(&a
 func send(obj id, selector string, args ...uintptr) id {
 	var a [10]uintptr
 	a[0], a[1] = obj, uintptr(sel(selector))
+	mainthread.CheckSend(a[0], a[1])
 	n := copy(a[2:], args)
 	r, _, _ := purego.SyscallN(msgSend, a[:n+2]...)
 	return r
@@ -266,10 +260,12 @@ func send(obj id, selector string, args ...uintptr) id {
 // they make no copy of their arguments, which purego.SyscallN allocates
 // once.
 func msg2(obj id, selector objc.SEL, a, b uintptr) {
+	mainthread.CheckSend(obj, uintptr(selector))
 	purego.SyscallN(msgSend, obj, uintptr(selector), a, b)
 }
 
 func msg5(obj id, selector objc.SEL, a, b, c, d, e uintptr) {
+	mainthread.CheckSend(obj, uintptr(selector))
 	purego.SyscallN(msgSend, obj, uintptr(selector), a, b, c, d, e)
 }
 
@@ -282,9 +278,35 @@ func (r *Renderer) setScissor(enc id, sc gpu.Scissor) {
 	msg2(enc, selSetScissorRects, uintptr(unsafe.Pointer(&r.scissor)), 1)
 }
 
+// sendMain sends a message whose arguments are integers or pointers on
+// the main thread (mainthread.Send): a message to an object that is
+// neither a Metal object nor a Metal descriptor, as the layer and
+// CATransaction.
+//
+//go:uintptrescapes
+func sendMain(obj id, selector string, args ...uintptr) id {
+	rest := make([]any, len(args))
+	for i, a := range args {
+		rest[i] = a
+	}
+	return mainthread.Send[id](objc.ID(obj), sel(selector), rest...)
+}
+
+// byReceiver sends release, autorelease or commit, which run on the
+// calling thread for a Metal object, a Metal descriptor or a drawable and
+// on the main thread for any other receiver (mainthread.ByReceiver).
+func byReceiver(obj id, selector string) id {
+	return mainthread.ByReceiver(msgSend, obj, uintptr(sel(selector)))
+}
+
+// layerBounds returns the bounds of the layer.
+func layerBounds(layer id) cgRect {
+	return mainthread.Forward[cgRect](msgSendStret, layer, sel("bounds"))
+}
+
 func release(obj *id) {
 	if *obj != 0 {
-		send(*obj, "release")
+		byReceiver(*obj, "release")
 		*obj = 0
 	}
 }
@@ -312,7 +334,9 @@ func describe(err id) string {
 	if err == 0 {
 		return "unknown error"
 	}
-	p := send(send(err, "localizedDescription"), "UTF8String")
+	desc := mainthread.SendRetained(objc.ID(err), sel("localizedDescription"))
+	defer byReceiver(id(desc), "release")
+	p := send(id(desc), "UTF8String")
 	if p == 0 {
 		return "unknown error"
 	}
@@ -504,33 +528,33 @@ func New(layer uintptr) (r *Renderer, err error) {
 			err = errors.New("metal: no CAMetalLayer")
 			return
 		}
-		ml := send(send(class("CAMetalLayer"), "alloc"), "init")
+		ml := sendMain(sendMain(class("CAMetalLayer"), "alloc"), "init")
 		if err = need(ml, "CAMetalLayer", "setDevice:", "setPixelFormat:", "setFramebufferOnly:", "setPresentsWithTransaction:",
 			"setColorspace:", "setDrawableSize:", "setContentsScale:", "setFrame:", "setAutoresizingMask:", "nextDrawable"); err != nil {
 			release(&ml)
 			return
 		}
-		send(ml, "setDevice:", r.device)
-		send(ml, "setPixelFormat:", pixelFormatBGRA8Unorm)
+		sendMain(ml, "setDevice:", r.device)
+		sendMain(ml, "setPixelFormat:", pixelFormatBGRA8Unorm)
 		// Effects read their backdrops from the drawable, which their
 		// passes sample then.
-		send(ml, "setFramebufferOnly:", 0)
+		sendMain(ml, "setFramebufferOnly:", 0)
 		// Two drawables are too few: on a ProMotion display, frames
 		// waited for one most of each refresh. Three, as Core
 		// Animation makes while a window animates, also let both instance
 		// slots have a frame in flight while the display shows a third.
 		// They cost a frame of memory until the window idles (trim).
 		if respondsTo(ml, "setMaximumDrawableCount:") {
-			send(ml, "setMaximumDrawableCount:", 3)
+			sendMain(ml, "setMaximumDrawableCount:", 3)
 		}
 		// The first frame shows with the window's other changes; render
 		// decides for each frame.
-		send(ml, "setPresentsWithTransaction:", 1)
+		sendMain(ml, "setPresentsWithTransaction:", 1)
 		r.synced = true
-		send(ml, "setColorspace:", srgb)
-		send(ml, "setOpaque:", 0)
-		send(ml, "setAutoresizingMask:", layerWidthSizable|layerHeightSizable)
-		send(layer, "addSublayer:", ml)
+		sendMain(ml, "setColorspace:", srgb)
+		sendMain(ml, "setOpaque:", 0)
+		sendMain(ml, "setAutoresizingMask:", layerWidthSizable|layerHeightSizable)
+		sendMain(layer, "addSublayer:", ml)
 		r.layer, r.superlayer = ml, layer
 	})
 	if err != nil {
@@ -563,7 +587,7 @@ func newRenderer() (r *Renderer, err error) {
 }
 
 func (r *Renderer) init() (err error) {
-	r.device = createDevice() // owned: NS_RETURNS_RETAINED
+	r.device = mainthread.Forward[id](createDevice) // owned: NS_RETURNS_RETAINED
 	if err := need(r.device, "Metal device", "newCommandQueue", "newLibraryWithSource:options:error:",
 		"newRenderPipelineStateWithDescriptor:error:", "newSamplerStateWithDescriptor:", "newTextureWithDescriptor:",
 		"newBufferWithLength:options:"); err != nil {
@@ -690,11 +714,11 @@ func (r *Renderer) setLayerWide(on bool) (changed bool) {
 		format, space = pixelFormatRGBA16Float, extendedSRGB
 	}
 	tx := class("CATransaction")
-	send(tx, "begin")
-	send(tx, "setDisableActions:", 1)
-	send(r.layer, "setPixelFormat:", format)
-	send(r.layer, "setColorspace:", space)
-	send(tx, "commit")
+	sendMain(tx, "begin")
+	sendMain(tx, "setDisableActions:", 1)
+	sendMain(r.layer, "setPixelFormat:", format)
+	sendMain(r.layer, "setColorspace:", space)
+	sendMain(tx, "commit")
 	r.layerWide = on
 	return true
 }
@@ -738,12 +762,12 @@ var classConstants = [gpu.NumClasses][8]bool{
 func (r *Renderer) specialized(lib id, fs string, cl uint32, continuous bool) (fn id, errObj id) {
 	if cl&(1<<gpu.ClassGeneral) != 0 {
 		fn = send(lib, "newFunctionWithName:", nsString(fs))
-		if fn == 0 || send(send(fn, "functionConstantsDictionary"), "count") == 0 {
+		if fn == 0 || sendMain(send(fn, "functionConstantsDictionary"), "count") == 0 {
 			return fn, 0
 		}
 		release(&fn)
 	}
-	values := send(send(class("MTLFunctionConstantValues"), "alloc"), "init")
+	values := sendMain(sendMain(class("MTLFunctionConstantValues"), "alloc"), "init")
 	defer release(&values)
 	const dataTypeBool = 53
 	for i := range 8 {
@@ -753,7 +777,7 @@ func (r *Renderer) specialized(lib id, fs string, cl uint32, continuous bool) (f
 				v = 1
 			}
 		}
-		send(values, "setConstantValue:type:atIndex:", uintptr(unsafe.Pointer(&v)), dataTypeBool, uintptr(i))
+		sendMain(values, "setConstantValue:type:atIndex:", uintptr(unsafe.Pointer(&v)), dataTypeBool, uintptr(i))
 	}
 	fn = send(lib, "newFunctionWithName:constantValues:error:", nsString(fs), values, uintptr(unsafe.Pointer(&errObj)))
 	return fn, errObj
@@ -1271,6 +1295,7 @@ func (r *Renderer) drawBuilt(cb id, s *scene.Scene, target id, d *drawState, par
 		}
 		if want != st.pipe {
 			st.pipe = want
+			mainthread.CheckSend(enc, uintptr(selSetPipeline))
 			purego.SyscallN(msgSend, enc, uintptr(selSetPipeline), want)
 		}
 		if b.Image != 0 && b.Image != st.image {
@@ -1676,7 +1701,7 @@ func (r *Renderer) render(s *scene.Scene) error {
 			if sync {
 				on = 1
 			}
-			send(r.layer, "setPresentsWithTransaction:", on)
+			sendMain(r.layer, "setPresentsWithTransaction:", on)
 			r.synced = sync
 		}
 		if !sync {
@@ -1696,17 +1721,19 @@ func (r *Renderer) render(s *scene.Scene) error {
 	if drawable == 0 {
 		// None came within a second: the frame is skipped, its canvases
 		// drawn.
-		send(cb, "commit")
+		byReceiver(cb, "commit")
 		r.track(cb)
 		return nil
 	}
 	if sync {
-		send(cb, "commit")
+		byReceiver(cb, "commit")
 		send(cb, "waitUntilScheduled")
-		send(drawable, "present")
+		r.presenting(drawable)
+		sendMain(drawable, "present")
 	} else {
+		r.presenting(drawable)
 		send(cb, "presentDrawable:", drawable)
-		send(cb, "commit")
+		byReceiver(cb, "commit")
 		// The next frame's drawable, while this one is shown.
 		r.pre.start(r.layer)
 	}
@@ -1719,6 +1746,19 @@ func (r *Renderer) render(s *scene.Scene) error {
 	return nil
 }
 
+// TestPresenting, when set, is called with the layer and the drawable of
+// each frame before the frame requests the drawable's presentation, on
+// the thread that draws the frame. The tests of internal/e2e set it.
+var TestPresenting func(layer, drawable uintptr)
+
+// presenting calls TestPresenting with the drawable that a frame of r
+// presents.
+func (r *Renderer) presenting(drawable id) {
+	if TestPresenting != nil {
+		TestPresenting(r.layer, drawable)
+	}
+}
+
 // prefetched returns the drawable the presenter fetched, autoreleased, or
 // 0 when it has none of the layer's size.
 func (r *Renderer) prefetched() id {
@@ -1728,10 +1768,10 @@ func (r *Renderer) prefetched() id {
 	}
 	t := send(d, "texture")
 	if int(send(t, "width")) != r.w || int(send(t, "height")) != r.h {
-		send(d, "release")
+		byReceiver(d, "release")
 		return 0
 	}
-	return send(d, "autorelease")
+	return byReceiver(d, "autorelease")
 }
 
 // drawFrame encodes the frame s, which changed damage since the last frame
@@ -1816,18 +1856,18 @@ func (r *Renderer) forgetFrames() {
 // fit sizes the layer and its drawables for frames of w×h pixels at
 // scale, and as its view, and reports whether they changed.
 func (r *Renderer) fit(w, h int, scale float64) (changed bool) {
-	bounds := msgRect(r.superlayer, sel("bounds"))
+	bounds := layerBounds(r.superlayer)
 	if w == r.w && h == r.h && scale == r.scale && bounds == r.bounds && !r.trimmed {
 		return false
 	}
 	// Without animating the change, as layers do by default.
 	tx := class("CATransaction")
-	send(tx, "begin")
-	send(tx, "setDisableActions:", 1)
-	msgSetRect(r.layer, sel("setFrame:"), bounds)
-	msgSetFloat(r.layer, sel("setContentsScale:"), scale)
-	msgSetSize(r.layer, sel("setDrawableSize:"), cgSize{float64(w), float64(h)})
-	send(tx, "commit")
+	sendMain(tx, "begin")
+	sendMain(tx, "setDisableActions:", 1)
+	mainthread.Forward[struct{}](msgSend, r.layer, sel("setFrame:"), bounds)
+	mainthread.Forward[struct{}](msgSend, r.layer, sel("setContentsScale:"), scale)
+	mainthread.Forward[struct{}](msgSend, r.layer, sel("setDrawableSize:"), cgSize{float64(w), float64(h)})
+	sendMain(tx, "commit")
 	r.w, r.h, r.scale, r.bounds, r.trimmed = w, h, scale, bounds, false
 	return true
 }
@@ -1920,10 +1960,10 @@ func (r *Renderer) trim() {
 		r.ages.Reset()
 		r.diff.Release()
 		tx := class("CATransaction")
-		send(tx, "begin")
-		send(tx, "setDisableActions:", 1)
-		msgSetSize(r.layer, sel("setDrawableSize:"), cgSize{1, 1})
-		send(tx, "commit")
+		sendMain(tx, "begin")
+		sendMain(tx, "setDisableActions:", 1)
+		mainthread.Forward[struct{}](msgSend, r.layer, sel("setDrawableSize:"), cgSize{1, 1})
+		sendMain(tx, "commit")
 	})
 	r.trimmed = true
 }
@@ -1947,7 +1987,7 @@ func (r *Renderer) renderOffscreen(s *scene.Scene) (pix []byte, err error) {
 		blit := send(cb, "blitCommandEncoder")
 		send(blit, "synchronizeResource:", tex)
 		send(blit, "endEncoding")
-		send(cb, "commit")
+		byReceiver(cb, "commit")
 		send(cb, "waitUntilCompleted")
 		if int(send(cb, "status")) == statusError {
 			err = fmt.Errorf("metal: the frame failed: %s", describe(send(cb, "error")))
@@ -1966,8 +2006,8 @@ func (r *Renderer) Release() {
 	r.pre.stop()
 	r.b.Release()
 	if r.trimTimer != 0 {
-		purego.SyscallN(cfRunLoopTimerInvalidate, r.trimTimer)
-		purego.SyscallN(cfRelease, r.trimTimer)
+		mainthread.Forward[struct{}](cfRunLoopTimerInvalidate, r.trimTimer)
+		mainthread.ByReceiver(cfRelease, r.trimTimer)
 		delete(trimTimers, r.trimHandle)
 		r.trimTimer = 0
 	}
@@ -1976,10 +2016,10 @@ func (r *Renderer) Release() {
 		r.waitLast()
 		if r.layer != 0 {
 			tx := class("CATransaction")
-			send(tx, "begin")
-			send(tx, "setDisableActions:", 1)
-			send(r.layer, "removeFromSuperlayer")
-			send(tx, "commit")
+			sendMain(tx, "begin")
+			sendMain(tx, "setDisableActions:", 1)
+			sendMain(r.layer, "removeFromSuperlayer")
+			sendMain(tx, "commit")
 			release(&r.layer)
 		}
 		r.releaseTextures()

@@ -121,6 +121,11 @@ func (a *Application) Run() error {
 	a.mu.Unlock()
 	go cleanUpdateLeftovers()
 
+	return backend().Run(a.start, a.finish)
+}
+
+// start is the Go code of Run before the event loop.
+func (a *Application) start() error {
 	b := backend()
 	if err := b.Init(appHandler{}, platform.AppOptions{
 		Name:             a.Name(),
@@ -143,9 +148,7 @@ func (a *Application) Run() error {
 	quitOnSignals()
 	// Run whatever was scheduled before the event loop existed.
 	b.Signal()
-	err := b.Run()
-	a.finish()
-	return err
+	return nil
 }
 
 // needsApp panics when main calls something that needs the running app

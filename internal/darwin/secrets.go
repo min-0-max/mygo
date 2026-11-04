@@ -59,14 +59,13 @@ type keychainAPI struct {
 	matchLimit, matchLimitOne, cfTrue  id
 }
 
-// query returns an autoreleased dictionary that finds the item of service
-// and account.
+// query returns an owned dictionary that finds the item of service and
+// account, which the caller releases.
 func (k *keychainAPI) query(service, account string) id {
-	q := send(class("NSMutableDictionary"), "dictionary")
-	set := func(key, v id) { send(q, "setObject:forKey:", uintptr(v), uintptr(key)) }
-	set(k.class, k.genericPassword)
-	set(k.service, nsString(service))
-	set(k.account, nsString(account))
+	q := newDictionary()
+	setObject(q, k.genericPassword, k.class)
+	setObject(q, nsString(service), k.service)
+	setObject(q, nsString(account), k.account)
 	return q
 }
 
@@ -98,20 +97,24 @@ func (secrets) SetSecret(service, account string, secret []byte) (err error) {
 	}
 	withPool(func() {
 		data := nsData(secret)
-		update := send(class("NSMutableDictionary"), "dictionary")
-		send(update, "setObject:forKey:", uintptr(data), uintptr(k.valueData))
-		r, _, _ := purego.SyscallN(k.update, uintptr(k.query(service, account)), uintptr(update))
+		update := newDictionary()
+		defer release(update)
+		setObject(update, data, k.valueData)
+		q := k.query(service, account)
+		defer release(q)
+		r, _, _ := purego.SyscallN(k.update, uintptr(q), uintptr(update))
 		if s := osStatus(r); s != errSecItemNotFound {
 			err = k.status("update", s)
 			return
 		}
 		add := k.query(service, account)
-		send(add, "setObject:forKey:", uintptr(data), uintptr(k.valueData))
-		send(add, "setObject:forKey:", uintptr(nsString(service)), uintptr(k.label))
+		defer release(add)
+		setObject(add, data, k.valueData)
+		setObject(add, nsString(service), k.label)
 		r, _, _ = purego.SyscallN(k.add, uintptr(add), 0)
 		if s := osStatus(r); s == errSecDuplicateItem {
 			// Added by another thread or process since the update.
-			r, _, _ = purego.SyscallN(k.update, uintptr(k.query(service, account)), uintptr(update))
+			r, _, _ = purego.SyscallN(k.update, uintptr(q), uintptr(update))
 			err = k.status("update", osStatus(r))
 		} else {
 			err = k.status("add", s)
@@ -127,8 +130,9 @@ func (secrets) Secret(service, account string) (secret []byte, err error) {
 	}
 	withPool(func() {
 		q := k.query(service, account)
-		send(q, "setObject:forKey:", uintptr(k.cfTrue), uintptr(k.returnData))
-		send(q, "setObject:forKey:", uintptr(k.matchLimitOne), uintptr(k.matchLimit))
+		defer release(q)
+		setObject(q, k.cfTrue, k.returnData)
+		setObject(q, k.matchLimitOne, k.matchLimit)
 		var data uintptr
 		r, _, _ := purego.SyscallN(k.copy, uintptr(q), uintptr(unsafe.Pointer(&data)))
 		if err = k.status("read", osStatus(r)); err != nil {
@@ -138,10 +142,7 @@ func (secrets) Secret(service, account string) (secret []byte, err error) {
 			err = errors.New("keychain: read: no data")
 			return
 		}
-		secret = goBytes(id(data))
-		if secret == nil {
-			secret = []byte{}
-		}
+		secret = cfDataBytes(data)
 		cfRelease(data)
 	})
 	return secret, err
@@ -153,7 +154,9 @@ func (secrets) DeleteSecret(service, account string) (err error) {
 		return k.err
 	}
 	withPool(func() {
-		r, _, _ := purego.SyscallN(k.delete, uintptr(k.query(service, account)))
+		q := k.query(service, account)
+		defer release(q)
+		r, _, _ := purego.SyscallN(k.delete, uintptr(q))
 		if err = k.status("delete", osStatus(r)); errors.Is(err, platform.ErrSecretNotFound) {
 			err = nil
 		}

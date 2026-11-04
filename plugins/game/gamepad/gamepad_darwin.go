@@ -8,19 +8,23 @@ import (
 
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
+
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 )
 
 // macOS reads pads through GameController.framework: GCController's
 // controllers with an extended gamepad profile, which Xbox, PlayStation,
 // Switch Pro and MFi controllers have. The framework finds controllers
-// on the main run loop, which a running MyGo app turns.
+// on the main run loop, which a running MyGo app turns. The messages to
+// the controllers and to the list of them run on the main thread, which
+// also takes the references that the reader keeps; the messages to the
+// strings that a controller returns run on the calling thread.
 
 var (
 	gcOnce sync.Once
 	gcOK   bool
 
-	poolPush, poolPop uintptr
-	sendFloat         func(id objc.ID, sel objc.SEL) float32
+	poolPush, poolPop, msgSend uintptr
 
 	selControllers, selCount, selObjectAt, selExtended, selVendor, selUTF8,
 	selValue, selXAxis, selYAxis, selRetain, selRelease, selResponds objc.SEL
@@ -43,11 +47,9 @@ func loadGC() bool {
 		if poolPop, err = purego.Dlsym(libobjc, "objc_autoreleasePoolPop"); err != nil {
 			return
 		}
-		msgSend, err := purego.Dlsym(libobjc, "objc_msgSend")
-		if err != nil {
+		if msgSend, err = purego.Dlsym(libobjc, "objc_msgSend"); err != nil {
 			return
 		}
-		purego.RegisterFunc(&sendFloat, msgSend)
 		sel := objc.RegisterName
 		selControllers, selCount, selObjectAt = sel("controllers"), sel("count"), sel("objectAtIndex:")
 		selExtended, selVendor, selUTF8 = sel("extendedGamepad"), sel("vendorName"), sel("UTF8String")
@@ -85,17 +87,19 @@ type gcPad struct {
 	title string
 }
 
-func controllers() []objc.ID {
-	list := objc.ID(objc.GetClass("GCController")).Send(selControllers)
+// controllers returns the controllers, which the list that it returns
+// holds until release releases it.
+func controllers() (ids []objc.ID, release func()) {
+	list := mainthread.SendRetained(objc.ID(objc.GetClass("GCController")), selControllers)
 	if list == 0 {
-		return nil
+		return nil, func() {}
 	}
-	n := int(objc.Send[uint](list, selCount))
-	ids := make([]objc.ID, n)
+	n := int(mainthread.Send[uint](list, selCount))
+	ids = make([]objc.ID, n)
 	for i := range n {
-		ids[i] = list.Send(selObjectAt, uint(i))
+		ids[i] = mainthread.Send[objc.ID](list, selObjectAt, uint(i))
 	}
-	return ids
+	return ids, func() { mainthread.ByReceiver(msgSend, uintptr(list), uintptr(selRelease)) }
 }
 
 func scan(known map[string]device) []device {
@@ -104,8 +108,10 @@ func scan(known map[string]device) []device {
 	}
 	var found []device
 	withPool(func() {
-		for _, c := range controllers() {
-			if c.Send(selExtended) == 0 {
+		list, release := controllers()
+		defer release()
+		for _, c := range list {
+			if mainthread.Send[objc.ID](c, selExtended) == 0 {
 				continue // a remote or a micro gamepad
 			}
 			k := strconv.FormatUint(uint64(c), 16)
@@ -113,9 +119,12 @@ func scan(known map[string]device) []device {
 				found = append(found, d)
 				continue
 			}
+			mainthread.CheckSend(uintptr(c), uintptr(selRetain))
 			d := &gcPad{ctl: c.Send(selRetain)}
-			if v := c.Send(selVendor); v != 0 {
+			if v := mainthread.SendRetained(c, selVendor); v != 0 {
+				mainthread.CheckSend(uintptr(v), uintptr(selUTF8))
 				d.title = goString(objc.Send[uintptr](v, selUTF8))
+				mainthread.ByReceiver(msgSend, uintptr(v), uintptr(selRelease))
 			}
 			found = append(found, d)
 		}
@@ -138,12 +147,14 @@ func goString(p uintptr) string {
 
 func (d *gcPad) key() string  { return strconv.FormatUint(uint64(d.ctl), 16) }
 func (d *gcPad) name() string { return d.title }
-func (d *gcPad) close()       { d.ctl.Send(selRelease) }
+func (d *gcPad) close()       { mainthread.ByReceiver(msgSend, uintptr(d.ctl), uintptr(selRelease)) }
 
 // gcPresent reports whether a controller is still among the controllers;
 // tests replace it.
 var gcPresent = func(ctl objc.ID) bool {
-	for _, c := range controllers() {
+	list, release := controllers()
+	defer release()
+	for _, c := range list {
 		if c == ctl {
 			return true
 		}
@@ -155,7 +166,7 @@ func value(input objc.ID) float32 {
 	if input == 0 {
 		return 0
 	}
-	return sendFloat(input, selValue)
+	return mainthread.Send[float32](input, selValue)
 }
 
 func (d *gcPad) read(s *State) bool {
@@ -164,29 +175,32 @@ func (d *gcPad) read(s *State) bool {
 		if ok = gcPresent(d.ctl); !ok {
 			return
 		}
-		gp := d.ctl.Send(selExtended)
+		gp := mainthread.Send[objc.ID](d.ctl, selExtended)
 		if gp == 0 {
 			ok = false
 			return
 		}
 		for b, sel := range buttonSels {
 			// Older systems have no Home or Options button.
+			if sel != 0 {
+				mainthread.CheckSend(uintptr(gp), uintptr(selResponds))
+			}
 			if sel != 0 && objc.Send[bool](gp, selResponds, sel) {
-				s.Buttons[b] = value(gp.Send(sel))
+				s.Buttons[b] = value(mainthread.Send[objc.ID](gp, sel))
 			}
 		}
-		if pad := gp.Send(selDpad); pad != 0 {
-			s.Buttons[Up] = value(pad.Send(selUp))
-			s.Buttons[Down] = value(pad.Send(selDown))
-			s.Buttons[Left] = value(pad.Send(selLeft))
-			s.Buttons[Right] = value(pad.Send(selRight))
+		if pad := mainthread.Send[objc.ID](gp, selDpad); pad != 0 {
+			s.Buttons[Up] = value(mainthread.Send[objc.ID](pad, selUp))
+			s.Buttons[Down] = value(mainthread.Send[objc.ID](pad, selDown))
+			s.Buttons[Left] = value(mainthread.Send[objc.ID](pad, selLeft))
+			s.Buttons[Right] = value(mainthread.Send[objc.ID](pad, selRight))
 		}
 		// GameController's y axes go up.
-		if st := gp.Send(selLeftStick); st != 0 {
-			s.Axes[LeftX], s.Axes[LeftY] = value(st.Send(selXAxis)), -value(st.Send(selYAxis))
+		if st := mainthread.Send[objc.ID](gp, selLeftStick); st != 0 {
+			s.Axes[LeftX], s.Axes[LeftY] = value(mainthread.Send[objc.ID](st, selXAxis)), -value(mainthread.Send[objc.ID](st, selYAxis))
 		}
-		if st := gp.Send(selRightStick); st != 0 {
-			s.Axes[RightX], s.Axes[RightY] = value(st.Send(selXAxis)), -value(st.Send(selYAxis))
+		if st := mainthread.Send[objc.ID](gp, selRightStick); st != 0 {
+			s.Axes[RightX], s.Axes[RightY] = value(mainthread.Send[objc.ID](st, selXAxis)), -value(mainthread.Send[objc.ID](st, selYAxis))
 		}
 	})
 	return ok

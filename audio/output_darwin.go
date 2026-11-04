@@ -8,6 +8,8 @@ import (
 	"unsafe"
 
 	"github.com/ebitengine/purego"
+
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 )
 
 // macOS plays through an Audio Queue on the default output, which follows
@@ -45,15 +47,18 @@ var (
 	aqLoad sync.Once
 	aqErr  error
 
-	audioQueueNewOutput      func(format *audioStreamBasicDescription, callback uintptr, user uintptr, runLoop, runLoopMode uintptr, flags uint32, out *uintptr) int32
-	audioQueueAllocateBuffer func(q uintptr, size uint32, out **audioQueueBuffer) int32
-	audioQueueEnqueueBuffer  func(q uintptr, b *audioQueueBuffer, n uint32, descs uintptr) int32
-	audioQueueStart          func(q uintptr, at uintptr) int32
-	audioQueueStop           func(q uintptr, immediate bool) int32
-	audioQueueDispose        func(q uintptr, immediate bool) int32
+	// The functions of Audio Queue Services, which run on the main thread
+	// (mainthread.Forward).
+	audioQueueNewOutput      uintptr
+	audioQueueAllocateBuffer uintptr
+	audioQueueEnqueueBuffer  uintptr
+	audioQueueStart          uintptr
+	audioQueueStop           uintptr
+	audioQueueDispose        uintptr
 
 	// aqCallback is created once; queues route buffers back to the device
-	// open, through aqCurrent.
+	// open, through aqCurrent. It is the trampoline of the worker for the
+	// purego callback, which the queue's own thread calls.
 	aqCallback uintptr
 	aqCurrent  atomic.Pointer[aqDevice]
 )
@@ -65,21 +70,31 @@ func loadAudioToolbox() error {
 			aqErr = err
 			return
 		}
-		purego.RegisterLibFunc(&audioQueueNewOutput, lib, "AudioQueueNewOutput")
-		purego.RegisterLibFunc(&audioQueueAllocateBuffer, lib, "AudioQueueAllocateBuffer")
-		purego.RegisterLibFunc(&audioQueueEnqueueBuffer, lib, "AudioQueueEnqueueBuffer")
-		purego.RegisterLibFunc(&audioQueueStart, lib, "AudioQueueStart")
-		purego.RegisterLibFunc(&audioQueueStop, lib, "AudioQueueStop")
-		purego.RegisterLibFunc(&audioQueueDispose, lib, "AudioQueueDispose")
+		for _, f := range []struct {
+			addr *uintptr
+			name string
+		}{
+			{&audioQueueNewOutput, "AudioQueueNewOutput"},
+			{&audioQueueAllocateBuffer, "AudioQueueAllocateBuffer"},
+			{&audioQueueEnqueueBuffer, "AudioQueueEnqueueBuffer"},
+			{&audioQueueStart, "AudioQueueStart"},
+			{&audioQueueStop, "AudioQueueStop"},
+			{&audioQueueDispose, "AudioQueueDispose"},
+		} {
+			if *f.addr, err = purego.Dlsym(lib, f.name); err != nil {
+				aqErr = err
+				return
+			}
+		}
 		// The queue's own thread calls it when it is done with a buffer.
-		aqCallback = purego.NewCallback(func(user, q uintptr, b *audioQueueBuffer) {
+		aqCallback = mainthread.Callback(purego.NewCallback(func(user, q uintptr, b *audioQueueBuffer) {
 			if d := aqCurrent.Load(); d != nil && d.q == q {
 				select {
 				case d.free <- b:
 				default:
 				}
 			}
-		})
+		}))
 	})
 	return aqErr
 }
@@ -108,13 +123,13 @@ func openDevice(ahead time.Duration) (device, int, error) {
 	}
 	n := max(2, int((int64(ahead)*sampleRate/int64(time.Second)+aqFrames-1)/aqFrames))
 	d := &aqDevice{free: make(chan *audioQueueBuffer, n), buffers: n}
-	if st := audioQueueNewOutput(&desc, aqCallback, 0, 0, 0, 0, &d.q); st != 0 {
+	if st := mainthread.Forward[int32](audioQueueNewOutput, &desc, aqCallback, uintptr(0), uintptr(0), uintptr(0), uint32(0), &d.q); st != 0 {
 		return nil, 0, fmt.Errorf("audio: AudioQueueNewOutput failed (OSStatus %d)", st)
 	}
 	for range n {
 		var b *audioQueueBuffer
-		if st := audioQueueAllocateBuffer(d.q, aqFrames*channels*4, &b); st != 0 {
-			audioQueueDispose(d.q, true)
+		if st := mainthread.Forward[int32](audioQueueAllocateBuffer, d.q, uint32(aqFrames*channels*4), &b); st != 0 {
+			mainthread.Forward[int32](audioQueueDispose, d.q, true)
 			return nil, 0, fmt.Errorf("audio: AudioQueueAllocateBuffer failed (OSStatus %d)", st)
 		}
 		d.free <- b
@@ -133,14 +148,14 @@ func (d *aqDevice) write(samples []float32) error {
 	}
 	copy(unsafe.Slice((*float32)(b.audioData), len(samples)), samples)
 	b.audioDataByteSize = uint32(len(samples) * 4)
-	if st := audioQueueEnqueueBuffer(d.q, b, 0, 0); st != 0 {
+	if st := mainthread.Forward[int32](audioQueueEnqueueBuffer, d.q, b, uint32(0), uintptr(0)); st != 0 {
 		return fmt.Errorf("audio: AudioQueueEnqueueBuffer failed (OSStatus %d)", st)
 	}
 	if !d.started {
 		// Start once every buffer holds something, not to begin with an
 		// underrun.
 		if d.queued++; d.queued == d.buffers {
-			if st := audioQueueStart(d.q, 0); st != 0 {
+			if st := mainthread.Forward[int32](audioQueueStart, d.q, uintptr(0)); st != 0 {
 				return fmt.Errorf("audio: AudioQueueStart failed (OSStatus %d)", st)
 			}
 			d.started = true
@@ -151,6 +166,6 @@ func (d *aqDevice) write(samples []float32) error {
 
 func (d *aqDevice) close() {
 	aqCurrent.CompareAndSwap(d, nil)
-	audioQueueStop(d.q, true)
-	audioQueueDispose(d.q, true)
+	mainthread.Forward[int32](audioQueueStop, d.q, true)
+	mainthread.Forward[int32](audioQueueDispose, d.q, true)
 }

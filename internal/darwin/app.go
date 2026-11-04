@@ -9,6 +9,7 @@ import (
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
 
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/platform"
 )
 
@@ -78,10 +79,9 @@ var theBackend *Backend
 
 func (b *Backend) Name() string { return "darwin/wkwebview" }
 
-func (b *Backend) IsMainThread() bool {
-	r, _, _ := purego.SyscallN(mainNPFn)
-	return int32(r) != 0
-}
+// IsMainThread reports whether the calling thread counts as the main
+// thread: the main thread, and the worker while it runs a step.
+func (b *Backend) IsMainThread() bool { return mainthread.IsMainThread() }
 
 const (
 	nsApplicationActivationPolicyRegular    = 0
@@ -113,10 +113,11 @@ func (b *Backend) Init(h platform.AppHandler, opts platform.AppOptions) error {
 	// NSAutoFillHeuristicsEnabled, and without it starts Safari's AutoFill
 	// helper as soon as a view takes text input.
 	no := nsBool(false)
-	send(send(class("NSUserDefaults"), "standardUserDefaults"), "registerDefaults:",
-		uintptr(send(class("NSDictionary"), "dictionaryWithObjects:forKeys:",
-			uintptr(nsArray(no, no)),
-			uintptr(nsArray(nsString("NSAutoFillHeuristicControllerEnabled"), nsString("NSAutoFillHeuristicsEnabled"))))))
+	autoFill := newDictionary()
+	setObject(autoFill, no, nsString("NSAutoFillHeuristicControllerEnabled"))
+	setObject(autoFill, no, nsString("NSAutoFillHeuristicsEnabled"))
+	send(send(class("NSUserDefaults"), "standardUserDefaults"), "registerDefaults:", uintptr(autoFill))
+	release(autoFill)
 
 	b.app = send(class("NSApplication"), "sharedApplication")
 	send(b.app, "setActivationPolicy:", activationPolicy(opts.ActivationPolicy))
@@ -159,16 +160,28 @@ func (b *Backend) Init(h platform.AppHandler, opts platform.AppOptions) error {
 	return nil
 }
 
-var dispatchCallback = purego.NewCallback(func(info uintptr) {
+var dispatchCallback = mainthread.Callback(purego.NewCallback(func(info uintptr) {
 	withPool(func() {
 		drainMainQueue()
 		theBackend.h.Dispatch()
 	})
-})
+}))
 
-func (b *Backend) Run() error {
-	send(b.app, "run")
-	return nil
+// Run runs start and finish on the worker of the main thread as steps,
+// around the event loop of AppKit, which runs on the main thread
+// (mainthread.Run) with no Go code of the main thread in between: run of
+// the shared application, which start makes as it initializes the
+// backend (Init). While a
+// step runs, the main thread runs the calls that the worker forwards to
+// it, and during the event loop the callbacks of AppKit reach the worker
+// through the trampolines of the worker.
+func (b *Backend) Run(start func() error, finish func()) error {
+	return mainthread.Run(func() (mainthread.Call, error) {
+		if err := start(); err != nil {
+			return mainthread.Call{}, err
+		}
+		return mainthread.SendCall(objc.ID(b.app), sel("run")), nil
+	}, finish)
 }
 
 func (b *Backend) Quit() {
@@ -197,28 +210,47 @@ const (
 	wakeSubtype                   = 0x6d67 // 'mg'
 )
 
+// postEvent posts an application-defined event of subtype, from any
+// thread, in one step (mainthread.RunOnMain): from another thread the main
+// thread runs the two calls of the step inside one callout of its run
+// loop, so the event that the first autoreleases there is still there for
+// the second. Forwarded one by one from another thread, the two calls would
+// run in passes of the main run loop of their own, whose autorelease pool
+// the main thread drains between them.
 func (b *Backend) postEvent(subtype int16) {
-	withPool(func() {
-		ev := msgOtherEvent(class("NSEvent"), sel("otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:"),
-			nsEventTypeApplicationDefined, NSPoint{}, 0, 0, 0, 0, subtype, 0, 0)
-		send(b.app, "postEvent:atStart:", uintptr(ev), 1)
+	mainthread.RunOnMain(func() {
+		withPool(func() {
+			ev := msgOtherEvent(class("NSEvent"), sel("otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:"),
+				nsEventTypeApplicationDefined, NSPoint{}, 0, 0, 0, 0, subtype, 0, 0)
+			send(b.app, "postEvent:atStart:", uintptr(ev), 1)
+		})
 	})
 }
 
-func (b *Backend) Step() {
+// Step runs the event loop of the main thread once (mainthread.RunOnMain):
+// its Go runs on the worker, the main thread runs the calls that it
+// forwards, and the callbacks of the event that it sends run on the worker
+// as nested steps. What it autoreleases on the worker and what its calls
+// autorelease on the main thread go in pools of the two threads that each
+// Step drains, as await runs Step again and again inside one step.
+func (b *Backend) Step() { mainthread.RunOnMain(b.step) }
+
+func (b *Backend) step() {
 	b.stepping++
 	defer func() { b.stepping-- }()
 	withPool(func() {
-		until := msgDateSince(class("NSDate"), sel("dateWithTimeIntervalSinceNow:"), 0.5)
-		mode := nsString("kCFRunLoopDefaultMode")
-		ev := msgNextEvent(b.app, sel("nextEventMatchingMask:untilDate:inMode:dequeue:"), ^uint64(0), until, mode, true)
-		if ev == 0 {
-			return
-		}
-		if sendInt(ev, "type") == nsEventTypeApplicationDefined && int16(sendInt(ev, "subtype")) == wakeSubtype {
-			return
-		}
-		send(b.app, "sendEvent:", uintptr(ev))
+		withMainPool(func() {
+			until := msgDateSince(class("NSDate"), sel("dateWithTimeIntervalSinceNow:"), 0.5)
+			mode := nsString("kCFRunLoopDefaultMode")
+			ev := msgNextEvent(b.app, sel("nextEventMatchingMask:untilDate:inMode:dequeue:"), ^uint64(0), until, mode, true)
+			if ev == 0 {
+				return
+			}
+			if sendInt(ev, "type") == nsEventTypeApplicationDefined && int16(sendInt(ev, "subtype")) == wakeSubtype {
+				return
+			}
+			send(b.app, "sendEvent:", uintptr(ev))
+		})
 	})
 }
 
@@ -450,10 +482,11 @@ func (a appController) SetDockIcon(png []byte) error {
 }
 
 func (a appController) ShowAboutPanel(o platform.AboutPanelOptions) {
-	dict := send(class("NSMutableDictionary"), "dictionary")
+	dict := newDictionary()
+	defer release(dict)
 	set := func(key, value string) {
 		if value != "" {
-			send(dict, "setObject:forKey:", uintptr(nsString(value)), uintptr(nsString(key)))
+			setObject(dict, nsString(value), nsString(key))
 		}
 	}
 	set("ApplicationName", o.ApplicationName)
@@ -462,31 +495,37 @@ func (a appController) ShowAboutPanel(o platform.AboutPanelOptions) {
 	set("Copyright", o.Copyright)
 	if o.Credits != "" {
 		credits := autorelease(send(send(class("NSAttributedString"), "alloc"), "initWithString:", uintptr(nsString(o.Credits))))
-		send(dict, "setObject:forKey:", uintptr(credits), uintptr(nsString("Credits")))
+		setObject(dict, credits, nsString("Credits"))
 	}
 	send(a.b.app, "activateIgnoringOtherApps:", 1)
 	send(a.b.app, "orderFrontStandardAboutPanelWithOptions:", uintptr(dict))
 }
 
+// Package reads the main bundle in one step (mainthread.RunOnMain), from
+// any goroutine: the strings that the bundle returns are autoreleased on
+// the main thread, which drains no pool until the step returned, and the
+// step copies them.
 func (a appController) Package() (platform.PackageInfo, bool) {
 	var info platform.PackageInfo
 	ok := false
-	withPool(func() {
-		bundle := send(class("NSBundle"), "mainBundle")
-		path := goString(send(bundle, "bundlePath"))
-		if !strings.HasSuffix(path, ".app") {
-			return
-		}
-		ok = true
-		get := func(key string) string {
-			return goString(send(bundle, "objectForInfoDictionaryKey:", uintptr(nsString(key))))
-		}
-		info.Name = get("CFBundleDisplayName")
-		if info.Name == "" {
-			info.Name = get("CFBundleName")
-		}
-		info.Version = get("CFBundleShortVersionString")
-		info.Identifier = goString(send(bundle, "bundleIdentifier"))
+	mainthread.RunOnMain(func() {
+		withPool(func() {
+			bundle := send(class("NSBundle"), "mainBundle")
+			path := goString(send(bundle, "bundlePath"))
+			if !strings.HasSuffix(path, ".app") {
+				return
+			}
+			ok = true
+			get := func(key string) string {
+				return goString(send(bundle, "objectForInfoDictionaryKey:", uintptr(nsString(key))))
+			}
+			info.Name = get("CFBundleDisplayName")
+			if info.Name == "" {
+				info.Name = get("CFBundleName")
+			}
+			info.Version = get("CFBundleShortVersionString")
+			info.Identifier = goString(send(bundle, "bundleIdentifier"))
+		})
 	})
 	return info, ok
 }

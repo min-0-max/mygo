@@ -17,7 +17,7 @@ func TestZoomedFrames(t *testing.T) {
 		t.Skip("no Metal:", err)
 	}
 	var layer id
-	pool(func() { layer = send(class("CALayer"), "new") })
+	pool(func() { layer = sendMain(class("CALayer"), "new") })
 	if layer == 0 {
 		t.Skip("no Core Animation")
 	}

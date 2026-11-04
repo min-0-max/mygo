@@ -35,6 +35,10 @@ import (
 
 var fb *fake.Backend
 
+// workerTestMain, set on platforms with the worker of the main thread, is
+// the helper process of the test of the worker.
+var workerTestMain func()
+
 // TestMain runs the application on the main goroutine with the fake
 // backend, like a real program, and the tests on another goroutine.
 func TestMain(m *testing.M) {
@@ -55,6 +59,9 @@ func TestMain(m *testing.M) {
 			fmt.Println("passed the foreground on")
 		}
 		os.Exit(0)
+	}
+	if os.Getenv("MYGO_TEST_WORKER") == "1" && workerTestMain != nil {
+		workerTestMain()
 	}
 	fb = fake.New()
 	backendOnce.Do(func() { theBackend = fb })

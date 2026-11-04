@@ -7,9 +7,9 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
 
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/platform"
 )
 
@@ -117,13 +117,12 @@ func (s *surface) PlaceWebViews(views []platform.WebViewPlacement) {
 }
 
 var (
-	paneOnce        sync.Once
-	msgPointToLayer func(obj id, sel objc.SEL, p NSPoint) NSPoint
-	cgPathCreate    func() uintptr
-	cgPathMoveTo    func(path, transform uintptr, x, y float64)
-	cgPathArcTo     func(path, transform uintptr, x1, y1, x2, y2, radius float64)
-	cgPathClose     func(path uintptr)
-	cgPathRelease   func(path uintptr)
+	paneOnce      sync.Once
+	cgPathCreate  func() uintptr
+	cgPathMoveTo  func(path, transform uintptr, x, y float64)
+	cgPathArcTo   func(path, transform uintptr, x1, y1, x2, y2, radius float64)
+	cgPathClose   func(path uintptr)
+	cgPathRelease func(path uintptr)
 )
 
 // roundPane cuts the pane of the web view w, its bounds width by height,
@@ -131,12 +130,11 @@ var (
 // as continuous as the content's when they are the same.
 func (w *window) roundPane(radii [4]float64, width, height float64) {
 	paneOnce.Do(func() {
-		purego.RegisterFunc(&msgPointToLayer, msgSendAddr)
-		purego.RegisterLibFunc(&cgPathCreate, libCG, "CGPathCreateMutable")
-		purego.RegisterLibFunc(&cgPathMoveTo, libCG, "CGPathMoveToPoint")
-		purego.RegisterLibFunc(&cgPathArcTo, libCG, "CGPathAddArcToPoint")
-		purego.RegisterLibFunc(&cgPathClose, libCG, "CGPathCloseSubpath")
-		purego.RegisterLibFunc(&cgPathRelease, libCG, "CGPathRelease")
+		mainthread.Bind(&cgPathCreate, libCG, "CGPathCreateMutable")
+		mainthread.Bind(&cgPathMoveTo, libCG, "CGPathMoveToPoint")
+		mainthread.Bind(&cgPathArcTo, libCG, "CGPathAddArcToPoint")
+		mainthread.Bind(&cgPathClose, libCG, "CGPathCloseSubpath")
+		mainthread.Bind(&cgPathRelease, libCG, "CGPathRelease")
 	})
 	layer := send(w.pane, "layer")
 	if radii == [4]float64{} {
@@ -146,7 +144,7 @@ func (w *window) roundPane(radii [4]float64, width, height float64) {
 	}
 	// The pane's corners in its layer, which AppKit scales and flips as
 	// it does: by the layer's own transform, or its sublayers'.
-	toLayer := func(x, y float64) NSPoint { return msgPointToLayer(w.pane, sel("convertPointToLayer:"), NSPoint{x, y}) }
+	toLayer := func(x, y float64) NSPoint { return msgPointToPoint(w.pane, sel("convertPointToLayer:"), NSPoint{x, y}) }
 	corners := [4]NSPoint{toLayer(0, 0), toLayer(width, 0), toLayer(width, height), toLayer(0, height)}
 	k := math.Abs(corners[1].X-corners[0].X) / width // the layer's units per the bounds'
 	same, r := true, 0.0
@@ -391,17 +389,17 @@ func (w *window) closeWebViews() {
 	}
 }
 
-var (
-	exitOnce     sync.Once
-	msgExitEvent func(cls id, sel objc.SEL, typ uint, loc NSPoint, flags uint, ts float64, wn int, ctx id, en, tn int, data uintptr) id
-)
+// msgExitEvent makes an enter or exit event on the main thread
+// (mainthread.Forward).
+func msgExitEvent(cls id, s objc.SEL, typ uint, loc NSPoint, flags uint, ts float64, wn int, ctx id, en, tn int, data uintptr) id {
+	return mainthread.Forward[id](msgSendAddr, cls, s, typ, loc, flags, ts, wn, ctx, en, tn, data)
+}
 
 // leave tells the page of the web view w that the pointer left it, as it
 // went onto what the content painted over the page: an exit outside the
 // view, which WebKit takes as a move there, unhovering what was under the
 // pointer.
 func (w *window) leave(ev id) {
-	exitOnce.Do(func() { purego.RegisterFunc(&msgExitEvent, msgSendAddr) })
 	const typeMouseExited = 9 // NSEventTypeMouseExited
 	exit := msgExitEvent(class("NSEvent"), sel("enterExitEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:trackingNumber:userData:"),
 		typeMouseExited, NSPoint{X: -1e5, Y: -1e5}, 0, msgFloat(ev, sel("timestamp")), sendInt(w.win, "windowNumber"), 0, 0, 0, 0)

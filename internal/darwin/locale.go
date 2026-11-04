@@ -6,8 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/ebitengine/purego"
-
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/platform"
 )
 
@@ -21,24 +20,37 @@ import (
 // their own texts in from the next launch.
 
 var (
-	prefsOnce                sync.Once
-	cfPreferencesCopyValue   func(key, app, user, host uintptr) uintptr
-	cfPreferencesSetValue    func(key, value, app, user, host uintptr)
-	cfPreferencesSynchronize func(app, user, host uintptr) bool
+	prefsOnce sync.Once
+	// CFPreferencesCopyValue, CFPreferencesSetValue and
+	// CFPreferencesSynchronize, which run on the main thread
+	// (mainthread.Forward).
+	cfPreferencesCopyValueFn, cfPreferencesSetValueFn, cfPreferencesSynchronizeFn uintptr
 	// The domains of CFPreferences.
 	cfAnyApplication, cfCurrentApplication, cfCurrentUser, cfAnyHost uintptr
 )
 
 func loadPreferences() {
 	prefsOnce.Do(func() {
-		purego.RegisterLibFunc(&cfPreferencesCopyValue, libCF, "CFPreferencesCopyValue")
-		purego.RegisterLibFunc(&cfPreferencesSetValue, libCF, "CFPreferencesSetValue")
-		purego.RegisterLibFunc(&cfPreferencesSynchronize, libCF, "CFPreferencesSynchronize")
+		cfPreferencesCopyValueFn = mustDlsym(libCF, "CFPreferencesCopyValue")
+		cfPreferencesSetValueFn = mustDlsym(libCF, "CFPreferencesSetValue")
+		cfPreferencesSynchronizeFn = mustDlsym(libCF, "CFPreferencesSynchronize")
 		cfAnyApplication = uintptr(constString(libCF, "kCFPreferencesAnyApplication"))
 		cfCurrentApplication = uintptr(constString(libCF, "kCFPreferencesCurrentApplication"))
 		cfCurrentUser = uintptr(constString(libCF, "kCFPreferencesCurrentUser"))
 		cfAnyHost = uintptr(constString(libCF, "kCFPreferencesAnyHost"))
 	})
+}
+
+func cfPreferencesCopyValue(key, app, user, host uintptr) uintptr {
+	return mainthread.Forward[uintptr](cfPreferencesCopyValueFn, key, app, user, host)
+}
+
+func cfPreferencesSetValue(key, value, app, user, host uintptr) {
+	mainthread.Forward[struct{}](cfPreferencesSetValueFn, key, value, app, user, host)
+}
+
+func cfPreferencesSynchronize(app, user, host uintptr) bool {
+	return mainthread.Forward[bool](cfPreferencesSynchronizeFn, app, user, host)
 }
 
 // appleLanguages reads AppleLanguages of the current user, of the app's
@@ -69,22 +81,30 @@ func appleLanguages(own bool) []string {
 	return out
 }
 
+// PreferredLanguages, SavedLocale and Region read the preferences and the
+// current locale in one step each (mainthread.RunOnMain), from any
+// goroutine: what they read is autoreleased on the main thread, which
+// drains no pool until the step returned, and the step copies it.
 func (a appController) PreferredLanguages() []string {
-	if langs := appleLanguages(false); len(langs) > 0 {
-		return langs
-	}
-	// A user who never ordered languages: the system's.
 	var out []string
-	withPool(func() {
-		for _, s := range arrayItems(send(class("NSLocale"), "preferredLanguages")) {
-			out = append(out, goString(s))
+	mainthread.RunOnMain(func() {
+		if out = appleLanguages(false); len(out) > 0 {
+			return
 		}
+		// A user who never ordered languages: the system's.
+		withPool(func() {
+			for _, s := range arrayItems(send(class("NSLocale"), "preferredLanguages")) {
+				out = append(out, goString(s))
+			}
+		})
 	})
 	return out
 }
 
 func (a appController) SavedLocale() (string, bool) {
-	if langs := appleLanguages(true); len(langs) > 0 {
+	var langs []string
+	mainthread.RunOnMain(func() { langs = appleLanguages(true) })
+	if len(langs) > 0 {
 		return langs[0], true
 	}
 	return "", true
@@ -113,16 +133,18 @@ func (a appController) SetLanguages([]string, bool) {}
 // 24-hour time setting changes.
 func (a appController) Region() platform.Region {
 	r := platform.Region{FirstWeekday: -1}
-	withPool(func() {
-		locale := send(class("NSLocale"), "autoupdatingCurrentLocale")
-		r.Locale = goString(send(locale, "localeIdentifier"))
-		calendar := send(class("NSCalendar"), "autoupdatingCurrentCalendar")
-		if d := sendInt(calendar, "firstWeekday"); d >= 1 && d <= 7 {
-			r.FirstWeekday = d - 1
-		}
-		format := goString(send(class("NSDateFormatter"), "dateFormatFromTemplate:options:locale:",
-			uintptr(nsString("j")), 0, uintptr(locale)))
-		r.HourCycle = hourCycle(format)
+	mainthread.RunOnMain(func() {
+		withPool(func() {
+			locale := send(class("NSLocale"), "autoupdatingCurrentLocale")
+			r.Locale = goString(send(locale, "localeIdentifier"))
+			calendar := send(class("NSCalendar"), "autoupdatingCurrentCalendar")
+			if d := sendInt(calendar, "firstWeekday"); d >= 1 && d <= 7 {
+				r.FirstWeekday = d - 1
+			}
+			format := goString(send(class("NSDateFormatter"), "dateFormatFromTemplate:options:locale:",
+				uintptr(nsString("j")), 0, uintptr(locale)))
+			r.HourCycle = hourCycle(format)
+		})
 	})
 	return r
 }

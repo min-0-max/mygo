@@ -76,5 +76,5 @@ func pngOfImage(img id, size int) []byte {
 	dst := NSRect{Size: NSSize{float64(size), float64(size)}}
 	msgDrawImage(img, sel("drawInRect:fromRect:operation:fraction:"), dst, NSRect{}, sourceOver, 1)
 	send(gc, "restoreGraphicsState")
-	return goBytes(send(rep, "representationUsingType:properties:", 4, uintptr(send(class("NSDictionary"), "dictionary")))) // NSBitmapImageFileTypePNG
+	return goBytes(send(rep, "representationUsingType:properties:", 4, uintptr(emptyDictionary()))) // NSBitmapImageFileTypePNG
 }

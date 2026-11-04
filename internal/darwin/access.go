@@ -7,9 +7,9 @@ import (
 	"sync"
 	"unicode/utf16"
 
-	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
 
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/platform"
 )
 
@@ -48,32 +48,37 @@ var (
 	postAccessInfo uintptr
 	// actionDescription is NSAccessibilityActionDescription.
 	actionDescription uintptr
-	msgPointToPoint   func(obj id, sel objc.SEL, p NSPoint) NSPoint
 )
+
+// msgPointToPoint sends a message that takes and returns an NSPoint on
+// the main thread (mainthread.Forward).
+func msgPointToPoint(obj id, sel objc.SEL, p NSPoint) NSPoint {
+	return mainthread.Forward[NSPoint](msgSendAddr, obj, sel, p)
+}
 
 func loadAccess() {
 	accessOnce.Do(func() {
 		postAccessNote = mustDlsym(libAppKit, "NSAccessibilityPostNotification")
 		postAccessInfo = mustDlsym(libAppKit, "NSAccessibilityPostNotificationWithUserInfo")
 		actionDescription = mustDlsym(libAppKit, "NSAccessibilityActionDescription")
-		purego.RegisterFunc(&msgPointToPoint, msgSendAddr)
 	})
 }
 
 // postNote posts an accessibility notification about obj.
 func postNote(obj id, name string) {
 	if obj != 0 {
-		purego.SyscallN(postAccessNote, uintptr(obj), uintptr(nsString(name)))
+		mainthread.Forward[struct{}](postAccessNote, obj, nsString(name))
 	}
 }
 
 // announce asks VoiceOver to read text out, after what it is reading
 // (NSAccessibilityAnnouncementRequestedNotification).
 func announce(app id, text string) {
-	info := send(class("NSMutableDictionary"), "dictionary")
-	send(info, "setObject:forKey:", uintptr(nsString(text)), uintptr(nsString("AXAnnouncementKey")))
-	send(info, "setObject:forKey:", uintptr(nsNumberInt(50)), uintptr(nsString("AXPriorityKey"))) // NSAccessibilityPriorityMedium
-	purego.SyscallN(postAccessInfo, uintptr(app), uintptr(nsString("AXAnnouncementRequested")), uintptr(info))
+	info := newDictionary()
+	defer release(info)
+	setObject(info, nsString(text), nsString("AXAnnouncementKey"))
+	setObject(info, nsNumberInt(50), nsString("AXPriorityKey")) // NSAccessibilityPriorityMedium
+	mainthread.Forward[struct{}](postAccessInfo, app, nsString("AXAnnouncementRequested"), info)
 }
 
 // accessRoles are the roles and subroles of node roles.
@@ -604,17 +609,19 @@ func registerAccessClass() {
 			if el == nil {
 				return names
 			}
-			if el.node.States&platform.AccessInvalid != 0 {
-				names = send(names, "arrayByAddingObject:", uintptr(nsString("AXInvalid")))
+			invalid, mark := el.node.States&platform.AccessInvalid != 0, menuItem(el.node.Role)
+			all := sendHere(sendHere(class("NSMutableArray"), "alloc"), "initWithArray:", uintptr(names))
+			if invalid {
+				sendHere(all, "addObject:", uintptr(nsString("AXInvalid")))
 			}
-			if menuItem(el.node.Role) {
-				names = send(names, "arrayByAddingObject:", uintptr(nsString("AXMenuItemMarkChar")))
+			if mark {
+				sendHere(all, "addObject:", uintptr(nsString("AXMenuItemMarkChar")))
 			}
-			names = send(names, "arrayByAddingObject:", uintptr(nsString("AXElementBusy")))
+			sendHere(all, "addObject:", uintptr(nsString("AXElementBusy")))
 			if el.node.Current != platform.CurrentNone {
-				names = send(names, "arrayByAddingObject:", uintptr(nsString("AXARIACurrent")))
+				sendHere(all, "addObject:", uintptr(nsString("AXARIACurrent")))
 			}
-			return names
+			return autorelease(all)
 		}),
 		method("accessibilityAttributeValue:", func(self id, cmd objc.SEL, attr id) id {
 			if el := b().accessElementOf(self); el != nil {
@@ -688,8 +695,7 @@ func registerAccessClass() {
 			return nsArray(names...)
 		}),
 		method("accessibilityActionDescription:", func(self id, _ objc.SEL, action id) id {
-			r, _, _ := purego.SyscallN(actionDescription, uintptr(action))
-			return id(r)
+			return mainthread.Forward[id](actionDescription, action)
 		}),
 		method("accessibilityPerformAction:", func(self id, _ objc.SEL, action id) {
 			el := b().accessElementOf(self)

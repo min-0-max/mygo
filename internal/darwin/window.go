@@ -1033,7 +1033,7 @@ func (b *Backend) watchOutsideClicks() {
 		}
 		b.closeHeldPopovers(0)
 	})
-	outsideClicks = retain(send(class("NSEvent"), "addGlobalMonitorForEventsMatchingMask:handler:", mask, uintptr(blk)))
+	outsideClicks = sendRetained(class("NSEvent"), "addGlobalMonitorForEventsMatchingMask:handler:", mask, uintptr(blk))
 	b.watchAnchorPresses()
 }
 
@@ -1077,7 +1077,7 @@ func (b *Backend) watchAnchorPresses() {
 		}
 		return ev
 	})
-	anchorPresses = retain(send(class("NSEvent"), "addLocalMonitorForEventsMatchingMask:handler:", mask, uintptr(blk)))
+	anchorPresses = sendRetained(class("NSEvent"), "addLocalMonitorForEventsMatchingMask:handler:", mask, uintptr(blk))
 }
 
 // flyoutAnchoredAt returns the focusable flyout that shows in a panel
@@ -1615,7 +1615,7 @@ func (w *window) CallAsyncFunction(body string, cb func(string, error)) {
 			}
 			cb(goString(result), nil)
 		})
-		defer blk.Release()
+		defer blockRelease(uintptr(blk))
 		send(w.web, "callAsyncJavaScript:arguments:inFrame:inContentWorld:completionHandler:",
 			uintptr(nsString(body)), 0, 0, uintptr(send(class("WKContentWorld"), "pageWorld")), uintptr(blk))
 	})
@@ -1964,7 +1964,7 @@ func (w *window) CapturePage(cb func([]byte, error)) {
 			}
 			withPool(func() { cb(pngFromImage(img), nil) })
 		})
-		defer blk.Release()
+		defer blockRelease(uintptr(blk))
 		send(w.web, "takeSnapshotWithConfiguration:completionHandler:", 0, uintptr(blk))
 	})
 }
@@ -1976,7 +1976,7 @@ func pngFromImage(img id) []byte {
 	if rep == 0 {
 		return nil
 	}
-	data := send(rep, "representationUsingType:properties:", 4, uintptr(send(class("NSDictionary"), "dictionary")))
+	data := send(rep, "representationUsingType:properties:", 4, uintptr(emptyDictionary()))
 	return goBytes(data)
 }
 
@@ -2038,7 +2038,7 @@ func (w *window) PrintToPDF(o platform.PDFOptions, cb func([]byte, error)) {
 		send(info, "setVerticallyCentered:", 0)
 		// The preferences are shared with the configuration's copy. They are
 		// kept for the job, which may end after the window closed.
-		prefs := retain(send(send(w.web, "configuration"), "preferences"))
+		prefs := sendRetained(send(w.web, "configuration"), "preferences")
 		backgrounds := respondsTo(prefs, "setShouldPrintBackgrounds:") // macOS 13.3
 		printedBackgrounds := false
 		if backgrounds {
@@ -2046,7 +2046,7 @@ func (w *window) PrintToPDF(o platform.PDFOptions, cb func([]byte, error)) {
 			send(prefs, "setShouldPrintBackgrounds:", boolArg(o.Background))
 		}
 		// Kept until it ran: nothing else holds on to it.
-		op := retain(send(w.web, "printOperationWithPrintInfo:", uintptr(info)))
+		op := sendRetained(w.web, "printOperationWithPrintInfo:", uintptr(info))
 		send(op, "setShowsPrintPanel:", 0)
 		send(op, "setShowsProgressPanel:", 0)
 		msgSetRect(send(op, "view"), sel("setFrame:"), msgRect(w.web, sel("bounds")))
@@ -2085,7 +2085,7 @@ func (w *window) Print() {
 	withPool(func() {
 		info := send(class("NSPrintInfo"), "sharedPrintInfo")
 		// Kept until it ran: nothing else holds on to it.
-		op := retain(send(w.web, "printOperationWithPrintInfo:", uintptr(info)))
+		op := sendRetained(w.web, "printOperationWithPrintInfo:", uintptr(info))
 		view := send(op, "view")
 		msgSetRect(view, sel("setFrame:"), msgRect(w.web, sel("bounds")))
 		send(op, "runOperationModalForWindow:delegate:didRunSelector:contextInfo:", uintptr(w.win), 0, 0, 0)
@@ -2126,8 +2126,10 @@ func rectToMac(r platform.Rect) NSRect {
 func draggedFiles(info id) []string {
 	var paths []string
 	withPool(func() {
-		opts := send(class("NSDictionary"), "dictionaryWithObject:forKey:", uintptr(nsBool(true)), uintptr(nsString("NSPasteboardURLReadingFileURLsOnlyKey")))
+		opts := newDictionary()
+		setObject(opts, nsBool(true), nsString("NSPasteboardURLReadingFileURLsOnlyKey"))
 		urls := send(send(info, "draggingPasteboard"), "readObjectsForClasses:options:", uintptr(nsArray(class("NSURL"))), uintptr(opts))
+		release(opts)
 		for _, u := range arrayItems(urls) {
 			if p := goString(send(send(u, "filePathURL"), "path")); p != "" {
 				paths = append(paths, p)

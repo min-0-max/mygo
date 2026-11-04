@@ -10,6 +10,7 @@ import (
 
 	"github.com/ebitengine/purego"
 
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/scene"
 )
 
@@ -78,7 +79,7 @@ func (p *presenter) run() {
 	runtime.LockOSThread()
 	qosOnce.Do(func() {
 		if h, err := purego.Dlopen("/usr/lib/libSystem.B.dylib", purego.RTLD_GLOBAL|purego.RTLD_NOW); err == nil {
-			purego.RegisterLibFunc(&setQoS, h, "pthread_set_qos_class_self_np")
+			mainthread.Bind(&setQoS, h, "pthread_set_qos_class_self_np")
 		}
 	})
 	if setQoS != nil {
@@ -140,7 +141,7 @@ func (p *presenter) take() id {
 // drain lets go of the drawable fetched, once no fetch is in flight.
 func (p *presenter) drain() {
 	if d := p.take(); d != 0 {
-		send(d, "release")
+		byReceiver(d, "release")
 	}
 }
 
@@ -197,7 +198,7 @@ func (r *Renderer) SetPost(post func(func())) {
 // drawables' size or format.
 func (r *Renderer) layerChanges(s *scene.Scene, scale float64) bool {
 	return r.layerWide != r.wide || s.Width != r.w || s.Height != r.h || scale != r.scale || r.trimmed ||
-		msgRect(r.superlayer, sel("bounds")) != r.bounds
+		layerBounds(r.superlayer) != r.bounds
 }
 
 // stash builds the frame s, which changed damage since the last one, to
@@ -232,7 +233,7 @@ func (r *Renderer) finishPending(prefetch bool) error {
 		// None came within a second: the frame is skipped, what it drew
 		// before its drawable committed.
 		r.forgetFrames()
-		send(p.cb, "commit")
+		byReceiver(p.cb, "commit")
 		r.track(p.cb)
 		release(&p.cb)
 		return nil
@@ -247,8 +248,9 @@ func (r *Renderer) finishPending(prefetch bool) error {
 		release(&p.cb)
 		return err
 	}
+	r.presenting(drawable)
 	send(p.cb, "presentDrawable:", drawable)
-	send(p.cb, "commit")
+	byReceiver(p.cb, "commit")
 	if prefetch {
 		r.pre.start(r.layer)
 	}
@@ -267,7 +269,7 @@ func (r *Renderer) dropPending() {
 		return
 	}
 	r.forgetFrames()
-	send(r.pending.cb, "commit")
+	byReceiver(r.pending.cb, "commit")
 	r.track(r.pending.cb)
 	release(&r.pending.cb)
 	r.pending = pendingFrame{}

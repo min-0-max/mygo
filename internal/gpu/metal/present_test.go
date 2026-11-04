@@ -21,7 +21,7 @@ func TestPresenter(t *testing.T) {
 	nextDrawable = func(id) id {
 		<-gate
 		fetched++
-		return send(send(class("NSObject"), "new"), "autorelease")
+		return send(send(class("NSMutableString"), "new"), "autorelease")
 	}
 	defer func() { nextDrawable = func(layer id) id { return send(layer, "nextDrawable") } }()
 	var p presenter
@@ -73,7 +73,7 @@ func TestPrefetchedFrames(t *testing.T) {
 		t.Skip("no Metal:", err)
 	}
 	var layer id
-	pool(func() { layer = send(class("CALayer"), "new") })
+	pool(func() { layer = sendMain(class("CALayer"), "new") })
 	if layer == 0 {
 		t.Skip("no Core Animation")
 	}
@@ -136,7 +136,7 @@ func TestPendingFrames(t *testing.T) {
 		t.Skip("no Metal:", err)
 	}
 	var layer id
-	pool(func() { layer = send(class("CALayer"), "new") })
+	pool(func() { layer = sendMain(class("CALayer"), "new") })
 	if layer == 0 {
 		t.Skip("no Core Animation")
 	}
@@ -208,7 +208,7 @@ func drawableID(d id) uintptr {
 	if d == 0 {
 		return 0
 	}
-	return send(d, "drawableID")
+	return sendMain(d, "drawableID")
 }
 
 // TestDroppedPendingFrame checks that a frame waiting for its drawable,
@@ -220,7 +220,7 @@ func TestDroppedPendingFrame(t *testing.T) {
 		t.Skip("no Metal:", err)
 	}
 	var layer id
-	pool(func() { layer = send(class("CALayer"), "new") })
+	pool(func() { layer = sendMain(class("CALayer"), "new") })
 	if layer == 0 {
 		t.Skip("no Core Animation")
 	}
@@ -271,7 +271,7 @@ func TestStalePost(t *testing.T) {
 		t.Skip("no Metal:", err)
 	}
 	var layer id
-	pool(func() { layer = send(class("CALayer"), "new") })
+	pool(func() { layer = sendMain(class("CALayer"), "new") })
 	if layer == 0 {
 		t.Skip("no Core Animation")
 	}

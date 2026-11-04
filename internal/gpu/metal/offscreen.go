@@ -7,8 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ebitengine/purego"
-
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/scene"
 )
 
@@ -44,7 +43,7 @@ func NewOffscreen(w, h int) (*Offscreen, error) {
 		return nil, err
 	}
 	if msgDouble == nil {
-		purego.RegisterFunc(&msgDouble, msgSend)
+		mainthread.BindAddr(&msgDouble, msgSend, "objc_msgSend")
 	}
 	o := &Offscreen{r: r}
 	pool(func() { err = o.target(w, h) })
@@ -86,7 +85,7 @@ func (o *Offscreen) Render(s *scene.Scene) (gpu time.Duration, err error) {
 			return
 		}
 		o.encoded = time.Since(start)
-		send(cb, "commit")
+		byReceiver(cb, "commit")
 		send(cb, "waitUntilCompleted")
 		if int(send(cb, "status")) == statusError {
 			err = fmt.Errorf("metal: the frame failed: %s", describe(send(cb, "error")))

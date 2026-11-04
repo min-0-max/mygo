@@ -9,6 +9,7 @@ import (
 	"github.com/ebitengine/purego/objc"
 
 	"github.com/egoist/mygo/internal/accelerator"
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/platform"
 )
 
@@ -406,7 +407,7 @@ func (b *Backend) NewTray(h platform.TrayHandler) (platform.Tray, error) {
 	t := &tray{b: b, h: h, owner: newOwner()}
 	withPool(func() {
 		bar := send(class("NSStatusBar"), "systemStatusBar")
-		t.item = retain(msgFloatID(bar, sel("statusItemWithLength:"), -1)) // NSVariableStatusItemLength
+		t.item = mainthread.ForwardRetained[id](msgSendAddr, bar, sel("statusItemWithLength:"), float64(-1)) // NSVariableStatusItemLength
 		t.button = send(t.item, "button")
 		send(t.button, "setTarget:", uintptr(trayTarget))
 		send(t.button, "setAction:", uintptr(sel("mygoTrayClicked:")))
@@ -500,7 +501,7 @@ func (t *tray) PopUpMenu(m *platform.Menu) {
 		menu := t.b.buildMenu(m, "", owner)
 		// Let the status item place and track its menu, including the
 		// button's highlight. Keep its previous menu alive while swapped.
-		previous := retain(send(t.item, "menu"))
+		previous := sendRetained(t.item, "menu")
 		defer release(previous)
 		send(t.item, "setMenu:", uintptr(menu))
 		send(t.button, "performClick:", 0)
