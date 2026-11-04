@@ -167,8 +167,24 @@ var dispatchCallback = mainthread.Callback(purego.NewCallback(func(info uintptr)
 	})
 }))
 
-func (b *Backend) Run() error {
+// Run starts the worker of the main thread (mainthread.Start) and runs
+// start and finish on it as steps, around the event loop, which runs on
+// the main thread; it ends the worker before it returns. While a step
+// runs, the main thread runs the calls that the worker forwards to it, and
+// during the event loop the callbacks of AppKit reach the worker through
+// the trampolines of the worker.
+func (b *Backend) Run(start func() error, finish func()) error {
+	if err := mainthread.Start(); err != nil {
+		return err
+	}
+	defer mainthread.Stop()
+	var err error
+	mainthread.RunOnWorker(func() { err = start() })
+	if err != nil {
+		return err
+	}
 	send(b.app, "run")
+	mainthread.RunOnWorker(finish)
 	return nil
 }
 

@@ -110,7 +110,18 @@ func (b *Backend) funcOf(fn func(this js.Value, args []js.Value) any) js.Func {
 	return f
 }
 
-func (b *Backend) Run() error {
+// Run runs start, then the event loop until Quit, then finish, all on the
+// main thread; an error of start ends it before the event loop.
+func (b *Backend) Run(start func() error, finish func()) error {
+	if err := start(); err != nil {
+		return err
+	}
+	err := b.runLoop()
+	finish()
+	return err
+}
+
+func (b *Backend) runLoop() error {
 	b.h.Ready()
 	for {
 		select {

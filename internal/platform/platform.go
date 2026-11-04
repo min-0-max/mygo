@@ -52,12 +52,15 @@ type Backend interface {
 	// Name identifies the backend, for example "darwin/wkwebview".
 	Name() string
 
-	// Init prepares the native application. It is called once, on the main
-	// thread, before Run.
+	// Init prepares the native application. start of Run calls it once,
+	// where IsMainThread answers true.
 	Init(h AppHandler, opts AppOptions) error
-	// Run runs the native event loop until Quit is called. h.Ready is
-	// invoked once the application has finished launching.
-	Run() error
+	// Run runs the Go code of App.Run and the native event loop: start,
+	// then the event loop until Quit is called, then finish, each Go
+	// function where IsMainThread answers true. An error of start ends Run
+	// before the event loop. h.Ready is invoked once the application has
+	// finished launching. Main thread only, once.
+	Run(start func() error, finish func()) error
 	// Quit makes Run return.
 	Quit()
 
