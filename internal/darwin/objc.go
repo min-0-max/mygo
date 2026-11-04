@@ -296,6 +296,7 @@ func sendRetained(obj id, selector string, args ...uintptr) id {
 func sendHere(obj id, selector string, args ...uintptr) id {
 	var a [12]uintptr
 	a[0], a[1] = uintptr(obj), uintptr(sel(selector))
+	mainthread.CheckSend(a[0], a[1])
 	n := copy(a[2:], args)
 	r, _, _ := purego.SyscallN(msgSendAddr, a[:n+2]...)
 	return id(r)

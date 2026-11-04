@@ -123,13 +123,13 @@ var offWorkerCalls = []offWorkerCall{
 	}},
 	// An object that ByReceiver would autorelease on the main thread
 	// from here lives in a pool that this goroutine cannot see: it panics
-	// here, not in the one forwarded call that may do it. The release
-	// and that call are what this case forwards.
-	{"Autorelease", 2, func(*Backend, string) error {
-		obj := sendHere(class("NSObject"), "new")
+	// here, not in the one forwarded call that may do it. That call, the
+	// new and the release are what this case forwards.
+	{"Autorelease", 3, func(*Backend, string) error {
+		obj := send(class("NSObject"), "new")
 		defer release(obj)
 		mainthread.RunOnMain(func() {
-			withPool(func() { autorelease(sendHere(class("NSObject"), "new")) })
+			withPool(func() { autorelease(send(class("NSObject"), "new")) })
 		})
 		got := func() (p any) {
 			defer func() { p = recover() }()

@@ -47,7 +47,7 @@ var (
 	cgImageRelease    uintptr
 	cgProviderCreate  uintptr
 	cgProviderRelease uintptr
-	cfDataCreate      uintptr
+	cfDataCreate      func(alloc uintptr, bytes unsafe.Pointer, length int) uintptr
 	// Read the keyboard type from each event, so an external ISO keyboard
 	// does not inherit the built-in keyboard's ANSI mapping.
 	cgEventGetIntegerValueField func(event uintptr, field uint32) int64
@@ -82,8 +82,8 @@ func loadSurface() {
 		cgImageRelease = mustDlsym(libCG, "CGImageRelease")
 		cgProviderCreate = mustDlsym(libCG, "CGDataProviderCreateWithCFData")
 		cgProviderRelease = mustDlsym(libCG, "CGDataProviderRelease")
-		cfDataCreate = mustDlsym(libCF, "CFDataCreate")
-		purego.RegisterLibFunc(&cgEventGetIntegerValueField, libCG, "CGEventGetIntegerValueField")
+		mainthread.Bind(&cfDataCreate, libCF, "CFDataCreate")
+		mainthread.Bind(&cgEventGetIntegerValueField, libCG, "CGEventGetIntegerValueField")
 		kbGetLayoutTypeFn = mustDlsym(libCarbon, "KBGetLayoutType")
 		lmGetKbdTypeFn = mustDlsym(libCarbon, "LMGetKbdType")
 		p := mustDlsym(libCG, "kCGColorSpaceSRGB")
@@ -91,8 +91,8 @@ func loadSurface() {
 		cgColorSpaceSRGB, _, _ = purego.SyscallN(mustDlsym(libCG, "CGColorSpaceCreateWithName"), name)
 		// An observer after Core Animation's counts the transactions it
 		// committed (armPass).
-		purego.RegisterLibFunc(&observerCreate, libCF, "CFRunLoopObserverCreate")
-		purego.RegisterLibFunc(&addObserver, libCF, "CFRunLoopAddObserver")
+		mainthread.Bind(&observerCreate, libCF, "CFRunLoopObserverCreate")
+		mainthread.Bind(&addObserver, libCF, "CFRunLoopAddObserver")
 		caPassCallout = mainthread.Callback(purego.NewCallback(func(observer, activity, info uintptr) {
 			caPass++
 			caPassArmed = false
@@ -457,7 +457,7 @@ func (s *surface) PresentPixels(pix []byte, stride, width, height int) {
 	if len(pix) < stride*height || width == 0 || height == 0 {
 		return
 	}
-	data, _, _ := purego.SyscallN(cfDataCreate, 0, uintptr(unsafe.Pointer(&pix[0])), uintptr(stride*height))
+	data := cfDataCreate(0, unsafe.Pointer(&pix[0]), stride*height)
 	provider, _, _ := purego.SyscallN(cgProviderCreate, data)
 	const bitmapInfo = 2 | 2<<12 // premultiplied alpha first, 32-bit little endian: BGRA
 	img, _, _ := purego.SyscallN(cgImageCreate, uintptr(width), uintptr(height), 8, 32, uintptr(stride), cgColorSpaceSRGB, bitmapInfo, provider, 0, 0, 0)

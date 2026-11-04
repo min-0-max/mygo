@@ -114,7 +114,7 @@ func startNetworkMonitor() {
 		} {
 			nwPathFns[i] = mustDlsym(lib, name)
 		}
-		purego.RegisterLibFunc(&dispatchQueueCreate, purego.RTLD_DEFAULT, "dispatch_queue_create")
+		mainthread.Bind(&dispatchQueueCreate, purego.RTLD_DEFAULT, "dispatch_queue_create")
 
 		m := nwPathMonitorCreate()
 		if m == 0 {

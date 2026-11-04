@@ -436,7 +436,7 @@ func TestSideButton(handle uintptr, back bool) bool {
 		return false
 	}
 	testSideOnce.Do(func() {
-		purego.RegisterLibFunc(&cgEventSetIntegerValueField, libCG, "CGEventSetIntegerValueField")
+		mainthread.Bind(&cgEventSetIntegerValueField, libCG, "CGEventSetIntegerValueField")
 	})
 	button := int64(4)
 	if back {
@@ -478,12 +478,12 @@ func TestPinch(handle uintptr, x, y, magnification float64) (ok bool) {
 		return false
 	}
 	testSideOnce.Do(func() {
-		purego.RegisterLibFunc(&cgEventSetIntegerValueField, libCG, "CGEventSetIntegerValueField")
+		mainthread.Bind(&cgEventSetIntegerValueField, libCG, "CGEventSetIntegerValueField")
 	})
 	testPinchOnce.Do(func() {
-		purego.RegisterLibFunc(&cgEventSetType, libCG, "CGEventSetType")
-		purego.RegisterLibFunc(&cgEventSetDoubleValueField, libCG, "CGEventSetDoubleValueField")
-		purego.RegisterLibFunc(&cgEventSetLocation, libCG, "CGEventSetLocation")
+		mainthread.Bind(&cgEventSetType, libCG, "CGEventSetType")
+		mainthread.Bind(&cgEventSetDoubleValueField, libCG, "CGEventSetDoubleValueField")
+		mainthread.Bind(&cgEventSetLocation, libCG, "CGEventSetLocation")
 	})
 	withPool(func() {
 		content := msgRect(send(w.win, "contentView"), sel("frame"))
@@ -527,12 +527,12 @@ func TestSwipe(handle uintptr, back bool) (ok bool) {
 		return false
 	}
 	testSideOnce.Do(func() {
-		purego.RegisterLibFunc(&cgEventSetIntegerValueField, libCG, "CGEventSetIntegerValueField")
+		mainthread.Bind(&cgEventSetIntegerValueField, libCG, "CGEventSetIntegerValueField")
 	})
 	testPinchOnce.Do(func() {
-		purego.RegisterLibFunc(&cgEventSetType, libCG, "CGEventSetType")
-		purego.RegisterLibFunc(&cgEventSetDoubleValueField, libCG, "CGEventSetDoubleValueField")
-		purego.RegisterLibFunc(&cgEventSetLocation, libCG, "CGEventSetLocation")
+		mainthread.Bind(&cgEventSetType, libCG, "CGEventSetType")
+		mainthread.Bind(&cgEventSetDoubleValueField, libCG, "CGEventSetDoubleValueField")
+		mainthread.Bind(&cgEventSetLocation, libCG, "CGEventSetLocation")
 	})
 	withPool(func() {
 		content := msgRect(send(w.win, "contentView"), sel("frame"))
@@ -890,7 +890,7 @@ var (
 	testInputOnce         sync.Once
 	tisCopyCurrentSource  uintptr
 	tisGetSourceProperty  uintptr
-	cfEqual               uintptr
+	cfEqual               func(a, b uintptr) bool
 	tisPropertySourceType uintptr
 	tisTypeKeyboardLayout uintptr
 )
@@ -899,7 +899,7 @@ func loadTestInput() {
 	testInputOnce.Do(func() {
 		tisCopyCurrentSource, _ = purego.Dlsym(libCarbon, "TISCopyCurrentKeyboardInputSource")
 		tisGetSourceProperty, _ = purego.Dlsym(libCarbon, "TISGetInputSourceProperty")
-		cfEqual, _ = purego.Dlsym(libCF, "CFEqual")
+		mainthread.Bind(&cfEqual, libCF, "CFEqual")
 		for _, c := range []struct {
 			name string
 			to   *uintptr
@@ -935,8 +935,7 @@ func keyboardLayoutSelected() bool {
 	}
 	defer cfRelease(src)
 	typ := mainthread.Forward[uintptr](tisGetSourceProperty, src, tisPropertySourceType)
-	eq, _, _ := purego.SyscallN(cfEqual, typ, tisTypeKeyboardLayout)
-	return typ != 0 && byte(eq) != 0
+	return typ != 0 && cfEqual(typ, tisTypeKeyboardLayout)
 }
 
 // TestClickAndType clicks (x, y) in a window showing native UI and types

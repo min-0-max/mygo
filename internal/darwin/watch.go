@@ -117,17 +117,17 @@ func loadFSEvents() {
 		} {
 			fseFns[i] = mustDlsym(lib, name)
 		}
-		purego.RegisterLibFunc(&cfStringCreateWithCString, libCF, "CFStringCreateWithCString")
-		purego.RegisterLibFunc(&cfArrayCreate, libCF, "CFArrayCreate")
+		mainthread.Bind(&cfStringCreateWithCString, libCF, "CFStringCreateWithCString")
+		mainthread.Bind(&cfArrayCreate, libCF, "CFArrayCreate")
 		kCFTypeArrayCallBacks = mustDlsym(libCF, "kCFTypeArrayCallBacks")
-		purego.RegisterLibFunc(&watchQueueCreate, purego.RTLD_DEFAULT, "dispatch_queue_create")
-		purego.RegisterLibFunc(&dispatchSyncF, purego.RTLD_DEFAULT, "dispatch_sync_f")
+		mainthread.Bind(&watchQueueCreate, purego.RTLD_DEFAULT, "dispatch_queue_create")
+		mainthread.Bind(&dispatchSyncF, purego.RTLD_DEFAULT, "dispatch_sync_f")
 		// The UNIX03 realpath on Intel; Apple silicon has only one.
 		realpath := "realpath$DARWIN_EXTSN"
 		if _, err := purego.Dlsym(purego.RTLD_DEFAULT, realpath); err != nil {
 			realpath = "realpath"
 		}
-		purego.RegisterLibFunc(&libcRealpath, purego.RTLD_DEFAULT, realpath)
+		mainthread.Bind(&libcRealpath, purego.RTLD_DEFAULT, realpath)
 		fseCallback = mainthread.Callback(purego.NewCallback(fseEvents))
 		// Our callback never blocks, so waiting for it cannot deadlock.
 		fseFlush = mustDlsym(purego.RTLD_DEFAULT, "free")
