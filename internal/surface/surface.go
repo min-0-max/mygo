@@ -86,6 +86,10 @@ type Conn struct {
 	// PlaceWebViews shows the window's web views where the content's last
 	// frame shows them (Surface.PlaceWebViews).
 	PlaceWebViews func(views []platform.WebViewPlacement)
+	// PlaceNativeViews, set by Window.NewNativeView, nil before, gives the
+	// application where the frame about to present shows its native view
+	// elements (NativeViewSurface.PlaceNativeViews).
+	PlaceNativeViews func(views []platform.NativeViewPlacement)
 	// ContentSize, set by a window that takes its content's size
 	// (mygo.FlyoutOptions.FitContent), nil in others, hears the size
 	// the content takes, in DIPs, as a frame laid out at the window's
@@ -108,6 +112,10 @@ type Conn struct {
 	// it, or with why it presented nothing, and the error of a frame that
 	// failed (platform.PresentFailed). The content sets it.
 	AfterPresent func(fn func(platform.Presentation, error))
+	// HoldFrames keeps the window from drawing while hold is set, and
+	// draws what was asked for meanwhile as one frame once it is not
+	// (Window.HoldFrames). The content sets it.
+	HoldFrames func(hold bool)
 
 	// Event receives the surface's events, and Focus and Blur of the
 	// window. It reports whether the content takes dragged files, as
