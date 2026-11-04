@@ -272,6 +272,15 @@ var CallingThreadFunctions = []FunctionGroup{
 			"CFRunLoopStop", "CFRunLoopRemoveSource", "CFRunLoopSourceInvalidate",
 		},
 	},
+	{
+		Name:    "the worker: the Mach semaphores with which the main thread and the worker wake each other, the run loop source through which other threads wake the main thread, the type of a run loop observer, which ByReceiver reads, and the assembly of this package that runs a record and hands a record to the other side",
+		Package: "internal/darwin/mainthread",
+		Names: []string{
+			"semaphore_create", "semaphore_signal", "semaphore_wait",
+			"CFRunLoopSourceCreate", "CFRunLoopObserverGetTypeID",
+			"callRecord", "exchange",
+		},
+	},
 	{Name: "libdispatch", Prefixes: []string{"dispatch_"}},
 	{
 		Name: "libSystem",

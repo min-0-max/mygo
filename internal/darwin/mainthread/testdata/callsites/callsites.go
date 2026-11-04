@@ -129,6 +129,16 @@ func messages(obj, ev uintptr) {
 	_ = hook
 }
 
+// probeAddress returns the address of an assembly function, probe.
+func probeAddress() uintptr
+
+func built() {
+	purego.SyscallN(probeAddress()) // want: calls probe outside Forward
+	for _, name := range []string{"CTFont", "AudioQueue"} {
+		purego.SyscallN(sym(name + "GetTypeID")) // want: calls AudioQueueGetTypeID outside Forward
+	}
+}
+
 func metal() {
 	d := send(class("MTLRenderPipelineDescriptor"), "new")
 	ca := send(send(d, "colorAttachments"), "objectAtIndexedSubscript:", 0)

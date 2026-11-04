@@ -153,6 +153,12 @@ func moduleRoot(t *testing.T) string {
 	return filepath.Dir(mod)
 }
 
+// assemblyAddress ends the name of each function of the worker package
+// that its assembly defines and that returns the address of the assembly
+// function whose name precedes it: exchangeAddress returns that of
+// exchange.
+const assemblyAddress = "Address"
+
 // rules is what the reader holds the call sites to: the data of calls.go,
 // and the package of the worker's functions.
 type rules struct {
@@ -716,6 +722,26 @@ func unknown(why string) val { return val{unknown: true, why: why} }
 func param(p pref) val { return val{params: map[pref]bool{p: true}} }
 
 func (v val) open() bool { return len(v.params) > 0 }
+
+// concat returns the strings that x + y makes, each name of x followed by
+// each name of y.
+func concat(x, y val) val {
+	switch {
+	case x.unknown:
+		return x
+	case y.unknown:
+		return y
+	case x.open() || y.open():
+		return unknown("a concatenation of a parameter")
+	}
+	out := names()
+	for a := range x.names {
+		for b := range y.names {
+			out.names[a+b] = true
+		}
+	}
+	return out
+}
 
 func union(vs ...val) val {
 	out := val{}
@@ -1892,6 +1918,12 @@ type frameVar struct {
 	ctx *ectx
 }
 
+// frameExpr is an expression in the frame that ctx binds.
+type frameExpr struct {
+	e   ast.Expr
+	ctx *ectx
+}
+
 type callKey struct {
 	g    *fn
 	call *ast.CallExpr
@@ -1993,6 +2025,19 @@ func (a *analysis) eval(p *srcPackage, e ast.Expr, ctx *ectx) val {
 		return unknown("not a variable")
 	case *ast.IndexExpr:
 		return a.evalIndex(p, e, ctx)
+	case *ast.BinaryExpr:
+		if e.Op != token.ADD {
+			break
+		}
+		// A concatenation that reaches itself, as s = s + t does, makes
+		// strings without end.
+		key := any(frameExpr{e, ctx})
+		if a.inFlight[key] {
+			return unknown("a concatenation that depends on itself")
+		}
+		a.inFlight[key] = true
+		defer delete(a.inFlight, key)
+		return concat(a.eval(p, e.X, ctx), a.eval(p, e.Y, ctx))
 	}
 	return unknown(fmt.Sprintf("an expression the reader does not follow (%T)", e))
 }
@@ -2185,6 +2230,11 @@ func (a *analysis) evalCall(p *srcPackage, call *ast.CallExpr, ctx *ectx) val {
 			return a.eval(p, call.Args[0], ctx)
 		case f.Pkg().Path() == a.r.rules.objcPk && f.Name() == "GetClass" && len(call.Args) == 1:
 			return classNames(a.eval(p, call.Args[0], ctx))
+		case f.Pkg().Path() == a.r.rules.workerPackage && a.byObj[f] == nil && strings.HasSuffix(f.Name(), assemblyAddress):
+			// A function of the worker without a body, which its assembly
+			// defines, returns the address of the assembly function that
+			// its name names.
+			return names(strings.TrimSuffix(f.Name(), assemblyAddress))
 		}
 	}
 	info := a.classify(p, call)

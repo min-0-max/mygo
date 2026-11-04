@@ -1,0 +1,374 @@
+//go:build darwin
+
+package mainthread
+
+import (
+	"errors"
+	"fmt"
+	"reflect"
+	"runtime"
+	"sync"
+	"sync/atomic"
+	"unsafe"
+
+	"github.com/ebitengine/purego"
+)
+
+// linkState is what the main thread and the worker share; the assembly of
+// each architecture reads its offsets from go_asm.h. The main thread and
+// the worker hand records to each other through one slot each: a thread
+// that hands a record to the other waits until it gets it back, and
+// meanwhile runs only the records that the other hands it, so at most one
+// record travels each way.
+type linkState struct {
+	mainThread   uintptr // the thread identity of the main thread
+	workerThread uintptr // the thread identity of the worker
+	running      uintptr // 1 while the worker serves steps
+	stop         uintptr // set by the step that ends the worker
+	depth        uintptr // the steps that the worker runs, nested
+	mainSem      uintptr // the Mach semaphore that wakes the main thread
+	workerSem    uintptr // the Mach semaphore that wakes the worker
+	toMain       uintptr // the record handed to the main thread, | 1 when done
+	toWorker     uintptr // the record handed to the worker, | 1 when done
+	queue        uintptr // the records that other threads queue for the main thread
+
+	// The C functions that the assembly calls, which the worker resolves
+	// before the main thread or the worker reach them.
+	semaphoreSignal, semaphoreWait uintptr
+	poolPush, poolPop              uintptr
+	retain, autorelease            uintptr
+}
+
+var link linkState
+
+// trampolineRecord is the size of the record that a trampoline keeps on
+// the stack of the main thread, which keeps the stack aligned to 16.
+const trampolineRecord = (unsafe.Sizeof(record{}) + 15) &^ 15
+
+// The C functions of the assembly of each architecture.
+func exchange()
+func drainQueue()
+func trampolineTable()
+func trampolineCommon()
+
+// Their addresses, and the identity of the calling thread: a word of the
+// thread's registers that no other thread shares, which the trampolines
+// read as well.
+func exchangeAddress() uintptr
+func drainQueueAddress() uintptr
+func trampolineAddress(i uintptr) uintptr
+func threadPointer() uintptr
+
+//go:generate go run gen_trampolines.go
+
+// trampolines is how many trampolines trampolineTable holds; targets and
+// targetFlags hold the C function that each one calls and the record flags
+// of its steps.
+const trampolines = 2048
+
+var (
+	targets     [trampolines]uintptr
+	targetFlags [trampolines]uintptr
+	tableMu     sync.Mutex
+	tableUsed   int
+	tableIndex  = map[[2]uintptr]uintptr{}
+)
+
+// native are the C functions that the worker calls from Go.
+var native struct {
+	once                sync.Once
+	err                 error
+	pthreadMainNP       func() int32
+	semaphoreCreate     func(task uintptr, sem *uint32, policy, value int32) int32
+	semaphoreWait       func(sem uint32) int32
+	semaphoreSignal     func(sem uint32) int32
+	machTaskSelf        uintptr
+	runLoopSourceCreate func(alloc uintptr, order int, ctx unsafe.Pointer) uintptr
+	runLoopSourceSignal func(src uintptr)
+	runLoopWakeUp       func(rl uintptr)
+	runLoopGetMain      func() uintptr
+	runLoopAddSource    func(rl, src, mode uintptr)
+	runLoopCommonModes  uintptr
+	mainLoop, source    uintptr
+	sourceContext       [10]uintptr
+	semaphores          []uint32
+	semaphoresMu        sync.Mutex
+}
+
+// loadNative resolves the C functions of the worker.
+func loadNative() error {
+	native.once.Do(func() { native.err = resolve() })
+	return native.err
+}
+
+func resolve() error {
+	libSystem, err := purego.Dlopen("/usr/lib/libSystem.B.dylib", purego.RTLD_NOW|purego.RTLD_GLOBAL)
+	if err != nil {
+		return err
+	}
+	libObjC, err := purego.Dlopen("/usr/lib/libobjc.A.dylib", purego.RTLD_NOW|purego.RTLD_GLOBAL)
+	if err != nil {
+		return err
+	}
+	cf, err := purego.Dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", purego.RTLD_NOW|purego.RTLD_GLOBAL)
+	if err != nil {
+		return err
+	}
+	sym := func(lib uintptr, name string) uintptr {
+		p, e := purego.Dlsym(lib, name)
+		if e != nil && err == nil {
+			err = e
+		}
+		return p
+	}
+	purego.RegisterLibFunc(&native.pthreadMainNP, libSystem, "pthread_main_np")
+	purego.RegisterLibFunc(&native.semaphoreCreate, libSystem, "semaphore_create")
+	purego.RegisterLibFunc(&native.semaphoreWait, libSystem, "semaphore_wait")
+	purego.RegisterLibFunc(&native.semaphoreSignal, libSystem, "semaphore_signal")
+	if p := sym(libSystem, "mach_task_self_"); p != 0 {
+		native.machTaskSelf = uintptr(uint32(*word(p)))
+	}
+	purego.RegisterLibFunc(&native.runLoopSourceCreate, cf, "CFRunLoopSourceCreate")
+	purego.RegisterLibFunc(&native.runLoopSourceSignal, cf, "CFRunLoopSourceSignal")
+	purego.RegisterLibFunc(&native.runLoopWakeUp, cf, "CFRunLoopWakeUp")
+	purego.RegisterLibFunc(&native.runLoopGetMain, cf, "CFRunLoopGetMain")
+	purego.RegisterLibFunc(&native.runLoopAddSource, cf, "CFRunLoopAddSource")
+	if p := sym(cf, "kCFRunLoopCommonModes"); p != 0 {
+		native.runLoopCommonModes = *word(p)
+	}
+	link.poolPush = sym(libObjC, "objc_autoreleasePoolPush")
+	link.poolPop = sym(libObjC, "objc_autoreleasePoolPop")
+	link.retain = sym(libObjC, "objc_retain")
+	link.autorelease = sym(libObjC, "objc_autorelease")
+	link.semaphoreSignal = sym(libSystem, "semaphore_signal")
+	link.semaphoreWait = sym(libSystem, "semaphore_wait")
+	if err != nil {
+		return err
+	}
+	return loadDecisions(cf)
+}
+
+func newSemaphore() (uint32, error) {
+	var s uint32
+	if r := native.semaphoreCreate(native.machTaskSelf, &s, 0, 0); r != 0 {
+		return 0, fmt.Errorf("mainthread: semaphore_create: kern_return_t %d", r)
+	}
+	return s, nil
+}
+
+// semaphore returns a Mach semaphore of the pool, which the caller puts
+// back with putSemaphore.
+func semaphore() uint32 {
+	native.semaphoresMu.Lock()
+	if n := len(native.semaphores); n > 0 {
+		s := native.semaphores[n-1]
+		native.semaphores = native.semaphores[:n-1]
+		native.semaphoresMu.Unlock()
+		return s
+	}
+	native.semaphoresMu.Unlock()
+	s, err := newSemaphore()
+	if err != nil {
+		panic(err)
+	}
+	return s
+}
+
+func putSemaphore(s uint32) {
+	native.semaphoresMu.Lock()
+	native.semaphores = append(native.semaphores, s)
+	native.semaphoresMu.Unlock()
+}
+
+// Start starts the worker. The thread that calls it counts as the main
+// thread until Stop: the main thread, before the main run loop runs. From
+// then on the trampolines that run on the main thread hand their callbacks
+// to the worker as steps, and the calls that Forward forwards run on the
+// main thread.
+func Start() error {
+	if err := loadNative(); err != nil {
+		return err
+	}
+	if atomic.LoadUintptr(&link.running) != 0 {
+		return errors.New("mainthread: the worker runs already")
+	}
+	link.mainThread = threadPointer()
+	mainSem, err := newSemaphore()
+	if err != nil {
+		return err
+	}
+	workerSem, err := newSemaphore()
+	if err != nil {
+		return err
+	}
+	link.mainSem, link.workerSem = uintptr(mainSem), uintptr(workerSem)
+	link.stop, link.depth, link.toMain, link.toWorker = 0, 0, 0, 0
+	if native.source == 0 {
+		native.mainLoop = native.runLoopGetMain()
+		native.sourceContext[9] = drainQueueAddress() // perform
+		native.source = native.runLoopSourceCreate(0, 0, unsafe.Pointer(&native.sourceContext))
+		native.runLoopAddSource(native.mainLoop, native.source, native.runLoopCommonModes)
+	}
+	ready := make(chan struct{})
+	go serve(ready)
+	<-ready
+	return nil
+}
+
+// serve is the worker: a goroutine locked to a thread of its own that
+// waits for steps in exchange until the step of Stop ends it.
+func serve(ready chan<- struct{}) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	link.workerThread = threadPointer()
+	atomic.StoreUintptr(&link.running, 1)
+	close(ready)
+	purego.SyscallN(exchangeAddress(), 0)
+	atomic.StoreUintptr(&link.running, 0)
+	link.workerThread = 0
+	close(stopped)
+}
+
+var stopped = make(chan struct{})
+
+// Stop ends the worker, on the main thread, and returns once it ended.
+func Stop() {
+	if atomic.LoadUintptr(&link.running) == 0 {
+		return
+	}
+	RunOnWorker(func() { link.stop = 1 })
+	<-stopped
+	stopped = make(chan struct{})
+}
+
+// step is the C function of the steps that RunOnWorker starts.
+var (
+	stepFn       func()
+	stepOnce     sync.Once
+	stepCallback uintptr
+)
+
+// RunOnWorker runs fn on the worker as a step and returns when it
+// returned. The main goroutine calls it on the main thread, which waits on
+// its own stack and meanwhile runs the calls that are forwarded to it.
+// Called anywhere else, or while the worker does not run, it runs fn at
+// once.
+func RunOnWorker(fn func()) {
+	if atomic.LoadUintptr(&link.running) == 0 || threadPointer() != link.mainThread {
+		fn()
+		return
+	}
+	stepOnce.Do(func() {
+		stepCallback = purego.NewCallback(func() uintptr {
+			f := stepFn
+			stepFn = nil
+			f()
+			return 0
+		})
+	})
+	stepFn = fn
+	rec := &record{fn: stepCallback, flags: recordStep}
+	purego.SyscallN(exchangeAddress(), uintptr(unsafe.Pointer(rec)))
+	runtime.KeepAlive(rec)
+}
+
+// IsMainThread reports whether the calling thread counts as the main
+// thread: the thread that started the worker, and the worker while it runs
+// a step; while the worker does not run, the thread for which
+// pthread_main_np answers true.
+func IsMainThread() bool {
+	if atomic.LoadUintptr(&link.running) == 0 {
+		if err := loadNative(); err != nil {
+			panic(err)
+		}
+		return native.pthreadMainNP() != 0
+	}
+	tp := threadPointer()
+	return tp == link.mainThread || (tp == link.workerThread && link.depth > 0)
+}
+
+// Forward runs the native call of fn with args on the main thread and
+// returns its result of type R: at once on the main thread, through the
+// main thread that waits for the worker's step on the worker, and through
+// the main run loop on any other thread. While the worker does not run,
+// it runs the call on the calling thread.
+func Forward[R any](fn uintptr, args ...any) R {
+	rec, keep, out := prepare(fn, reflect.TypeFor[R](), args)
+	forward(rec)
+	runtime.KeepAlive(keep)
+	return result[R](rec, out)
+}
+
+// forward runs rec on the main thread.
+func forward(rec *record) {
+	tp := threadPointer()
+	switch {
+	case atomic.LoadUintptr(&link.running) == 0 || tp == link.mainThread:
+		run(rec)
+	case tp == link.workerThread && link.depth > 0:
+		purego.SyscallN(exchangeAddress(), uintptr(unsafe.Pointer(rec)))
+	default:
+		s := semaphore()
+		rec.sem = uintptr(s)
+		p := uintptr(unsafe.Pointer(rec))
+		for {
+			head := atomic.LoadUintptr(&link.queue)
+			rec.next = head
+			if atomic.CompareAndSwapUintptr(&link.queue, head, p) {
+				break
+			}
+		}
+		native.runLoopSourceSignal(native.source)
+		native.runLoopWakeUp(native.mainLoop)
+		native.semaphoreSignal(uint32(link.mainSem))
+		for native.semaphoreWait(s) != 0 {
+		}
+		putSemaphore(s)
+	}
+	runtime.KeepAlive(rec)
+}
+
+// entry returns the trampoline that calls target with flags, the same for
+// each call with the same target and flags.
+func entry(target, flags uintptr) uintptr {
+	if target == 0 {
+		return 0
+	}
+	tableMu.Lock()
+	defer tableMu.Unlock()
+	key := [2]uintptr{target, flags}
+	if i, ok := tableIndex[key]; ok {
+		return trampolineAddress(i)
+	}
+	if tableUsed == trampolines {
+		panic("mainthread: no trampoline left")
+	}
+	i := uintptr(tableUsed)
+	tableUsed++
+	targets[i] = target
+	targetFlags[i] = flags | recordStep
+	tableIndex[key] = i
+	return trampolineAddress(i)
+}
+
+// isTrampoline reports whether fn is a trampoline of the table.
+func isTrampoline(fn uintptr) bool {
+	base := trampolineAddress(0)
+	return fn >= base && fn < trampolineAddress(trampolines)
+}
+
+// Callback returns the trampoline for a C callback that purego made, to
+// pass in its place: called on the main thread while the worker runs, it
+// runs the callback on the worker as a step.
+func Callback(fn uintptr) uintptr { return entry(fn, 0) }
+
+// Method returns the trampoline for the implementation imp of an
+// Objective-C method that purego made, to set in its place with
+// method_setImplementation. returnsObject says that the method returns an
+// object, which the step hands to the autorelease pool of the main thread.
+func Method(imp uintptr, returnsObject bool) uintptr {
+	if returnsObject {
+		return entry(imp, recordReturnsObject)
+	}
+	return entry(imp, 0)
+}
