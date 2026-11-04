@@ -1,6 +1,9 @@
 package ui
 
-import "slices"
+import (
+	"cmp"
+	"slices"
+)
 
 // Overlays scope the keyboard. A dialog (DialogBase) keeps the focus: Tab
 // moves it among the dialog's elements alone, it moves into the dialog as
@@ -64,44 +67,76 @@ func (rt *engine) arrangeFocus() {
 	}
 }
 
+// popoverOrder holds what placePopovers needs, which every frame with a
+// popover mounted runs. Frames reuse it.
+type popoverOrder struct {
+	// links are the elements of popovers, by anchor, those of an anchor in
+	// the order they came.
+	links  []popoverLink
+	placed []bool
+	ids    []uint64
+	scopes []focusScope
+}
+
+// popoverLink is element i of the focus order, of a popover on anchor.
+type popoverLink struct {
+	anchor uint64
+	i      int
+	// shown tells that the anchor is in the focus order.
+	shown bool
+}
+
+// of returns the index of the first link on anchor, and whether it has one.
+func (o *popoverOrder) of(anchor uint64) (int, bool) {
+	return slices.BinarySearchFunc(o.links, anchor, func(l popoverLink, a uint64) int { return cmp.Compare(l.anchor, a) })
+}
+
+// add places element i of order and, after it, the popovers on it.
+func (o *popoverOrder) add(i int, order []uint64, scopes []focusScope) {
+	if o.placed[i] {
+		return
+	}
+	o.placed[i] = true
+	o.ids, o.scopes = append(o.ids, order[i]), append(o.scopes, scopes[i])
+	at, ok := o.of(order[i])
+	for ; ok && at < len(o.links) && o.links[at].anchor == order[i]; at++ {
+		o.add(o.links[at].i, order, scopes)
+	}
+}
+
 // placePopovers moves the elements of popovers after their anchors in the
 // focus order.
 func (rt *engine) placePopovers(order []uint64, scopes []focusScope) {
-	at := make(map[uint64]int, len(order))
-	for i, id := range order {
-		at[id] = i
-	}
-	groups := map[uint64][]int{}
+	o := &rt.popovers
+	o.links = o.links[:0]
 	for i, sc := range scopes {
-		if _, ok := at[sc.anchor]; ok && sc.anchor != 0 {
-			groups[sc.anchor] = append(groups[sc.anchor], i)
+		if sc.anchor != 0 {
+			o.links = append(o.links, popoverLink{anchor: sc.anchor, i: i})
 		}
 	}
-	if len(groups) > 0 {
-		placed := make([]bool, len(order))
-		var ids []uint64
-		var scs []focusScope
-		var add func(i int)
-		add = func(i int) {
-			if placed[i] {
-				return
-			}
-			placed[i] = true
-			ids, scs = append(ids, order[i]), append(scs, scopes[i])
-			for _, j := range groups[order[i]] {
-				add(j)
-			}
+	slices.SortStableFunc(o.links, func(a, b popoverLink) int { return cmp.Compare(a.anchor, b.anchor) })
+	moved := false
+	for _, id := range order {
+		at, ok := o.of(id)
+		for ; ok && at < len(o.links) && o.links[at].anchor == id; at++ {
+			o.links[at].shown, moved = true, true
 		}
-		for i, sc := range scopes {
-			if _, ok := at[sc.anchor]; !ok || sc.anchor == 0 {
-				add(i)
-			}
-		}
-		for i := range order {
-			add(i) // popovers of anchors in no order
-		}
-		rt.focusOrder, rt.focusScopes = ids, scs
 	}
+	if !moved {
+		return
+	}
+	o.placed = slices.Grow(o.placed[:0], len(order))[:len(order)]
+	clear(o.placed)
+	o.ids, o.scopes = o.ids[:0], o.scopes[:0]
+	for i, sc := range scopes {
+		if at, ok := o.of(sc.anchor); !ok || !o.links[at].shown {
+			o.add(i, order, scopes)
+		}
+	}
+	for i := range order {
+		o.add(i, order, scopes) // popovers of anchors in no order
+	}
+	rt.focusOrder, rt.focusScopes, o.ids, o.scopes = o.ids, o.scopes, order, scopes
 }
 
 // scopeOf returns the dialog the element is in, 0 for none.

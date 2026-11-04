@@ -209,6 +209,7 @@ type engine struct {
 	z           zScratch
 	focusOrder  []uint64
 	focusScopes []focusScope
+	popovers    popoverOrder
 	modal       uint64
 	// modalLayer is the element at the top of the overlay holding the
 	// dialog on top, which assistive technology sees with what is above.
