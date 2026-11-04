@@ -869,6 +869,55 @@ func TestTheAtlasLetsGoOfWhatNoFrameDraws(t *testing.T) {
 	}
 }
 
+// BenchmarkLargePathFrames paints paths larger than a tile frame after frame:
+// a stroke and a fill that stay, and a stroke moving by whole pixels, whose
+// masks are the same. puts/op counts the bitmaps a frame writes to the
+// atlas: none once the masks are cached.
+func BenchmarkLargePathFrames(b *testing.B) {
+	const w, h = 1400, 900
+	for _, kind := range []string{"stroke", "fill", "moved"} {
+		b.Run(kind, func(b *testing.B) {
+			frame := 0
+			tt := coreNewTester(func(c *context) {
+				coreBox(c).Fill().Background(RGB(255, 255, 255)).Draw(func(p *Painter, r Rect) {
+					var path Path
+					outline(&path, w, h, 0)
+					switch kind {
+					case "stroke":
+						p.StrokePath(&path, 0.5, RGB(20, 60, 230))
+					case "fill":
+						p.FillPath(&path, RGB(20, 60, 230))
+					case "moved":
+						var moved Path
+						shift := float32(frame%8) * 0.5
+						const r = 8
+						x0, y0, x1, y1 := 10+shift, 10+shift, w-30+shift, h-30+shift
+						moved.MoveTo(x0+r, y0).LineTo(x1-r, y0).QuadTo(x1, y0, x1, y0+r).
+							LineTo(x1, y1-r).QuadTo(x1, y1, x1-r, y1).
+							LineTo(x0+r, y1).QuadTo(x0, y1, x0, y1-r).
+							LineTo(x0, y0+r).QuadTo(x0, y0, x0+r, y0).Close()
+						p.StrokePath(&moved, 0.5, RGB(20, 60, 230))
+					}
+				})
+			}, w, h)
+			tt.SetScale(2)
+			for range 40 {
+				frame++
+				tt.Frame()
+			}
+			atlas := tt.rt.text.MaskAtlas
+			puts := atlas.Version()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				frame++
+				tt.Frame()
+			}
+			b.ReportMetric(float64(atlas.Version()-puts)/float64(b.N), "puts/op")
+		})
+	}
+}
+
 // TestAFramePaintedInPartLeavesTheAtlas animates a bar beside what is drawn
 // once. Frames that paint the bar alone draw too little to tell what the
 // atlas holds for: they leave it, and the next frame painted in full, which
@@ -918,13 +967,18 @@ func TestAFramePaintedInPartLeavesTheAtlas(t *testing.T) {
 	}
 }
 
-// TestLargeStrokesMeetAcrossTiles draws strokes larger than a tile, with
+// TestLargeStrokesMeetAcrossTiles draws strokes and fills larger than a tile, with
 // corners, curves and diagonals across its edges, and as one mask: the
 // pixels are the same, within a level.
 func TestLargeStrokesMeetAcrossTiles(t *testing.T) {
 	view := func(c *context) {
 		coreBox(c).Fill().Background(RGB(255, 255, 255)).Draw(func(p *Painter, r Rect) {
-			var frame, ring, slant Path
+			var frame, ring, slant, disc, hole Path
+			disc.Circle(350.3, 250.6, 240.2)
+			p.FillPath(&disc, RGB(235, 225, 150))
+			hole.MoveTo(40, 40).LineTo(660, 40).LineTo(660, 460).LineTo(40, 460).Close().
+				MoveTo(200, 150).LineTo(200, 350).LineTo(500, 350).LineTo(500, 150).Close()
+			p.FillPath(&hole, RGB(150, 200, 235).Alpha(0.5))
 			outline(&frame, 700, 500, 0.3)
 			p.StrokePath(&frame, 0.5, RGB(20, 60, 230))
 			ring.Circle(330.2, 240.7, 180.4)

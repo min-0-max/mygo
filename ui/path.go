@@ -793,9 +793,20 @@ func (p *Painter) pathTiles(key uint64, f *flatPath, hw, x0, y0 float32, w, h in
 			})
 			p.rt.paths.cross = cross
 		}
+		// Covered tiles side by side, from pixel from to pixel to, draw as one
+		// mask covered whole, which those of its size share: the key of no
+		// path, at no place.
+		from, to := 0, 0
+		covered := func() {
+			if to > from {
+				p.pathMask(tileKey(0, -1, -1, to-from, th), f, 0, x0+float32(from), y0+float32(ty), to-from, th, true, tint)
+			}
+			from, to = 0, 0
+		}
 		for c := c0; c < c1; c++ {
 			tx, tw := c*t, min(t, w-c*t)
 			if reached[(r-r0)*cols+c-c0].on {
+				covered()
 				if mx, my, mw, mh := box(c, r); mw > 0 && mh > 0 {
 					p.pathMask(tileKey(key, mx, my, mw, mh), f, hw, x0+float32(mx), y0+float32(my), mw, mh, false, tint)
 				}
@@ -807,15 +818,27 @@ func (p *Painter) pathTiles(key uint64, f *flatPath, hw, x0, y0 float32, w, h in
 					winding += k.dir
 				}
 			}
-			if winding != 0 {
-				// A mask covered whole, which tiles of its size share: the
-				// key of no path, at no place.
-				p.pathMask(tileKey(0, -1, -1, tw, th), f, 0, x0+float32(tx), y0+float32(ty), tw, th, true, tint)
+			if winding == 0 {
+				covered()
+				continue
 			}
+			if to-from+tw > pathCoveredMax {
+				covered()
+			}
+			if to == from {
+				from = tx
+			}
+			to = tx + tw
 		}
+		covered()
 	}
 	return true
 }
+
+// pathCoveredMax is how wide a mask covered whole is, in device pixels: a
+// few tiles, as a filled path inside a window would otherwise draw a mask
+// for each of a thousand tiles.
+const pathCoveredMax = 512
 
 // pathTilesMax is how many tiles that show pathTiles looks at, at most:
 // 128 by 128, 8064 pixels a side, more than a window shows of a path
