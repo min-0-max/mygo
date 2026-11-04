@@ -133,6 +133,7 @@ func ByReceiver(fn uintptr, args ...uintptr) uintptr {
 		panic(err)
 	}
 	if len(args) == 0 || args[0] == 0 || callingThread(fn, args) {
+		checkCalling(fn, args)
 		r, _, _ := purego.SyscallN(fn, args...)
 		return r
 	}

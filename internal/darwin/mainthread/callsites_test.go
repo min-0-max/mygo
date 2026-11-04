@@ -464,6 +464,7 @@ func buildConfigs(root string) ([]buildConfig, error) {
 			arches = append(arches, goarch)
 		}
 	}
+	known[CheckTag] = true
 	custom := map[string]bool{}
 	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {

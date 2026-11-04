@@ -27,6 +27,11 @@
 // two disagree with it.
 package mainthread
 
+// CheckTag is the build tag that holds each call to these lists at run
+// time. It builds a test of mygo, which the reader of the call sites does
+// not read.
+const CheckTag = "mainthreadcheck"
+
 // The functions of this package that the call sites of mygo reach.
 const (
 	// ForwardFunc names the function that runs a native call on the main
@@ -336,6 +341,29 @@ type FunctionGroup struct {
 	Except   []string
 }
 
+// CFValueTypes are the Core Foundation value objects, by the name of the
+// type and the prefix of its functions.
+var CFValueTypes = []string{
+	"CFString", "CFAttributedString", "CFNumber", "CFData",
+	"CFArray", "CFDictionary", "CFSet", "CFError",
+}
+
+// cfValueFunctions are the functions of CFValueTypes, which run on the
+// calling thread for an object of one of those types: a run time check
+// reads the type of the object that each of them gets.
+var cfValueFunctions = FunctionGroup{
+	Name:     "Core Foundation functions of the value objects",
+	Names:    []string{"CFHash", "CFEqual"},
+	Prefixes: CFValueTypes,
+	Except:   []string{"CFStringTokenizer", "CFNumberFormatter"},
+}
+
+// CFCollectionTypes are the other types that a collection may hold at
+// any depth for a CFRelease on the calling thread, with the Core Text
+// types of CFTypes: the constants of CFBoolean are never deallocated, and
+// a CFURL is immutable.
+var CFCollectionTypes = []string{"CFBoolean", "CFURL"}
+
 // CallingThreadFunctions are the native functions that run on the calling
 // thread. CFRetain and CFRelease are not among them: ByReceiver decides
 // them.
@@ -347,15 +375,7 @@ var CallingThreadFunctions = []FunctionGroup{
 		Prefixes: []string{"objc_", "sel_", "class_", "object_", "method_", "ivar_", "protocol_", "property_", "imp_"},
 		Except:   []string{"objc_msgSend"},
 	},
-	{
-		Name:  "Core Foundation functions of the value objects",
-		Names: []string{"CFHash", "CFEqual"},
-		Prefixes: []string{
-			"CFString", "CFAttributedString", "CFNumber", "CFData",
-			"CFArray", "CFDictionary", "CFSet", "CFError",
-		},
-		Except: []string{"CFStringTokenizer", "CFNumberFormatter"},
-	},
+	cfValueFunctions,
 	{
 		Name: "Core Foundation run loop functions",
 		Names: []string{

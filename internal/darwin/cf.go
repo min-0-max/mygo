@@ -112,12 +112,12 @@ type eventTypeSpec struct {
 }
 
 func loadCF() {
-	purego.RegisterLibFunc(&cfRunLoopGetMain, libCF, "CFRunLoopGetMain")
+	mainthread.Bind(&cfRunLoopGetMain, libCF, "CFRunLoopGetMain")
 	cfRunLoopSourceCreateFn = mustDlsym(libCF, "CFRunLoopSourceCreate")
-	purego.RegisterLibFunc(&cfRunLoopAddSource, libCF, "CFRunLoopAddSource")
-	purego.RegisterLibFunc(&cfErrorCopyDescription, libCF, "CFErrorCopyDescription")
-	purego.RegisterLibFunc(&cfDataGetLength, libCF, "CFDataGetLength")
-	purego.RegisterLibFunc(&cfDataGetBytePtr, libCF, "CFDataGetBytePtr")
+	mainthread.Bind(&cfRunLoopAddSource, libCF, "CFRunLoopAddSource")
+	mainthread.Bind(&cfErrorCopyDescription, libCF, "CFErrorCopyDescription")
+	mainthread.Bind(&cfDataGetLength, libCF, "CFDataGetLength")
+	mainthread.Bind(&cfDataGetBytePtr, libCF, "CFDataGetBytePtr")
 	cfRunLoopSourceSignalFn = mustDlsym(libCF, "CFRunLoopSourceSignal")
 	cfRunLoopWakeUpFn = mustDlsym(libCF, "CFRunLoopWakeUp")
 	cfReleaseFn = mustDlsym(libCF, "CFRelease")
@@ -134,11 +134,11 @@ func loadCF() {
 		iopsCopyPowerSourcesInfoFn = mustDlsym(iokit, "IOPSCopyPowerSourcesInfo")
 		iopsGetProvidingPowerSourceTypeFn = mustDlsym(iokit, "IOPSGetProvidingPowerSourceType")
 	}
-	purego.RegisterLibFunc(&cgEventSourceSecondsSinceLastType, libCG, "CGEventSourceSecondsSinceLastEventType")
+	mainthread.Bind(&cgEventSourceSecondsSinceLastType, libCG, "CGEventSourceSecondsSinceLastEventType")
 
-	purego.RegisterLibFunc(&cgEventGetLocation, libCG, "CGEventGetLocation")
-	purego.RegisterLibFunc(&cgDisplayIsBuiltin, libCG, "CGDisplayIsBuiltin")
-	purego.RegisterLibFunc(&cgDisplayRotation, libCG, "CGDisplayRotation")
+	mainthread.Bind(&cgEventGetLocation, libCG, "CGEventGetLocation")
+	mainthread.Bind(&cgDisplayIsBuiltin, libCG, "CGDisplayIsBuiltin")
+	mainthread.Bind(&cgDisplayRotation, libCG, "CGDisplayRotation")
 	nsBeepFn = mustDlsym(libAppKit, "NSBeep")
 
 	getApplicationEventTargetFn = mustDlsym(libCarbon, "GetApplicationEventTarget")

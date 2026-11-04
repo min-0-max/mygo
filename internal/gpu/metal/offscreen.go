@@ -7,8 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ebitengine/purego"
-
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/scene"
 )
 
@@ -44,7 +43,7 @@ func NewOffscreen(w, h int) (*Offscreen, error) {
 		return nil, err
 	}
 	if msgDouble == nil {
-		purego.RegisterFunc(&msgDouble, msgSend)
+		mainthread.BindAddr(&msgDouble, msgSend, "objc_msgSend")
 	}
 	o := &Offscreen{r: r}
 	pool(func() { err = o.target(w, h) })

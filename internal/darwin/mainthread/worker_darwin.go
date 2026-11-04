@@ -470,9 +470,11 @@ func forward(rec *record) {
 		run(rec)
 	case tp == link.workerThread && link.depth > 0:
 		forwarded.Add(1)
+		rec = checkedOnMain(rec)
 		purego.SyscallN(exchangeAddress(), uintptr(unsafe.Pointer(rec)))
 	default:
 		forwarded.Add(1)
+		rec = checkedOnMain(rec)
 		s := semaphore()
 		rec.sem = uintptr(s)
 		p := uintptr(unsafe.Pointer(rec))
