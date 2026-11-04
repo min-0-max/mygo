@@ -119,6 +119,11 @@ and does not describe the frames that follow for assistive technology. It
 fails for content that shows in several windows: give each window a
 `Content` of its own.
 
+`tt.ActElement(node.ID, ui.ActionPress, "")` performs one action on an element of
+the last frame, as assistive technology does, and `ui.ActionSetValue` replaces
+its text. An element refuses an action it does not take. In the app,
+`Content.ActElement` does the same on the main thread.
+
 ## Testing the built app
 
 A tester runs a view inside `go test`. To test the app as built, with its

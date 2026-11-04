@@ -104,6 +104,66 @@ func contains(outer, inner Rect) bool {
 	return inner.X >= outer.X && inner.Y >= outer.Y && inner.X+inner.W <= outer.X+outer.W && inner.Y+inner.H <= outer.Y+outer.H
 }
 
+// TestActElement checks that an action on an element of the tree works as
+// assistive technology's does, and that an element refuses an action it
+// does not take.
+func TestActElement(t *testing.T) {
+	name, agree, added := "Ada", false, 0
+	tt := NewTester(func(c *Context) {
+		Column(c).Fill().Children(func() {
+			if Button(c, "Add").Key("add").Clicked() {
+				added++
+			}
+			c.Key("name")
+			TextInput(c, &name)
+			c.Key(7)
+			Checkbox(c, &agree, "Agree")
+		})
+	}, 400, 300)
+	act := func(label string, action Actions, text string) error {
+		t.Helper()
+		return tt.ActElement(findElement(t, tt.ElementTree(), label).ID, action, text)
+	}
+	if err := act("Add", ActionPress, ""); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if added != 1 {
+		t.Fatalf("the press clicked %d times", added)
+	}
+	if err := act("Agree", ActionPress, ""); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !agree {
+		t.Fatal("the press did not check the box")
+	}
+	tree := tt.ElementTree()
+	var input ElementNode
+	for _, n := range tree {
+		if n.Key == "name" {
+			input = n
+		}
+	}
+	if err := tt.ActElement(input.ID, ActionSetValue, "Grace"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	tt.Frame()
+	if name != "Grace" {
+		t.Fatalf("the value is %q", name)
+	}
+	if err := act("Add", ActionSetValue, "x"); err == nil || err.Error() != `ui: the element takes no such action` {
+		t.Fatalf("a button took a value: %v", err)
+	}
+	if err := tt.ActElement(1<<60, ActionPress, ""); err == nil || err.Error() != "ui: the last frame has no element 1152921504606846976" {
+		t.Fatalf("an absent element: %v", err)
+	}
+	if err := act("Add", ActionPress|ActionFocus, ""); err == nil || err.Error() != `ui: the action must be one action` {
+		t.Fatalf("two actions: %v", err)
+	}
+}
+
 // TestElementTreeActions checks that each action of the element tree is
 // the one assistive technology takes.
 func TestElementTreeActions(t *testing.T) {

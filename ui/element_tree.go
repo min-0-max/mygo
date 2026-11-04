@@ -3,6 +3,8 @@ package ui
 import (
 	"errors"
 	"fmt"
+
+	"github.com/egoist/mygo/internal/platform"
 )
 
 // ElementNode is an element of a frame as its element tree tells it
@@ -10,6 +12,8 @@ import (
 // reads of the element, with the key the app gave it. The tree holds the
 // elements assistive technology sees, in every build, inspector or not.
 type ElementNode struct {
+	// ID names the element in the frame for ActElement.
+	ID uint64
 	// Key is the key the app gave the element (Element.Key, Context.Key),
 	// nil for none.
 	Key any
@@ -56,6 +60,29 @@ const (
 // in no window or in several, for a window that built no frame yet, and
 // inside the view function, where the frame is being built.
 func (v *Content) ElementTree() ([]ElementNode, error) {
+	rt, err := v.frameEngine()
+	if err != nil {
+		return nil, err
+	}
+	return rt.elementTree(), nil
+}
+
+// ActElement performs one action on the element id of the last frame, as
+// assistive technology does: ActionPress clicks it, and ActionSetValue
+// replaces its text with text. What the action changes shows in the frame
+// that follows. It fails for an element the frame does not hold and for
+// an action the element does not take, and where ElementTree fails.
+func (v *Content) ActElement(id uint64, action Actions, text string) error {
+	rt, err := v.frameEngine()
+	if err != nil {
+		return err
+	}
+	return rt.actElement(id, action, text)
+}
+
+// frameEngine returns the engine of the one window the content shows in,
+// when its last frame can be read.
+func (v *Content) frameEngine() (*engine, error) {
 	switch len(v.hosts) {
 	case 0:
 		return nil, errors.New("ui: the content shows in no window")
@@ -66,16 +93,53 @@ func (v *Content) ElementTree() ([]ElementNode, error) {
 	rt := v.hosts[0].rt
 	switch {
 	case rt.inFrame:
-		return nil, errors.New("ui: ElementTree called inside the view function, while the frame builds")
+		return nil, errors.New("ui: the element tree was asked for inside the view function, while the frame builds")
 	case rt.c.root == nil:
 		return nil, errors.New("ui: the window built no frame yet")
 	}
-	return rt.elementTree(), nil
+	return rt, nil
 }
 
 // ElementTree returns the element tree of the last frame (see
 // Content.ElementTree).
 func (t *Tester) ElementTree() []ElementNode { return t.rt.elementTree() }
+
+// ActElement performs an action on an element of the last frame (see
+// Content.ActElement).
+func (t *Tester) ActElement(id uint64, action Actions, text string) error {
+	return t.rt.actElement(id, action, text)
+}
+
+// elementActions are the actions of assistive technology that the actions
+// of the element tree name.
+var elementActions = map[Actions]platform.AccessActionKind{
+	ActionPress:          platform.AccessPress,
+	ActionFocus:          platform.AccessFocus,
+	ActionIncrement:      platform.AccessIncrement,
+	ActionDecrement:      platform.AccessDecrement,
+	ActionSetValue:       platform.AccessSetValue,
+	ActionScrollIntoView: platform.AccessScrollIntoView,
+	ActionExpand:         platform.AccessExpand,
+}
+
+// actElement gives the element an action of assistive technology, as the
+// backend gives it those of the system's.
+func (rt *engine) actElement(id uint64, action Actions, text string) error {
+	kind, ok := elementActions[action]
+	if !ok {
+		return errors.New("ui: the action must be one action")
+	}
+	for _, n := range rt.windowAccess(rt.accessTree()).Nodes {
+		if n.ID == id {
+			if Actions(n.Actions)&action == 0 {
+				return errors.New("ui: the element takes no such action")
+			}
+			rt.accessAction(platform.SurfaceEvent{Kind: platform.AccessAction, ID: id, Action: kind, Text: text})
+			return nil
+		}
+	}
+	return fmt.Errorf("ui: the last frame has no element %d", id)
+}
 
 // elementTree describes the last frame as assistive technology reads it,
 // with the elements' keys.
@@ -101,6 +165,7 @@ func (rt *engine) elementTree() []ElementNode {
 		for j, i := range at {
 			n := tree.Nodes[i]
 			out[j] = ElementNode{
+				ID:       n.ID,
 				Key:      keys[n.ID],
 				Role:     Role(n.Role) + RoleGroup,
 				Label:    n.Label,
