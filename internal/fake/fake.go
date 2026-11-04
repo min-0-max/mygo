@@ -1408,6 +1408,8 @@ type Surface struct {
 	w *Window
 	// Scale is the device pixels per DIP.
 	Scale float64
+	// NativeViews is the native view and what shows of it.
+	NativeViews NativeViews
 
 	mu          sync.Mutex
 	requests    int

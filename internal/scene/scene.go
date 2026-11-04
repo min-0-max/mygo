@@ -353,8 +353,13 @@ type Scene struct {
 	// or transparent: what the window shows where no frame of its size
 	// shows yet, as while it grows. It draws nothing in the frame.
 	Background Color
-	Ops        []Op
-	Glyphs     []Glyph
+	// Transact tells that the frame moves what shows through its holes
+	// (OpHole), the system's views under the frame: a renderer that can
+	// presents it with them, in the same transaction, as it does a frame
+	// that changes its layer.
+	Transact bool
+	Ops      []Op
+	Glyphs   []Glyph
 	// Stops holds the stops of gradients (Op.Stops).
 	Stops []Stop
 	// Effects holds the effects of OpEffect operations.
