@@ -56,6 +56,7 @@ framework safely. Read it before changing anything under `internal/`.
 ├── page.go             Page: the web page a window shows, its loading, Eval and events
 ├── content.go          Content: windows showing native UI instead of a page
 ├── webview.go          WebView: web pages in windows of native UI, under it
+├── nativeview.go       NewNativeView, HoldFrames: the application's views under native UI
 ├── ipc.go              Bind/BindAs, method calls, Event[T], CallerWindow
 ├── plugin.go           Plugin and Use: services bound as "plugin:<name>"
 ├── channel.go          Channel[T]: values streamed to a call's page
@@ -3661,6 +3662,31 @@ either.
   element the frame first builds was pressed outside of by none, as the
   press opening it is still in `downs` when a quick click opens it. A select's popup keeps a backdrop taking the presses outside,
   as the system's pop-up menus do.
+- **Native views** (`nativeview.go`, `ui/webview.go`,
+  `internal/darwin/native_view.go`). `Window.NewNativeView` adds a view the
+  application made under the surface, above the window's effect view
+  (`platform.NativeViewSurface`). `ui.NativeView` is a web view element
+  whose `surface.WebView` is a `nativeElement`, a value of the named and
+  key views, so hole, covers, focus, Tab and hit chain are the code of web
+  views, which branches only where they end: `windowHost.placeNativeViews`
+  gives the placements to `conn.PlaceNativeViews` in the same step as the
+  web views, `tabIntoWebView` gives the key view the keyboard
+  (`TabIntoNativeView`), and `accessElement` gives the page's node the
+  views instead of a `WebView`. The surface's `hitTest:` asks the hit test
+  of the native view where an element shows and nothing covers it, and
+  answers with nil there, so AppKit goes on to the views under the
+  surface. The content is told of presses by a local event monitor, armed
+  with the first native view and only for mouse-down events, as AppKit
+  gives the view the press itself and nothing of mygo's sees it; the
+  window's `selectKeyViewFollowingView:` and `...PrecedingView:` see Tab
+  leave a key view (`tabOutOfNativeView`). An element adopts the views
+  with `setAccessibilityParent:`, retained until the frame that stops
+  showing them, as the views are the application's and a class of its
+  own is not on them. `HoldFrames` lives in `windowHost` (`holding`,
+  `heldFrame`): `SurfaceFrame` is swallowed, frames answer `AfterPresent`
+  with `PresentHeld`, and Metal pins the layer's autoresizing mask to the
+  top left (`Renderer.HoldFrames`), dropping a frame that waited for its
+  drawable.
 - **Web views** (`webview.go`, `ui/webview.go`, `webview.go` of each
   backend). `Window.NewWebView` makes a web view of a window showing
   `Content`, whose page lives in a `Window` of its own that no list holds,
@@ -3680,7 +3706,8 @@ either.
   inner edge and cut by the clips around it, so that what paints after
   the element paints over the page. The native web view is under the
   surface, which shows it through its transparent frames; what shows over
-  it blends with it as over any pixels. After presenting a frame, the
+  it blends with it as over any pixels. Before presenting a frame that
+  the surface asked for, on the main thread, the
   engine gives the surface each web view's frame and clip and the boxes
   of the hits after its own within its clip, as they show (`Covers`): the
   pointer is the page's where it shows, inside its corners (`Radii`), and
@@ -4418,8 +4445,9 @@ either.
     falls back to that, and its test fails. It draws into a CAMetalLayer
     it adds to the surface view's layer. The command queue, shaders,
     sampler and placeholder texture are made on demand. A frame that
-    changes the layer (its size, scale or pixel format), or shows web
-    views, which move in the window's transaction, presents with the Core
+    changes the layer (its size, scale or pixel format), or the placement
+    of a web view or a native view element (`scene.Scene.Transact`), which
+    move in the window's transaction, presents with the Core
     Animation transaction (`presentsWithTransaction`), so a live resize
     shows no stretched frames; the others present as soon as the GPU has
     them (`presentDrawable:`), sparing a pass of AppKit's display cycle
@@ -5460,7 +5488,7 @@ which npm allows only for packages that exist: the first release uses an
 | native UI surface | layer-backed NSView, frames from `CADisplayLink` (a timer at the display's rate before macOS 14), input methods through NSTextInputClient | GtkGLArea (GtkDrawingArea without a GPU), GtkIMMulticontext | `MyGoSurface` child window, IMM32 |
 | native UI data drags | NSDraggingSession, NSPasteboardItemDataProvider, NSDraggingDestination | GTK drag contexts, MIME selections, text/uri-list | OLE IDataObject, IDropSource, IDropTarget, Shell drag images |
 | native UI accessibility | `NSAccessibilityElement` subclasses | ATK objects (GObject types registered through purego), bridged to AT-SPI by GTK | UI Automation fragments (COM objects; assembly thunks for the methods taking doubles) |
-| native UI rendering | Metal, into a CAMetalLayer presenting as soon as drawn, or with the Core Animation transaction for frames that resize it or show web views | OpenGL 3.3 or ES 3.0 in the GtkGLArea's render signal; on the CPU, painted with cairo, where OpenGL runs on the CPU | Direct3D 11 (WARP without a GPU), flip-model swap chain presenting dirty rectangles |
+| native UI rendering | Metal, into a CAMetalLayer presenting as soon as drawn, or with the Core Animation transaction for frames that resize it or move web views or native view elements | OpenGL 3.3 or ES 3.0 in the GtkGLArea's render signal; on the CPU, painted with cairo, where OpenGL runs on the CPU | Direct3D 11 (WARP without a GPU), flip-model swap chain presenting dirty rectangles |
 | web views in native UI | WKWebView in a clip view under the surface; `hitTest:` lets the pointer through | WebKitWebView in a `GtkLayout` under the area in a `GtkOverlay`; an input shape lets the pointer through | WebView2 composition controller in a DirectComposition target under the frames'; the surface sends it the mouse |
 | audio output | Audio Queue on the default output | PulseAudio simple API (PipeWire too), else ALSA `default` | WASAPI shared mode, reopened when the default output changes |
 | gamepads | GameController.framework, extended gamepad profile | evdev, the kernel's gamepad layout, Xbox's X and Y swapped back | XInput, four slots, Guide by `XInputGetStateEx` |

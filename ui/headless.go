@@ -204,8 +204,9 @@ func (h *headless) keepAccess(t *platform.AccessTree) {
 func (h *headless) popupMenu(m *platform.Menu, x, y float32, chosen func(int)) {
 	h.menu, h.menuAt, h.chosen = m, [2]float32{x, y}, chosen
 }
-func (h *headless) placeWebViews(views []placedWebView) {
+func (h *headless) placeWebViews(views []placedWebView) bool {
 	h.webViews = append(h.webViews[:0], views...)
+	return true
 }
 func (h *headless) tabIntoWebView(v NativeWebView, back bool)      { h.tabbedInto, h.tabbedBack = v, back }
 func (h *headless) platformWebView(NativeWebView) platform.WebView { return nil }

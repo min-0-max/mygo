@@ -1,6 +1,11 @@
 package fake
 
-import "github.com/egoist/mygo/internal/platform"
+import (
+	"errors"
+	"slices"
+
+	"github.com/egoist/mygo/internal/platform"
+)
 
 // WebView is a web view under a fake Surface (Surface.NewWebView): a
 // Window of its own for its page, which its handler hears of, without the
@@ -151,4 +156,51 @@ func (w *Window) closeWebViews() {
 	for _, v := range w.surface.WebViews() {
 		v.Close()
 	}
+}
+
+// NativeViews is the native view of a fake Surface, with the views its
+// elements show.
+type NativeViews struct {
+	// View is the view of the window, 0 without one; Placed where the
+	// content last showed the elements, and Applied how many times the
+	// application heard of them; Keyboard is the view of the element that
+	// has the keyboard, and TabbedBack that Tab went into it going back.
+	View       uintptr
+	Placed     []platform.NativeViewPlacement
+	Applied    int
+	Keyboard   uintptr
+	TabbedBack bool
+}
+
+// NewNativeView notes the native view of the window.
+func (s *Surface) NewNativeView(view uintptr) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.NativeViews.View != 0 {
+		return errors.New("fake: the window has a native view")
+	}
+	s.NativeViews.View = view
+	return nil
+}
+
+// PlaceNativeViews notes the elements, calls apply and, as macOS's does,
+// takes the keyboard from a view the frame no longer shows.
+func (s *Surface) PlaceNativeViews(views []platform.NativeViewPlacement, apply func()) {
+	s.mu.Lock()
+	s.NativeViews.Placed = append(s.NativeViews.Placed[:0], views...)
+	s.mu.Unlock()
+	apply()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.NativeViews.Applied++
+	if !slices.ContainsFunc(views, func(p platform.NativeViewPlacement) bool { return p.KeyView == s.NativeViews.Keyboard }) {
+		s.NativeViews.Keyboard = 0
+	}
+}
+
+// TabIntoNativeView gives key the keyboard.
+func (s *Surface) TabIntoNativeView(key uintptr, back bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.NativeViews.Keyboard, s.NativeViews.TabbedBack = key, back
 }

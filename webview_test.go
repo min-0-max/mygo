@@ -497,3 +497,51 @@ func TestWebViewUnhandledKeys(t *testing.T) {
 		t.Errorf("a key of a destroyed web view's page: %q", g)
 	}
 }
+
+// TestNativeView checks that a window of native UI places a native view,
+// one, that what its view shows goes to the application as a frame draws,
+// and that Tab reaches the view and comes back.
+func TestNativeView(t *testing.T) {
+	w, _, s := contentWindow(t, func(c *ui.Context) {
+		ui.Column(c).Fill().AlignItems(ui.Stretch).Children(func() {
+			ui.Text(c, "Toolbar").Height(40)
+			ui.NativeView(c, 7, 8).Grow(1)
+		})
+	})
+	var placed []NativePlacement
+	if err := w.NewNativeView(1, nil); err == nil {
+		t.Fatal("a native view without a function placing its views")
+	}
+	if err := w.NewNativeView(1, func(views []NativePlacement) { placed = slices.Clone(views) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.NewNativeView(2, func([]NativePlacement) {}); err == nil {
+		t.Fatal("a window took a second native view")
+	}
+	onMain(func() { s.Frame() })
+	want := RectF{X: 0, Y: 40, W: 300, H: 160}
+	if len(placed) != 1 || placed[0].View != 7 || placed[0].Box != want || placed[0].Clip != want {
+		t.Fatalf("placed %+v, want view 7 at %+v", placed, want)
+	}
+	onMain(func() {
+		s.Send(platform.SurfaceEvent{Kind: platform.KeyPressed, Key: platform.KeyTab})
+		s.Frame()
+		s.Send(platform.SurfaceEvent{Kind: platform.WebViewTabOut, Key: platform.KeyTab, View: 7})
+		s.Frame()
+	})
+	if s.NativeViews.Keyboard != 8 {
+		t.Fatalf("Tab gave view %d the keyboard, want 8", s.NativeViews.Keyboard)
+	}
+}
+
+// TestNativeViewPageWindow checks that a window showing a page takes no
+// native view, and that holding the frames of one does nothing.
+func TestNativeViewPageWindow(t *testing.T) {
+	w := NewWindow(WindowOptions{Width: 300, Height: 200})
+	t.Cleanup(w.Destroy)
+	if err := w.NewNativeView(1, func([]NativePlacement) {}); !errors.Is(err, errNoContent) {
+		t.Fatalf("NewNativeView: %v", err)
+	}
+	w.HoldFrames()
+	w.ReleaseFrames()
+}

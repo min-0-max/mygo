@@ -802,6 +802,18 @@ type WebViewPlacement struct {
 	Covers []RectF
 }
 
+// NativeViewPlacement is where the content of a surface shows a native
+// view element (NativeViewSurface.PlaceNativeViews), in DIPs relative to
+// the surface. Of the placement, Frame is the box of the element, and
+// WebView is nil.
+type NativeViewPlacement struct {
+	WebViewPlacement
+	// View is the view the element names, inside the native view of the
+	// surface, and KeyView that view or a view inside it, which takes the
+	// keyboard as Tab enters the element.
+	View, KeyView uintptr
+}
+
 // Size returns the size the page lays out at, in its DIPs.
 func (p *WebViewPlacement) Size() (w, h float64) {
 	if p.Width <= 0 || p.Height <= 0 {

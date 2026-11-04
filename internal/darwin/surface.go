@@ -203,6 +203,9 @@ type surface struct {
 	// placed are where the content shows the window's web views, under
 	// it (webview.go).
 	placed []platform.WebViewPlacement
+	// native holds the native view of the window and where the content
+	// shows views inside it (native_view.go), nil without one.
+	native *nativeViews
 }
 
 func (w *window) createSurface(content NSRect) {
@@ -508,17 +511,25 @@ var cursorFallbacks = map[platform.Cursor]string{
 }
 
 // applyCursor sets the content's cursor, unless the pointer is over a
-// web view, whose page sets its own.
+// web view, whose page sets its own, or where the native view takes it,
+// which sets its own too.
 func (s *surface) applyCursor() {
-	if len(s.placed) > 0 {
+	if len(s.placed) > 0 || s.native != nil {
 		p := msgPoint(class("NSEvent"), sel("mouseLocation"))
 		inWindow := msgRectToRect(s.w.win, sel("convertRectFromScreen:"), NSRect{Origin: p})
-		local := msgPointFromView(s.view, sel("convertPoint:fromView:"), inWindow.Origin, 0)
-		if s.webViewAt(local.X, local.Y) != nil {
+		if s.leavesCursor(inWindow.Origin) {
 			return
 		}
 	}
 	send(nsCursor(s.cursor), "set")
+}
+
+// leavesCursor reports whether a web view or the native view takes the
+// pointer at p in the window.
+func (s *surface) leavesCursor(p NSPoint) bool {
+	local := msgPointFromView(s.view, sel("convertPoint:fromView:"), p, 0)
+	return s.webViewAt(local.X, local.Y) != nil ||
+		s.nativeTakes(local.X, local.Y, msgPointFromView(send(s.view, "superview"), sel("convertPoint:fromView:"), p, 0))
 }
 
 // nsCursor returns the NSCursor of c. The diagonal resize cursors are the
@@ -881,6 +892,7 @@ func registerSurfaceClass() {
 		}
 		return s.nativeDataOperation(info)
 	}
+	moved := mouse(platform.PointerMove, 0)
 	methods := []objc.MethodDef{
 		// Files dragged from other apps.
 		method("draggingEntered:", dragged),
@@ -902,11 +914,12 @@ func registerSurfaceClass() {
 	classDef("MyGoSurfaceView", "NSView", []string{"NSTextInputClient"}, append(append(methods, accessViewMethods()...), []objc.MethodDef{
 		method("isFlipped", func(self id, _ objc.SEL) bool { return true }),
 		// The pointer goes through to the web views under the surface
-		// where the content shows them (webview.go).
+		// where the content shows them (webview.go), and to the native
+		// view where a view inside it takes it (native_view.go).
 		method("hitTest:", func(self id, cmd objc.SEL, p NSPoint) id {
-			if s := b().surfaceOf(self); s != nil && len(s.placed) > 0 {
+			if s := b().surfaceOf(self); s != nil && (len(s.placed) > 0 || s.native != nil) {
 				local := msgPointFromView(self, sel("convertPoint:fromView:"), p, send(self, "superview"))
-				if s.webViewAt(local.X, local.Y) != nil {
+				if s.webViewAt(local.X, local.Y) != nil || s.nativeTakes(local.X, local.Y, p) {
 					return 0
 				}
 			}
@@ -1020,7 +1033,12 @@ func registerSurfaceClass() {
 		method("otherMouseDown:", mouse(platform.PointerDown, 2)),
 		method("otherMouseUp:", mouse(platform.PointerUp, 2)),
 		method("otherMouseDragged:", mouse(platform.PointerMove, 2)),
-		method("mouseMoved:", mouse(platform.PointerMove, 0)),
+		method("mouseMoved:", func(self id, cmd objc.SEL, ev id) {
+			moved(self, cmd, ev)
+			if s := b().surfaceOf(self); s != nil && s.native != nil {
+				s.nativeMoved(ev)
+			}
+		}),
 		method("mouseEntered:", func(self id, _ objc.SEL, ev id) {
 			if s := b().surfaceOf(self); s != nil {
 				s.inside = true

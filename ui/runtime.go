@@ -85,9 +85,11 @@ type host interface {
 	// popupMenu shows a context menu at (x, y) after the event being
 	// handled; chosen receives the ID of the item chosen.
 	popupMenu(m *platform.Menu, x, y float32, chosen func(id int))
-	// placeWebViews shows the web views where the frame shows them, and
-	// hides the others.
-	placeWebViews(views []placedWebView)
+	// placeWebViews shows the web views and the native view elements
+	// where the frame about to present shows them, and hides the others,
+	// and reports whether it took them: a frame not presenting tells
+	// nothing.
+	placeWebViews(views []placedWebView) bool
 	// tabIntoWebView gives the page of v the keyboard as Tab does, from
 	// its end when back (platform.WebView.TabInto).
 	tabIntoWebView(v NativeWebView, back bool)
@@ -738,8 +740,9 @@ func (rt *engine) runFrame() {
 	}
 	rt.stats.lap(phasePaint)
 	rt.insp.lap(2)
-	rt.host.present(&rt.scene)
+	// Before the frame presents, which shows them with it.
 	rt.placeWebViews()
+	rt.host.present(&rt.scene)
 	// The window hit-tests its maximize button in its own DIPs.
 	if r := rt.windowRect(rt.maxButton); r != rt.maxSent {
 		rt.maxSent = r
@@ -969,6 +972,7 @@ func (rt *engine) repaintFrame(w, h, scale float32) {
 	}
 	rt.stats.lap(phasePaint)
 	rt.insp.repainted(time.Since(start))
+	rt.placeWebViews()
 	rt.host.present(&rt.scene)
 	rt.stats.lap(phasePresent)
 	rt.text.EndFrame()

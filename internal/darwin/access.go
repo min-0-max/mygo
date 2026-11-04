@@ -33,8 +33,11 @@ type accessElement struct {
 	node     platform.AccessNode
 	parent   id
 	children []uint64
-	// webView is the web view whose page is the first child.
+	// webView is the web view whose page is the first child, and adopted
+	// what is in the view of a native view element, the first children
+	// otherwise, retained.
 	webView *window
+	adopted []id
 	// chosen are the rows of a list or table that are chosen, and count
 	// its rows, built or not.
 	chosen []uint64
@@ -46,6 +49,8 @@ var (
 	postAccessNote uintptr // NSAccessibilityPostNotification
 	// postAccessInfo is NSAccessibilityPostNotificationWithUserInfo.
 	postAccessInfo uintptr
+	// unignoredChildren is NSAccessibilityUnignoredChildren.
+	unignoredChildren uintptr
 	// actionDescription is NSAccessibilityActionDescription.
 	actionDescription uintptr
 )
@@ -60,6 +65,7 @@ func loadAccess() {
 	accessOnce.Do(func() {
 		postAccessNote = mustDlsym(libAppKit, "NSAccessibilityPostNotification")
 		postAccessInfo = mustDlsym(libAppKit, "NSAccessibilityPostNotificationWithUserInfo")
+		unignoredChildren = mustDlsym(libAppKit, "NSAccessibilityUnignoredChildren")
 		actionDescription = mustDlsym(libAppKit, "NSAccessibilityActionDescription")
 	})
 }
@@ -408,12 +414,15 @@ func (s *surface) UpdateAccessibility(tree *platform.AccessTree) {
 				web, grafted[v] = v, true
 				v.accessParent = el.obj
 			}
-			if !slices.Equal(el.children, children[i]) || el.webView != web {
+			adopted := s.nativeAccess(&tree.Nodes[i])
+			if !slices.Equal(el.children, children[i]) || el.webView != web || !slices.Equal(el.adopted, adopted) {
 				el.children, el.webView = children[i], web
+				el.adopt(adopted)
 				kids := childObjs[i]
 				if web != nil {
 					kids = append([]id{web.web}, kids...)
 				}
+				kids = append(adopted[:len(adopted):len(adopted)], kids...)
 				send(el.obj, "setAccessibilityChildren:", uintptr(nsArray(kids...)))
 				changed = true
 			}
@@ -477,6 +486,7 @@ func (s *surface) UpdateAccessibility(tree *platform.AccessTree) {
 		}
 		for nid, el := range s.elements {
 			if !live[nid] {
+				el.adopt(nil)
 				postNote(el.obj, "AXUIElementDestroyed")
 				delete(s.w.b.byAccess, el.obj)
 				release(el.obj)
@@ -515,6 +525,7 @@ func (s *surface) destroyAccess() {
 		v.accessParent = 0
 	}
 	for nid, el := range s.elements {
+		el.adopt(nil)
 		postNote(el.obj, "AXUIElementDestroyed")
 		delete(s.w.b.byAccess, el.obj)
 		release(el.obj)
