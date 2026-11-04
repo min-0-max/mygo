@@ -301,12 +301,14 @@ whatever the app is written in.
   the standard about panel.
 - On macOS, MyGo activates a regular app as it finishes launching, so that
   a plain executable (`go run`) comes to the front, and `Window.Show`
-  activates the app for a window that is not a panel.
+  activates the app for a window that is not a panel, as does a change to
+  the regular policy with `App.SetActivationPolicy`.
   `App.SetSelfActivation(false)`, before `App.Run`, leaves the activation
   at launch to the system, which activates an app it launches unless the
-  launch asked it not to (`open -g`), and makes `Window.Show` make the
-  window key and order it front without activating the app. `Focus` and
-  `App.Focus` still activate it.
+  launch asked it not to (`open -g`), makes `Window.Show` make the window
+  key and order it front without activating the app, and keeps a change
+  of the policy from activating it. Only what asks for it activates the
+  app then: `Focus`, `App.Focus`, dialogs, the about panel and the user.
 
 ### Jump lists
 

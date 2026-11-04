@@ -170,9 +170,10 @@ type AppOptions struct {
 	// may draw with its DMA-BUF renderer. Only meaningful on Linux.
 	DMABUFRenderer string
 	// NoSelfActivation keeps the application from activating itself as it
-	// finishes launching and as Window.Show shows a window: the window
-	// becomes key and comes to the front without the application being
-	// activated. Only meaningful on macOS.
+	// finishes launching, as Window.Show shows a window and as the
+	// activation policy changes to regular: the window becomes key and
+	// comes to the front without the application being activated. Only
+	// meaningful on macOS.
 	NoSelfActivation bool
 	// NoNotificationDelegate keeps the backend from setting the delegate of
 	// the notification center, which the application sets: the backend

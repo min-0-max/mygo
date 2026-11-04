@@ -437,6 +437,8 @@ func (a *Application) ActivationPolicy() ActivationPolicy {
 }
 
 // SetActivationPolicy changes how the app appears in the Dock (macOS).
+// Changed to ActivationPolicyRegular while the app runs, it also
+// activates the app, unless SetSelfActivation(false).
 func (a *Application) SetActivationPolicy(p ActivationPolicy) {
 	a.mu.Lock()
 	a.policy = p
@@ -465,12 +467,14 @@ func (a *Application) SetDMABUFRenderer(r DMABUFRenderer) {
 // SetSelfActivation sets whether the application activates itself on
 // macOS: as it finishes launching with the regular activation policy, so
 // that a plain executable (go run) comes to the front, and as Window.Show
-// shows a window that is not a panel. It does by default. With false, the
+// shows a window that is not a panel, and SetActivationPolicy activates it
+// as the policy changes to regular. It does by default. With false, the
 // launch leaves activation to the system, which activates an application
-// that it launches unless the launch asked it not to (open -g), and
+// that it launches unless the launch asked it not to (open -g),
 // Window.Show makes the window key and orders it front without activating
-// the application. Focus and App.Focus still activate it. Call it before
-// Run; other systems ignore it.
+// the application, and a change of the policy activates nothing: only
+// what asks for it does, such as Focus, App.Focus, a dialog, the about
+// panel and the user's press. Call it before Run; other systems ignore it.
 func (a *Application) SetSelfActivation(on bool) {
 	a.mu.Lock()
 	a.noSelfActivation = !on

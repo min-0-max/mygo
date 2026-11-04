@@ -407,9 +407,9 @@ func registerAppDelegate() {
 	})
 }
 
-// selfActivate activates the app as it finishes launching and as Show
-// shows a window, unless AppOptions.NoSelfActivation leaves activation to
-// the system. What the user asks for (Focus, App.Focus, a dialog, a press
+// selfActivate activates the app as it finishes launching, as Show shows
+// a window and as the activation policy changes to regular, unless
+// AppOptions.NoSelfActivation leaves activation to the system. What the user asks for (Focus, App.Focus, a dialog, a press
 // in a flyout under a modal window) activates the app in any case.
 func (b *Backend) selfActivate() {
 	if !b.noSelfActivation {
@@ -422,7 +422,7 @@ type appController struct{ b *Backend }
 func (a appController) SetActivationPolicy(p string) {
 	send(a.b.app, "setActivationPolicy:", activationPolicy(p))
 	if p == "regular" {
-		send(a.b.app, "activateIgnoringOtherApps:", 1)
+		a.b.selfActivate()
 	}
 }
 

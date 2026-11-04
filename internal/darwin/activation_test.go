@@ -16,6 +16,9 @@ var activationCalls struct {
 	activate int
 	// keyAndFront counts makeKeyAndOrderFront: to the window.
 	keyAndFront int
+	// policies holds the policies of setActivationPolicy: to the
+	// application.
+	policies []int
 }
 
 // activationStandIns returns objects that stand in for NSApp, with the
@@ -30,6 +33,10 @@ func activationStandIns(t *testing.T) (app, win id) {
 		classDef("MyGoTestApplication", "NSObject", nil, []objc.MethodDef{
 			method("activationPolicy", func(self id, _ objc.SEL) int { return nsApplicationActivationPolicyRegular }),
 			method("activateIgnoringOtherApps:", func(self id, _ objc.SEL, flag bool) { activationCalls.activate++ }),
+			method("setActivationPolicy:", func(self id, _ objc.SEL, policy int) bool {
+				activationCalls.policies = append(activationCalls.policies, policy)
+				return true
+			}),
 		})
 		classDef("MyGoTestWindow", "NSObject", nil, []objc.MethodDef{
 			method("makeKeyAndOrderFront:", func(self id, _ objc.SEL, sender id) { activationCalls.keyAndFront++ }),
@@ -38,7 +45,7 @@ func activationStandIns(t *testing.T) (app, win id) {
 	if objc.GetClass("MyGoAppDelegate") == 0 {
 		registerAppDelegate()
 	}
-	activationCalls.activate, activationCalls.keyAndFront = 0, 0
+	activationCalls.activate, activationCalls.keyAndFront, activationCalls.policies = 0, 0, nil
 	app, win = alloc("MyGoTestApplication"), alloc("MyGoTestWindow")
 	t.Cleanup(func() {
 		release(app)
@@ -114,6 +121,33 @@ func TestShowActivation(t *testing.T) {
 			}
 			if activationCalls.activate != c.activations {
 				t.Errorf("activateIgnoringOtherApps: as Show showed the window: %d, want %d", activationCalls.activate, c.activations)
+			}
+		})
+	}
+}
+
+// A change to the regular activation policy activates the application,
+// unless AppOptions.NoSelfActivation keeps it from activating itself: the
+// change is no request to activate it (U5).
+func TestPolicyChangeActivation(t *testing.T) {
+	for _, c := range []struct {
+		name             string
+		noSelfActivation bool
+		activations      int
+	}{
+		{"by default", false, 1},
+		{"without self-activation", true, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			app, _ := activationStandIns(t)
+			b := New()
+			b.app, b.noSelfActivation = app, c.noSelfActivation
+			appController{b}.SetActivationPolicy("regular")
+			if len(activationCalls.policies) != 1 || activationCalls.policies[0] != nsApplicationActivationPolicyRegular {
+				t.Errorf("setActivationPolicy: as the policy changed to regular: %v, want [%d]", activationCalls.policies, nsApplicationActivationPolicyRegular)
+			}
+			if activationCalls.activate != c.activations {
+				t.Errorf("activateIgnoringOtherApps: as the policy changed to regular: %d, want %d", activationCalls.activate, c.activations)
 			}
 		})
 	}
