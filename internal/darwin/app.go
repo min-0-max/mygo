@@ -367,6 +367,9 @@ func registerAppDelegate() {
 			}
 		}),
 		method("screensChanged:", func(self id, _ objc.SEL, n id) {
+			for _, s := range theBackend.bySurface {
+				s.screenChanged()
+			}
 			theBackend.h.DisplaysChanged()
 		}),
 		method("preferencesChanged:", func(self id, _ objc.SEL, n id) {

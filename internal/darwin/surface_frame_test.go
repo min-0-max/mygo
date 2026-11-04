@@ -24,6 +24,32 @@ func (h *frameHandler) SurfaceEvent(ev platform.SurfaceEvent) bool {
 	return ev.Paced && h.wait
 }
 
+// TestSurfaceKeepsItsMeasures checks that the size, the scale and the
+// refresh rate hold until AppKit tells of a change, with no read of the
+// view or the window, which this surface does not have, and that a change
+// of the size comes with its value.
+func TestSurfaceKeepsItsMeasures(t *testing.T) {
+	s := &surface{w: &window{}, sized: true, width: 300, height: 200, backing: 2, rate: 120}
+	if w, h, f := s.Size(); w != 300 || h != 200 || f != 2 {
+		t.Fatalf("Size() = %v, %v, %v, want 300, 200, 2", w, h, f)
+	}
+	if r := s.RefreshRate(); r != 120 {
+		t.Fatalf("RefreshRate() = %v, want 120", r)
+	}
+	s.sizeChanged(NSSize{Width: 640, Height: 480})
+	if w, h, f := s.Size(); w != 640 || h != 480 || f != 2 {
+		t.Fatalf("Size() after setFrameSize: = %v, %v, %v, want 640, 480, 2", w, h, f)
+	}
+	s.scaleChanged()
+	if s.backing != 0 {
+		t.Fatalf("the scale held %v after a change of the window's backing", s.backing)
+	}
+	s.screenChanged()
+	if s.rate != 0 {
+		t.Fatalf("the refresh rate held %v after a change of the screen", s.rate)
+	}
+}
+
 // TestDeferredFrames checks that the display link keeps running while the
 // content leaves a paced frame to draw later, and only then: once FrameNow
 // draws it, and once the content draws any other frame instead (as a

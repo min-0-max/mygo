@@ -2388,6 +2388,11 @@ func registerWindowClasses() {
 					w.h.Moved()
 				}
 			}),
+			method("windowDidChangeScreen:", func(self id, _ objc.SEL, n id) {
+				if w := b().windowFor(self); w != nil && w.surface != nil {
+					w.surface.screenChanged()
+				}
+			}),
 			method("windowDidChangeOcclusionState:", func(self id, _ objc.SEL, n id) {
 				if w := b().windowFor(self); w != nil && w.surface != nil {
 					kind := platform.SurfaceShown

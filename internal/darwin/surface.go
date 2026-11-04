@@ -163,6 +163,15 @@ type surface struct {
 	lastFrame time.Time
 	soonAfter time.Time
 	framePass uint64
+	// A frame asks for the view's size, the window's scale and the
+	// refresh rate of its display several times, and each read crosses to
+	// the main thread: they stay here until AppKit tells of a change. The
+	// size comes with setFrameSize:, sized telling that it holds; backing
+	// and rate are 0 until read after a change of the window's backing or
+	// screen (scaleChanged, screenChanged).
+	sized         bool
+	width, height float64
+	backing, rate float64
 	cursor    platform.Cursor
 	inside    bool
 	// secondaryClick is set while the primary button is down for a secondary
@@ -377,16 +386,35 @@ func (s *surface) Native() platform.SurfaceNative {
 func (s *surface) ShowsMaterial() bool { return s.w.effect != 0 || s.w.popover != 0 }
 
 func (s *surface) scale() float64 {
+	if s.backing > 0 {
+		return s.backing
+	}
 	if f := msgFloat(s.w.win, sel("backingScaleFactor")); f > 0 {
+		s.backing = f
 		return f
 	}
 	return 1
 }
 
 func (s *surface) Size() (float64, float64, float64) {
-	b := msgRect(s.view, sel("bounds"))
-	return b.Size.Width, b.Size.Height, s.scale()
+	if !s.sized {
+		s.sizeChanged(msgRect(s.view, sel("bounds")).Size)
+	}
+	return s.width, s.height, s.scale()
 }
+
+// sizeChanged keeps the view's size, from the setFrameSize: that changed
+// it: nothing changes the view's bounds but its frame.
+func (s *surface) sizeChanged(size NSSize) {
+	s.width, s.height, s.sized = size.Width, size.Height, true
+}
+
+// scaleChanged has the next read of the window's scale ask AppKit.
+func (s *surface) scaleChanged() { s.backing = 0 }
+
+// screenChanged has the next read of the refresh rate ask AppKit, as the
+// window moved to another display or a display changed its mode.
+func (s *surface) screenChanged() { s.rate = 0 }
 
 func (s *surface) RequestFrame() {
 	if s.w.closed {
@@ -558,10 +586,14 @@ func (s *surface) refresh() time.Duration {
 // RefreshRate returns the most frames a second the window's screen shows,
 // as ProMotion displays vary it.
 func (s *surface) RefreshRate() float64 {
-	if screen := send(s.w.win, "screen"); screen != 0 && respondsTo(screen, "maximumFramesPerSecond") {
-		return float64(sendInt(screen, "maximumFramesPerSecond"))
+	if s.rate > 0 {
+		return s.rate
 	}
-	return 0
+	// A window on no screen tells nothing yet: it has none to keep.
+	if screen := send(s.w.win, "screen"); screen != 0 && respondsTo(screen, "maximumFramesPerSecond") {
+		s.rate = float64(sendInt(screen, "maximumFramesPerSecond"))
+	}
+	return s.rate
 }
 
 // WideGamut reports whether the window's screen shows Display P3's colors,
@@ -1230,6 +1262,7 @@ func registerSurfaceClass() {
 		method("setFrameSize:", func(self id, cmd objc.SEL, size NSSize) {
 			sendSuperSize(self, "MyGoSurfaceView", cmd, size)
 			if s := b().surfaceOf(self); s != nil {
+				s.sizeChanged(size)
 				s.resized = true
 				s.send(platform.SurfaceEvent{Kind: platform.SurfaceResize})
 				send(self, "setNeedsDisplay:", 1)
@@ -1237,6 +1270,7 @@ func registerSurfaceClass() {
 		}),
 		method("viewDidChangeBackingProperties", func(self id, _ objc.SEL) {
 			if s := b().surfaceOf(self); s != nil {
+				s.scaleChanged()
 				s.resized = true
 				s.send(platform.SurfaceEvent{Kind: platform.SurfaceResize})
 				send(self, "setNeedsDisplay:", 1)
