@@ -124,7 +124,8 @@ Windows GUI tests need Windows with the WebView2 Runtime (a GitHub Actions
   is Go only too, loading.dev's indicators drawn with `ui.Painter` on
   ui's public API: keep them as loading-dev draws them in a browser.
   The sfsymbols plugin is Go only too: on macOS it rasterizes the system's
-  SF Symbols through purego, and elsewhere it has none (`Image` says so).
+  SF Symbols through purego, in one step of `mainthread` as the Threading
+  rule asks, and elsewhere it has none (`Image` says so).
   The automation plugin is Go only too, gated with the inspector
   (`mygo_noinspector`): a socket (`MYGO_AUTOMATION`) through which
   other processes drive the app, reaching native UI only through

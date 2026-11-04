@@ -100,14 +100,14 @@ var ForwardingFuncs = append([]string{ForwardFunc, "ForwardRetained", RunOnMainF
 // OffWorkerFuncs are the functions that other goroutines call while the
 // worker runs: those that platform.Backend lets any goroutine call, the
 // methods that it lets any goroutine call of what they return, the proxy
-// resolution of netproxy, and what permissionflow asks the frameworks
-// from the goroutines of its callers. Outside the function that
-// RunOnMainFunc runs, each of them, and each function that it reaches,
-// makes no forwarded call but one call of RunOnMainFunc at most, and none
-// in a loop. Forwarded one by one from another thread, two calls run in
-// passes of the main run loop of their own, whose autorelease pool drains
-// between them: an object that the first returns is gone when the second
-// uses it.
+// resolution of netproxy, what permissionflow asks the frameworks from the
+// goroutines of its callers, and what sfsymbols asks AppKit from theirs.
+// Outside the function that RunOnMainFunc runs, each of them, and each
+// function that it reaches, makes no forwarded call but one call of
+// RunOnMainFunc at most, and none in a loop. Forwarded one by one from
+// another thread, two calls run in passes of the main run loop of their
+// own, whose autorelease pool drains between them: an object that the
+// first returns is gone when the second uses it.
 var OffWorkerFuncs = []OffWorkerFunc{
 	{"internal/darwin", "Backend.IsMainThread"},
 	{"internal/darwin", "Backend.Signal"},
@@ -138,6 +138,8 @@ var OffWorkerFuncs = []OffWorkerFunc{
 	{"plugins/permissionflow", "defaultApp"},
 	{"plugins/permissionflow", "settingsProcess"},
 	{"plugins/permissionflow", "settingsFrame"},
+	{"plugins/sfsymbols", "rasterize"},
+	{"plugins/sfsymbols", "Names"},
 }
 
 // OffWorkerFunc is a function by its package, as an import path below the

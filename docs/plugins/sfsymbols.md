@@ -70,7 +70,9 @@ system draws SF Symbols at all.
 - Results are cached by name, size, color and options, and the names the
   system has no symbol for too, the least recently used dropped past a
   limit, so an animated color or size doesn't grow
-  memory without end. `Image` is safe to call from any goroutine.
+  memory without end. `Image` is safe to call from any goroutine:
+  outside a handler it draws through the main run loop, so don't wait for
+  that goroutine in one.
 
 Every other OS has no SF Symbols: `Image` returns false there, so keep an
 icon of your own to fall back on, and use `ui.Image` or `Painter.Image`
