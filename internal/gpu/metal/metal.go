@@ -202,18 +202,18 @@ func load() error {
 		if errLoad != nil {
 			return
 		}
-		purego.RegisterFunc(&cfAbsoluteTimeGetCurrent, timeNow)
-		purego.RegisterFunc(&cfRunLoopTimerCreate, timerCreate)
-		purego.RegisterFunc(&cfRunLoopTimerSetNextFireDate, timerSetNext)
+		mainthread.BindAddr(&cfAbsoluteTimeGetCurrent, timeNow, "CFAbsoluteTimeGetCurrent")
+		mainthread.BindAddr(&cfRunLoopTimerCreate, timerCreate, "CFRunLoopTimerCreate")
+		mainthread.BindAddr(&cfRunLoopTimerSetNextFireDate, timerSetNext, "CFRunLoopTimerSetNextFireDate")
 		commonModes = *(*uintptr)(ptr(modes))
 		trimCallback = mainthread.Callback(purego.NewCallback(func(timer, info uintptr) {
 			if r := trimTimers[info]; r != nil {
 				r.trimIfIdle()
 			}
 		}))
-		purego.RegisterFunc(&msgReplaceRegion, msgSend)
-		purego.RegisterFunc(&msgGetBytes, msgSend)
-		purego.RegisterFunc(&msgSetClearColor, msgSend)
+		mainthread.BindAddr(&msgReplaceRegion, msgSend, "objc_msgSend")
+		mainthread.BindAddr(&msgGetBytes, msgSend, "objc_msgSend")
+		mainthread.BindAddr(&msgSetClearColor, msgSend, "objc_msgSend")
 		renderPass = class("MTLRenderPassDescriptor")
 		selSetPipeline = sel("setRenderPipelineState:")
 		selSetFragmentTexture = sel("setFragmentTexture:atIndex:")
@@ -249,6 +249,7 @@ func ptr(a uintptr) unsafe.Pointer { return *(*unsafe.Pointer)(unsafe.Pointer(&a
 func send(obj id, selector string, args ...uintptr) id {
 	var a [10]uintptr
 	a[0], a[1] = obj, uintptr(sel(selector))
+	mainthread.CheckSend(a[0], a[1])
 	n := copy(a[2:], args)
 	r, _, _ := purego.SyscallN(msgSend, a[:n+2]...)
 	return r
@@ -259,10 +260,12 @@ func send(obj id, selector string, args ...uintptr) id {
 // they make no copy of their arguments, which purego.SyscallN allocates
 // once.
 func msg2(obj id, selector objc.SEL, a, b uintptr) {
+	mainthread.CheckSend(obj, uintptr(selector))
 	purego.SyscallN(msgSend, obj, uintptr(selector), a, b)
 }
 
 func msg5(obj id, selector objc.SEL, a, b, c, d, e uintptr) {
+	mainthread.CheckSend(obj, uintptr(selector))
 	purego.SyscallN(msgSend, obj, uintptr(selector), a, b, c, d, e)
 }
 
@@ -1292,6 +1295,7 @@ func (r *Renderer) drawBuilt(cb id, s *scene.Scene, target id, d *drawState, par
 		}
 		if want != st.pipe {
 			st.pipe = want
+			mainthread.CheckSend(enc, uintptr(selSetPipeline))
 			purego.SyscallN(msgSend, enc, uintptr(selSetPipeline), want)
 		}
 		if b.Image != 0 && b.Image != st.image {

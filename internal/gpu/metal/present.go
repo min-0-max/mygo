@@ -10,6 +10,7 @@ import (
 
 	"github.com/ebitengine/purego"
 
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/scene"
 )
 
@@ -78,7 +79,7 @@ func (p *presenter) run() {
 	runtime.LockOSThread()
 	qosOnce.Do(func() {
 		if h, err := purego.Dlopen("/usr/lib/libSystem.B.dylib", purego.RTLD_GLOBAL|purego.RTLD_NOW); err == nil {
-			purego.RegisterLibFunc(&setQoS, h, "pthread_set_qos_class_self_np")
+			mainthread.Bind(&setQoS, h, "pthread_set_qos_class_self_np")
 		}
 	})
 	if setQoS != nil {
