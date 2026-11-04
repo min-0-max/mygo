@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/egoist/mygo/internal/scene"
 	"github.com/egoist/mygo/internal/text"
@@ -100,7 +101,8 @@ func (rt *engine) paint(root *node, w, h, scale float32) {
 	rt.partsBase = sceneData(s)
 	rt.atlases = atlasGenerations(s)
 	rt.transient = rt.text.TransientUses()-uses > rt.partTransient
-	rt.text.Review()
+	moving := rt.animating || rt.repainting || !rt.repaintAt.IsZero()
+	rt.text.Review(uintptr(unsafe.Pointer(rt)), !moving)
 }
 
 // atlasGenerations returns the generations of the atlases s draws glyphs

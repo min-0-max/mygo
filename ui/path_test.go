@@ -869,6 +869,56 @@ func TestTheAtlasLetsGoOfWhatNoFrameDraws(t *testing.T) {
 	}
 }
 
+// TestTheLastFrameShrinksTheAtlas stops drawing a tall line and asks for no
+// frame after the one that follows: no later frame will review the atlas,
+// so that one does, painting again and asking for no other.
+func TestTheLastFrameShrinksTheAtlas(t *testing.T) {
+	tall := true
+	tt := coreNewTester(func(c *context) {
+		coreBox(c).Fill().Background(RGB(255, 255, 255)).Draw(func(p *Painter, r Rect) {
+			var small Path
+			small.MoveTo(20, 20).LineTo(200, 40).LineTo(90, 110).Close()
+			p.FillPath(&small, RGB(20, 60, 230))
+			if !tall {
+				return
+			}
+			p.Transform(Translation(1, 0), -1, 0, func() {
+				var line Path
+				line.MoveTo(2, 1).LineTo(2, 2045)
+				p.StrokePath(&line, 2, RGB(20, 60, 230))
+			})
+		})
+	}, 400, 300)
+	tt.SetScale(2)
+	atlas := tt.rt.text.MaskAtlas
+	for range 12 {
+		tt.rt.paths.crowded = 0
+		tt.Frame()
+	}
+	if atlas.W != scene.MaxAtlasSize {
+		t.Fatalf("the tall line grew the atlas to %d pixels a side", atlas.W)
+	}
+	tall = false
+	paints := tt.rt.paints
+	tt.h.requested.Store(false)
+	tt.Frame()
+	if atlas.W > 1024 {
+		t.Errorf("the last frame left %d pixels a side", atlas.W)
+	}
+	if n := tt.rt.paints - paints; n > 2 {
+		t.Errorf("the last frame painted %d times", n)
+	}
+	if tt.h.requested.Load() {
+		t.Error("the last frame asked for another")
+	}
+	paints = tt.rt.paints
+	size := atlas.Generation()
+	tt.Frame()
+	if tt.rt.paints != paints+1 || atlas.Generation() != size {
+		t.Errorf("the frame after it painted %d times, generation %d to %d", tt.rt.paints-paints, size, atlas.Generation())
+	}
+}
+
 // BenchmarkLargePathFrames paints paths larger than a tile frame after frame:
 // a stroke and a fill that stay, and a stroke moving by whole pixels, whose
 // masks are the same. puts/op counts the bitmaps a frame writes to the

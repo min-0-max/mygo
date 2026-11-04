@@ -444,10 +444,17 @@ type System struct {
 	subpixel bool
 	// rooms counts MakeRoom calls during the frame.
 	rooms int
-	// reviewed is the frame Review last ran in, and reviewing tells that it
-	// asked for the MakeRoom to come.
+	// drawn is the room each atlas gives what the frame drew. reviewed is
+	// the frame Review last looked through the atlases in, reviewing tells
+	// that it asked for the MakeRoom to come, reviewer is the window it
+	// last closed a frame of, sharedAt the frame that changed it, and
+	// unshrunk the generation of an atlas that would not pack smaller.
+	drawn     [2]int
 	reviewed  uint64
 	reviewing bool
+	reviewer  uintptr
+	sharedAt  uint64
+	unshrunk  [2]uint64
 	// Buffers layouts reuse: the first runes of clusters (line), and the
 	// advances and text of a line ending with an ellipsis (ellipsize).
 	starts     []int
@@ -719,6 +726,7 @@ func (s *System) EndFrame() {
 		}
 	}
 	s.frame++
+	s.drawn = [2]int{}
 	f, ok := s.eng.(fontForgetter)
 	if ok {
 		f.releaseFonts()
