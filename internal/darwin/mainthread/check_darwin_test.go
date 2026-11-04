@@ -223,20 +223,21 @@ func TestCheckerFindsAForwardedCallOffTheMainThread(t *testing.T) {
 	}
 }
 
-// checkHelper runs the record of a forwarded call on a goroutine.
+// checkHelper runs the record of a forwarded call on a goroutine. A panic
+// leaves done open, so that the process ends with the panic.
 func checkHelper() int {
 	if err := loadNative(); err != nil {
 		return 2
 	}
+	pid, err := purego.Dlsym(purego.RTLD_DEFAULT, "getpid")
+	if err != nil {
+		return 2
+	}
 	done := make(chan struct{})
 	go func() {
-		defer close(done)
-		pid, err := purego.Dlsym(purego.RTLD_DEFAULT, "getpid")
-		if err != nil {
-			return
-		}
 		rec, _, _ := prepareForTest(pid)
 		run(checkedOnMain(rec))
+		close(done)
 	}()
 	<-done
 	return 0
