@@ -337,8 +337,11 @@ var CFTypes = []CFType{
 	// mygo releases a run loop observer only after it added the observer
 	// to the main run loop, which then holds it.
 	{Name: "CFRunLoopObserver", Release: true},
-	// netproxy releases a run loop source only after it invalidated the
-	// source and removed it from the run loop of its own thread.
+	// Apple's Threading Programming Guide ("Thread Safety and Run Loop
+	// Objects"): "The functions in Core Foundation are generally
+	// thread-safe and can be called from any thread." netproxy releases a
+	// run loop source only after it invalidated the source and removed it
+	// from the run loop of its own thread.
 	{Name: "CFRunLoopSource", Release: true},
 }
 

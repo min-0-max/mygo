@@ -87,9 +87,11 @@ var (
 
 	// fseCallback is the process's one FSEventStreamCallback, created with
 	// the first watch and never freed. fseFlush is what dispatch_sync_f
-	// runs to wait for the callbacks already queued, free of no pointer:
-	// native, as dispatch_sync_f may run it on the main thread, where a
-	// callback of Go would wait for a worker that may wait for this watch.
+	// runs to wait for the callbacks already queued: free, which is given
+	// NULL and does nothing, as the purpose of the call is the flush of
+	// the queue. It is native because dispatch_sync_f may run it on the
+	// main thread, where a callback of Go would wait for a worker that may
+	// wait for this watch.
 	fseCallback, fseFlush uintptr
 
 	// fseQueue is the one serial queue every stream delivers on, off the
