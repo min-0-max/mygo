@@ -709,6 +709,35 @@ func TestIsFrontmost() bool {
 	return front
 }
 
+// frontProcess holds the Process Manager's functions that answer the
+// front process, looked up once.
+var frontProcess struct {
+	once     sync.Once
+	get, pid uintptr
+}
+
+// TestFrontProcess returns the process identifier of the front
+// application as the window server answers it at the call, after the
+// calls the application made before it, unlike frontmostApplication,
+// which NSWorkspace updates later from a notification.
+func TestFrontProcess() (int, error) {
+	frontProcess.once.Do(func() {
+		load()
+		// Carbon links the Process Manager (HIServices).
+		frontProcess.get = mustDlsym(libCarbon, "GetFrontProcess")
+		frontProcess.pid = mustDlsym(libCarbon, "GetProcessPID")
+	})
+	var psn [2]uint32
+	if err := mainthread.Forward[int16](frontProcess.get, &psn); err != 0 {
+		return 0, fmt.Errorf("GetFrontProcess: OSErr %d", err)
+	}
+	var pid int32
+	if err := mainthread.Forward[int32](frontProcess.pid, &psn, &pid); err != 0 {
+		return 0, fmt.Errorf("GetProcessPID: OSStatus %d", err)
+	}
+	return int(pid), nil
+}
+
 // TestCollectionBehavior returns a window's NSWindowCollectionBehavior.
 func TestCollectionBehavior(handle uintptr) uint {
 	return uint(sendInt(id(handle), "collectionBehavior"))
