@@ -145,7 +145,7 @@ func (b *Backend) ShowNotification(n *platform.Notification, done func(error)) {
 		})
 		send(notificationCenter(), "requestAuthorizationWithOptions:completionHandler:",
 			notifyOptions, uintptr(blk))
-		blk.Release()
+		blockRelease(uintptr(blk))
 	})
 }
 
@@ -186,7 +186,7 @@ func (b *Backend) submitNotification(n *platform.Notification, content id, done 
 		b.runOnMain(func() { done(err) })
 	})
 	send(notificationCenter(), "addNotificationRequest:withCompletionHandler:", uintptr(req), uintptr(blk))
-	blk.Release()
+	blockRelease(uintptr(blk))
 }
 
 func (b *Backend) cancelPreparingNotification(ident string) {

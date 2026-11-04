@@ -6,8 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/ebitengine/purego"
-
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/platform"
 )
 
@@ -21,24 +20,37 @@ import (
 // their own texts in from the next launch.
 
 var (
-	prefsOnce                sync.Once
-	cfPreferencesCopyValue   func(key, app, user, host uintptr) uintptr
-	cfPreferencesSetValue    func(key, value, app, user, host uintptr)
-	cfPreferencesSynchronize func(app, user, host uintptr) bool
+	prefsOnce sync.Once
+	// CFPreferencesCopyValue, CFPreferencesSetValue and
+	// CFPreferencesSynchronize, which run on the main thread
+	// (mainthread.Forward).
+	cfPreferencesCopyValueFn, cfPreferencesSetValueFn, cfPreferencesSynchronizeFn uintptr
 	// The domains of CFPreferences.
 	cfAnyApplication, cfCurrentApplication, cfCurrentUser, cfAnyHost uintptr
 )
 
 func loadPreferences() {
 	prefsOnce.Do(func() {
-		purego.RegisterLibFunc(&cfPreferencesCopyValue, libCF, "CFPreferencesCopyValue")
-		purego.RegisterLibFunc(&cfPreferencesSetValue, libCF, "CFPreferencesSetValue")
-		purego.RegisterLibFunc(&cfPreferencesSynchronize, libCF, "CFPreferencesSynchronize")
+		cfPreferencesCopyValueFn = mustDlsym(libCF, "CFPreferencesCopyValue")
+		cfPreferencesSetValueFn = mustDlsym(libCF, "CFPreferencesSetValue")
+		cfPreferencesSynchronizeFn = mustDlsym(libCF, "CFPreferencesSynchronize")
 		cfAnyApplication = uintptr(constString(libCF, "kCFPreferencesAnyApplication"))
 		cfCurrentApplication = uintptr(constString(libCF, "kCFPreferencesCurrentApplication"))
 		cfCurrentUser = uintptr(constString(libCF, "kCFPreferencesCurrentUser"))
 		cfAnyHost = uintptr(constString(libCF, "kCFPreferencesAnyHost"))
 	})
+}
+
+func cfPreferencesCopyValue(key, app, user, host uintptr) uintptr {
+	return mainthread.Forward[uintptr](cfPreferencesCopyValueFn, key, app, user, host)
+}
+
+func cfPreferencesSetValue(key, value, app, user, host uintptr) {
+	mainthread.Forward[struct{}](cfPreferencesSetValueFn, key, value, app, user, host)
+}
+
+func cfPreferencesSynchronize(app, user, host uintptr) bool {
+	return mainthread.Forward[bool](cfPreferencesSynchronizeFn, app, user, host)
 }
 
 // appleLanguages reads AppleLanguages of the current user, of the app's

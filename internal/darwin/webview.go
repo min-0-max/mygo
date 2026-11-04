@@ -10,6 +10,7 @@ import (
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
 
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/platform"
 )
 
@@ -391,17 +392,17 @@ func (w *window) closeWebViews() {
 	}
 }
 
-var (
-	exitOnce     sync.Once
-	msgExitEvent func(cls id, sel objc.SEL, typ uint, loc NSPoint, flags uint, ts float64, wn int, ctx id, en, tn int, data uintptr) id
-)
+// msgExitEvent makes an enter or exit event on the main thread
+// (mainthread.Forward).
+func msgExitEvent(cls id, s objc.SEL, typ uint, loc NSPoint, flags uint, ts float64, wn int, ctx id, en, tn int, data uintptr) id {
+	return mainthread.Forward[id](msgSendAddr, cls, s, typ, loc, flags, ts, wn, ctx, en, tn, data)
+}
 
 // leave tells the page of the web view w that the pointer left it, as it
 // went onto what the content painted over the page: an exit outside the
 // view, which WebKit takes as a move there, unhovering what was under the
 // pointer.
 func (w *window) leave(ev id) {
-	exitOnce.Do(func() { purego.RegisterFunc(&msgExitEvent, msgSendAddr) })
 	const typeMouseExited = 9 // NSEventTypeMouseExited
 	exit := msgExitEvent(class("NSEvent"), sel("enterExitEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:trackingNumber:userData:"),
 		typeMouseExited, NSPoint{X: -1e5, Y: -1e5}, 0, msgFloat(ev, sel("timestamp")), sendInt(w.win, "windowNumber"), 0, 0, 0, 0)

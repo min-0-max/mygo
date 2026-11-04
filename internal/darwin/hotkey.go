@@ -9,6 +9,7 @@ import (
 	"github.com/ebitengine/purego"
 
 	"github.com/egoist/mygo/internal/accelerator"
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 )
 
 // Global shortcuts use Carbon's RegisterEventHotKey, which needs no
@@ -47,13 +48,13 @@ var keyCodes = map[string]uint32{
 	"NumAdd": 0x45, "NumDiv": 0x4B, "NumSub": 0x4E,
 }
 
-var hotKeyHandler = purego.NewCallback(func(next, event, userData uintptr) uintptr {
+var hotKeyHandler = mainthread.Callback(purego.NewCallback(func(next, event, userData uintptr) uintptr {
 	var hk eventHotKeyID
 	if getEventParameter(event, kEventParamDirectObject, typeEventHotKeyID, 0, unsafe.Sizeof(hk), 0, unsafe.Pointer(&hk)) == 0 {
 		theBackend.h.HotkeyPressed(int(hk.ID))
 	}
 	return 0
-})
+}))
 
 func (b *Backend) RegisterHotkey(hid int, acc string) error {
 	a, err := accelerator.Parse(acc, "darwin")

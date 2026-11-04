@@ -39,7 +39,7 @@ func (p power) KeepAwake(display bool, reason string) func() {
 	var token id
 	withPool(func() {
 		info := send(class("NSProcessInfo"), "processInfo")
-		token = retain(send(info, "beginActivityWithOptions:reason:", uintptr(opts), uintptr(nsString(reason))))
+		token = sendRetained(info, "beginActivityWithOptions:reason:", uintptr(opts), uintptr(nsString(reason)))
 	})
 	return func() {
 		send(send(class("NSProcessInfo"), "processInfo"), "endActivity:", uintptr(token))
@@ -48,7 +48,7 @@ func (p power) KeepAwake(display bool, reason string) func() {
 }
 
 func (p power) OnBattery() bool {
-	if iopsCopyPowerSourcesInfo == nil {
+	if iopsCopyPowerSourcesInfoFn == 0 {
 		return false
 	}
 	info := iopsCopyPowerSourcesInfo()

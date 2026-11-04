@@ -68,7 +68,7 @@ func (a appController) ListCookies(s platform.DataStore, rawURL string, done fun
 			a.b.runOnMain(func() { done(result, nil) })
 		})
 		send(store, "getAllCookies:", uintptr(block))
-		block.Release()
+		blockRelease(uintptr(block))
 	})
 }
 
@@ -102,8 +102,10 @@ func (a appController) SetCookie(s platform.DataStore, c platform.Cookie, done f
 		if c.HTTPOnly {
 			header += "; HttpOnly"
 		}
-		headers := send(class("NSDictionary"), "dictionaryWithObject:forKey:", uintptr(nsString(header)), uintptr(nsString("Set-Cookie")))
+		headers := newDictionary()
+		setObject(headers, nsString(header), nsString("Set-Cookie"))
 		array := send(class("NSHTTPCookie"), "cookiesWithResponseHeaderFields:forURL:", uintptr(headers), uintptr(nsURL(scheme+"://"+host+"/")))
+		release(headers)
 		if sendInt(array, "count") != 1 {
 			done(fmt.Errorf("mygo: cookies: Set could not construct NSHTTPCookie"))
 			return
@@ -126,7 +128,7 @@ func (a appController) SetCookie(s platform.DataStore, c platform.Cookie, done f
 		}
 		block := newBlock(func(objc.Block) { a.b.runOnMain(func() { done(nil) }) })
 		send(store, "setCookie:completionHandler:", uintptr(native), uintptr(block))
-		block.Release()
+		blockRelease(uintptr(block))
 	})
 }
 
@@ -163,12 +165,12 @@ func (a appController) DeleteCookie(s platform.DataStore, key platform.CookieKey
 					retain(match)
 					completion := newBlock(func(objc.Block) { a.b.runOnMain(func() { release(match); release(store); done(nil) }) })
 					send(store, "deleteCookie:completionHandler:", uintptr(match), uintptr(completion))
-					completion.Release()
+					blockRelease(uintptr(completion))
 				})
 			})
 		})
 		send(store, "getAllCookies:", uintptr(block))
-		block.Release()
+		blockRelease(uintptr(block))
 	})
 }
 

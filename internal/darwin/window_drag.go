@@ -220,7 +220,7 @@ func watchWindowDrags() {
 		}
 		return ev
 	})
-	dragMonitor = retain(send(class("NSEvent"), "addLocalMonitorForEventsMatchingMask:handler:", mask, uintptr(blk)))
+	dragMonitor = sendRetained(class("NSEvent"), "addLocalMonitorForEventsMatchingMask:handler:", mask, uintptr(blk))
 }
 
 // eventPoint returns where a mouse event happened, in the display space

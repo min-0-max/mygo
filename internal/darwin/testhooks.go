@@ -13,6 +13,7 @@ import (
 
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/transfer"
 )
@@ -836,7 +837,7 @@ func TestDockTileImage() []byte {
 		bounds := msgRect(view, sel("bounds"))
 		rep := msgInitRect(view, sel("bitmapImageRepForCachingDisplayInRect:"), bounds)
 		msgInitRectID(view, sel("cacheDisplayInRect:toBitmapImageRep:"), bounds, rep)
-		data = goBytes(send(rep, "representationUsingType:properties:", 4, uintptr(send(class("NSDictionary"), "dictionary"))))
+		data = goBytes(send(rep, "representationUsingType:properties:", 4, uintptr(emptyDictionary())))
 	})
 	return data
 }
@@ -887,8 +888,6 @@ func TestFullScreenHidesToolbar(handle uintptr) bool {
 
 var (
 	testInputOnce         sync.Once
-	msgSetMarkedText      func(obj id, sel objc.SEL, text id, selected, replacement nsRange)
-	msgInsertText         func(obj id, sel objc.SEL, text id, replacement nsRange)
 	tisCopyCurrentSource  uintptr
 	tisGetSourceProperty  uintptr
 	cfEqual               uintptr
@@ -898,8 +897,6 @@ var (
 
 func loadTestInput() {
 	testInputOnce.Do(func() {
-		purego.RegisterFunc(&msgSetMarkedText, msgSendAddr)
-		purego.RegisterFunc(&msgInsertText, msgSendAddr)
 		tisCopyCurrentSource, _ = purego.Dlsym(libCarbon, "TISCopyCurrentKeyboardInputSource")
 		tisGetSourceProperty, _ = purego.Dlsym(libCarbon, "TISGetInputSourceProperty")
 		cfEqual, _ = purego.Dlsym(libCF, "CFEqual")
@@ -914,6 +911,16 @@ func loadTestInput() {
 	})
 }
 
+// msgSetMarkedText and msgInsertText send the messages of text input,
+// which take ranges, on the main thread (mainthread.Forward).
+func msgSetMarkedText(obj id, s objc.SEL, text id, selected, replacement nsRange) {
+	mainthread.Forward[struct{}](msgSendAddr, obj, s, text, selected, replacement)
+}
+
+func msgInsertText(obj id, s objc.SEL, text id, replacement nsRange) {
+	mainthread.Forward[struct{}](msgSendAddr, obj, s, text, replacement)
+}
+
 // keyboardLayoutSelected reports whether the input source is a keyboard
 // layout, which inserts what keys type, rather than an input method,
 // which composes it.
@@ -922,12 +929,12 @@ func keyboardLayoutSelected() bool {
 	if tisCopyCurrentSource == 0 || tisGetSourceProperty == 0 || tisPropertySourceType == 0 || tisTypeKeyboardLayout == 0 {
 		return false
 	}
-	src, _, _ := purego.SyscallN(tisCopyCurrentSource)
+	src := mainthread.Forward[uintptr](tisCopyCurrentSource)
 	if src == 0 {
 		return false
 	}
 	defer cfRelease(src)
-	typ, _, _ := purego.SyscallN(tisGetSourceProperty, src, tisPropertySourceType)
+	typ := mainthread.Forward[uintptr](tisGetSourceProperty, src, tisPropertySourceType)
 	eq, _, _ := purego.SyscallN(cfEqual, typ, tisTypeKeyboardLayout)
 	return typ != 0 && byte(eq) != 0
 }
@@ -1117,7 +1124,7 @@ func TestDropFiles(handle uintptr, x, y float64, paths []string) (over, dropped 
 			method("draggingSourceOperationMask", func(self id, _ objc.SEL) uint { return testDragMask }),
 		})
 		testDragInfo = send(send(class("MyGoTestDraggingInfo"), "alloc"), "init")
-		testDragPB = retain(send(class("NSPasteboard"), "pasteboardWithUniqueName"))
+		testDragPB = sendRetained(class("NSPasteboard"), "pasteboardWithUniqueName")
 	})
 	withPool(func() {
 		content := msgRect(send(w.win, "contentView"), sel("frame"))

@@ -12,6 +12,7 @@ import (
 
 	"github.com/ebitengine/purego"
 
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/internal/watchdriver"
 )
@@ -71,14 +72,10 @@ const (
 	fseFramework = "/System/Library/Frameworks/CoreServices.framework/Frameworks/FSEvents.framework/FSEvents"
 )
 
-// The FSEvents API, bound once.
+// The FSEvents API, resolved once; its functions run on the main thread
+// (mainthread.Forward).
 var (
-	fseStreamCreate     func(alloc, callback uintptr, context *fseContext, paths uintptr, sinceWhen uint64, latency float64, flags uint32) uintptr
-	fseStreamStart      func(stream uintptr) uint8
-	fseStreamStop       func(stream uintptr)
-	fseStreamInvalidate func(stream uintptr)
-	fseStreamRelease    func(stream uintptr)
-	fseStreamSetQueue   func(stream, queue uintptr)
+	fseFns [6]uintptr
 
 	cfStringCreateWithCString func(alloc uintptr, s *byte, encoding uint32) uintptr
 	cfArrayCreate             func(alloc uintptr, values *uintptr, n int, callbacks uintptr) uintptr
@@ -112,12 +109,12 @@ func loadFSEvents() {
 		if h, err := purego.Dlopen(fseFramework, purego.RTLD_GLOBAL|purego.RTLD_NOW); err == nil {
 			lib = h
 		}
-		purego.RegisterLibFunc(&fseStreamCreate, lib, "FSEventStreamCreate")
-		purego.RegisterLibFunc(&fseStreamStart, lib, "FSEventStreamStart")
-		purego.RegisterLibFunc(&fseStreamStop, lib, "FSEventStreamStop")
-		purego.RegisterLibFunc(&fseStreamInvalidate, lib, "FSEventStreamInvalidate")
-		purego.RegisterLibFunc(&fseStreamRelease, lib, "FSEventStreamRelease")
-		purego.RegisterLibFunc(&fseStreamSetQueue, lib, "FSEventStreamSetDispatchQueue")
+		for i, name := range []string{
+			"FSEventStreamCreate", "FSEventStreamStart", "FSEventStreamStop",
+			"FSEventStreamInvalidate", "FSEventStreamRelease", "FSEventStreamSetDispatchQueue",
+		} {
+			fseFns[i] = mustDlsym(lib, name)
+		}
 		purego.RegisterLibFunc(&cfStringCreateWithCString, libCF, "CFStringCreateWithCString")
 		purego.RegisterLibFunc(&cfArrayCreate, libCF, "CFArrayCreate")
 		kCFTypeArrayCallBacks = mustDlsym(libCF, "kCFTypeArrayCallBacks")
@@ -129,12 +126,38 @@ func loadFSEvents() {
 			realpath = "realpath"
 		}
 		purego.RegisterLibFunc(&libcRealpath, purego.RTLD_DEFAULT, realpath)
-		fseCallback = purego.NewCallback(fseEvents)
+		fseCallback = mainthread.Callback(purego.NewCallback(fseEvents))
 		// Our callback never blocks, so waiting for it cannot deadlock.
-		fseFlush = purego.NewCallback(func() {})
+		fseFlush = mainthread.Callback(purego.NewCallback(func() {}))
 		label := []byte("mygo.watch\x00")
 		fseQueue = watchQueueCreate(&label[0], 0)
 	})
+}
+
+// The functions of FSEvents, in fseFns.
+const (
+	fseCreate = iota
+	fseStart
+	fseStop
+	fseInvalidate
+	fseRelease
+	fseSetQueue
+)
+
+func fseStreamCreate(alloc, callback uintptr, context *fseContext, paths uintptr, sinceWhen uint64, latency float64, flags uint32) uintptr {
+	return mainthread.Forward[uintptr](fseFns[fseCreate], alloc, callback, context, paths, sinceWhen, latency, flags)
+}
+
+func fseStreamStart(stream uintptr) uint8 { return mainthread.Forward[uint8](fseFns[fseStart], stream) }
+
+func fseStreamStop(stream uintptr) { mainthread.Forward[struct{}](fseFns[fseStop], stream) }
+
+func fseStreamInvalidate(stream uintptr) { mainthread.Forward[struct{}](fseFns[fseInvalidate], stream) }
+
+func fseStreamRelease(stream uintptr) { mainthread.Forward[struct{}](fseFns[fseRelease], stream) }
+
+func fseStreamSetQueue(stream, queue uintptr) {
+	mainthread.Forward[struct{}](fseFns[fseSetQueue], stream, queue)
 }
 
 // fseContext mirrors FSEventStreamContext. FSEvents copies it, and hands

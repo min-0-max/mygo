@@ -9,6 +9,7 @@ import (
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
 
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/platform"
 )
 
@@ -78,10 +79,9 @@ var theBackend *Backend
 
 func (b *Backend) Name() string { return "darwin/wkwebview" }
 
-func (b *Backend) IsMainThread() bool {
-	r, _, _ := purego.SyscallN(mainNPFn)
-	return int32(r) != 0
-}
+// IsMainThread reports whether the calling thread counts as the main
+// thread: the main thread, and the worker while it runs a step.
+func (b *Backend) IsMainThread() bool { return mainthread.IsMainThread() }
 
 const (
 	nsApplicationActivationPolicyRegular    = 0
@@ -113,10 +113,11 @@ func (b *Backend) Init(h platform.AppHandler, opts platform.AppOptions) error {
 	// NSAutoFillHeuristicsEnabled, and without it starts Safari's AutoFill
 	// helper as soon as a view takes text input.
 	no := nsBool(false)
-	send(send(class("NSUserDefaults"), "standardUserDefaults"), "registerDefaults:",
-		uintptr(send(class("NSDictionary"), "dictionaryWithObjects:forKeys:",
-			uintptr(nsArray(no, no)),
-			uintptr(nsArray(nsString("NSAutoFillHeuristicControllerEnabled"), nsString("NSAutoFillHeuristicsEnabled"))))))
+	autoFill := newDictionary()
+	setObject(autoFill, no, nsString("NSAutoFillHeuristicControllerEnabled"))
+	setObject(autoFill, no, nsString("NSAutoFillHeuristicsEnabled"))
+	send(send(class("NSUserDefaults"), "standardUserDefaults"), "registerDefaults:", uintptr(autoFill))
+	release(autoFill)
 
 	b.app = send(class("NSApplication"), "sharedApplication")
 	send(b.app, "setActivationPolicy:", activationPolicy(opts.ActivationPolicy))
@@ -159,12 +160,12 @@ func (b *Backend) Init(h platform.AppHandler, opts platform.AppOptions) error {
 	return nil
 }
 
-var dispatchCallback = purego.NewCallback(func(info uintptr) {
+var dispatchCallback = mainthread.Callback(purego.NewCallback(func(info uintptr) {
 	withPool(func() {
 		drainMainQueue()
 		theBackend.h.Dispatch()
 	})
-})
+}))
 
 func (b *Backend) Run() error {
 	send(b.app, "run")
@@ -450,10 +451,11 @@ func (a appController) SetDockIcon(png []byte) error {
 }
 
 func (a appController) ShowAboutPanel(o platform.AboutPanelOptions) {
-	dict := send(class("NSMutableDictionary"), "dictionary")
+	dict := newDictionary()
+	defer release(dict)
 	set := func(key, value string) {
 		if value != "" {
-			send(dict, "setObject:forKey:", uintptr(nsString(value)), uintptr(nsString(key)))
+			setObject(dict, nsString(value), nsString(key))
 		}
 	}
 	set("ApplicationName", o.ApplicationName)
@@ -462,7 +464,7 @@ func (a appController) ShowAboutPanel(o platform.AboutPanelOptions) {
 	set("Copyright", o.Copyright)
 	if o.Credits != "" {
 		credits := autorelease(send(send(class("NSAttributedString"), "alloc"), "initWithString:", uintptr(nsString(o.Credits))))
-		send(dict, "setObject:forKey:", uintptr(credits), uintptr(nsString("Credits")))
+		setObject(dict, credits, nsString("Credits"))
 	}
 	send(a.b.app, "activateIgnoringOtherApps:", 1)
 	send(a.b.app, "orderFrontStandardAboutPanelWithOptions:", uintptr(dict))

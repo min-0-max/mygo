@@ -6,6 +6,7 @@ package darwin
 
 import (
 	"fmt"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
+
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 )
 
 type id = objc.ID
@@ -32,47 +35,121 @@ var (
 	msgSendAddr      uintptr
 	msgSendSuperAddr uintptr
 
-	// Typed variants of objc_msgSend for float and struct arguments.
-	msgRect          func(obj id, sel objc.SEL) NSRect
-	msgSetRect       func(obj id, sel objc.SEL, r NSRect)
-	msgSetRectBool   func(obj id, sel objc.SEL, r NSRect, b bool)
-	msgRectForRect   func(obj id, sel objc.SEL, r NSRect, style uint) NSRect
-	msgRectToRect    func(obj id, sel objc.SEL, r NSRect) NSRect
-	msgFloat         func(obj id, sel objc.SEL) float64
-	msgSetFloat      func(obj id, sel objc.SEL, v float64)
-	msgSize          func(obj id, sel objc.SEL) NSSize
-	msgSetSize       func(obj id, sel objc.SEL, s NSSize)
-	msgSuperSetSize  func(sup uintptr, sel objc.SEL, s NSSize)
-	msgSuperPoint    func(sup uintptr, sel objc.SEL, p NSPoint) id
-	msgPoint         func(obj id, sel objc.SEL) NSPoint
-	msgSetPoint      func(obj id, sel objc.SEL, p NSPoint)
-	msgInitRect      func(obj id, sel objc.SEL, r NSRect) id
-	msgInitRectID    func(obj id, sel objc.SEL, r NSRect, a id) id
-	msgRectIDUint    func(obj id, sel objc.SEL, r NSRect, a id, n uint)
-	msgInitIDPoint   func(obj id, sel objc.SEL, a id, p NSPoint) id
-	msgInitWindow    func(obj id, sel objc.SEL, r NSRect, style uint, backing uint, deferFlag bool) id
-	msgColor         func(cls id, sel objc.SEL, r, g, b, a float64) id
-	msgOtherEvent    func(cls id, sel objc.SEL, typ uint, loc NSPoint, flags uint, ts float64, wn int, ctx id, subtype int16, d1, d2 int) id
-	msgPopUpMenu     func(menu id, sel objc.SEL, item id, loc NSPoint, view id) bool
-	msgNextEvent     func(app id, sel objc.SEL, mask uint64, until id, mode id, dequeue bool) id
-	msgPointFromView func(obj id, sel objc.SEL, p NSPoint, view id) NSPoint
-	msgDateSince     func(cls id, sel objc.SEL, seconds float64) id
-	msgFloatID       func(obj id, sel objc.SEL, v float64) id
-	msgFloat2ID      func(obj id, sel objc.SEL, a, b float64) id
-	msgFontFamily    func(obj id, sel objc.SEL, family id, traits uint, weight int, size float64) id
-	msgMouseEvent    func(cls id, sel objc.SEL, typ uint, loc NSPoint, flags uint, ts float64, wn int, ctx id, eventNumber int, clickCount int, pressure float32) id
-	msgKeyEvent      func(cls id, sel objc.SEL, typ uint, loc NSPoint, flags uint, ts float64, wn int, ctx id, chars, charsIgnoring id, repeat bool, keyCode uint16) id
-	msgDrawImage     func(obj id, sel objc.SEL, dst, src NSRect, op uint, fraction float64)
-	msgInitBitmap    func(obj id, sel objc.SEL, planes uintptr, width, height, bitsPerSample, samplesPerPixel int, alpha, planar bool, colorSpace id, bytesPerRow, bitsPerPixel int) id
-	msgSetRateRange  func(obj id, sel objc.SEL, r caFrameRateRange)
+	// msgSendStretAddr is the entry point of the messages that return a
+	// struct larger than 16 bytes, which is another one on amd64.
+	msgSendStretAddr uintptr
 
-	blockCopy    func(block uintptr) uintptr
-	blockRelease func(block uintptr)
+	// _Block_copy and _Block_release, which go through
+	// mainthread.ByReceiver.
+	blockCopyFn, blockReleaseFn uintptr
 
 	// Functions on hot paths, called by address: RegisterFunc's wrappers
 	// use reflection and allocate on every call.
-	poolPushFn, poolPopFn, mainNPFn uintptr
+	poolPushFn, poolPopFn uintptr
+
+	// method_getImplementation and method_setImplementation, with which
+	// classDef has the methods of a class enter through the worker.
+	methodImplementation    func(m uintptr) uintptr
+	setMethodImplementation func(m, imp uintptr) uintptr
+	instanceMethod          func(cls id, s objc.SEL) uintptr
 )
+
+// The messages that take or return floats or structs, which run on the
+// main thread (mainthread.Forward).
+func msgRect(obj id, sel objc.SEL) NSRect {
+	return mainthread.Forward[NSRect](msgSendStretAddr, obj, sel)
+}
+func msgSetRect(obj id, sel objc.SEL, r NSRect) {
+	mainthread.Forward[struct{}](msgSendAddr, obj, sel, r)
+}
+func msgSetRectBool(obj id, sel objc.SEL, r NSRect, b bool) {
+	mainthread.Forward[struct{}](msgSendAddr, obj, sel, r, b)
+}
+func msgRectForRect(obj id, sel objc.SEL, r NSRect, style uint) NSRect {
+	return mainthread.Forward[NSRect](msgSendStretAddr, obj, sel, r, style)
+}
+func msgRectToRect(obj id, sel objc.SEL, r NSRect) NSRect {
+	return mainthread.Forward[NSRect](msgSendStretAddr, obj, sel, r)
+}
+func msgFloat(obj id, sel objc.SEL) float64 {
+	return mainthread.Forward[float64](msgSendAddr, obj, sel)
+}
+func msgSetFloat(obj id, sel objc.SEL, v float64) {
+	mainthread.Forward[struct{}](msgSendAddr, obj, sel, v)
+}
+func msgSize(obj id, sel objc.SEL) NSSize { return mainthread.Forward[NSSize](msgSendAddr, obj, sel) }
+func msgSetSize(obj id, sel objc.SEL, s NSSize) {
+	mainthread.Forward[struct{}](msgSendAddr, obj, sel, s)
+}
+func msgSuperSetSize(sup uintptr, sel objc.SEL, s NSSize) {
+	mainthread.Forward[struct{}](msgSendSuperAddr, sup, sel, s)
+}
+func msgSuperPoint(sup uintptr, sel objc.SEL, p NSPoint) id {
+	return mainthread.Forward[id](msgSendSuperAddr, sup, sel, p)
+}
+func msgPoint(obj id, sel objc.SEL) NSPoint {
+	return mainthread.Forward[NSPoint](msgSendAddr, obj, sel)
+}
+func msgSetPoint(obj id, sel objc.SEL, p NSPoint) {
+	mainthread.Forward[struct{}](msgSendAddr, obj, sel, p)
+}
+func msgInitRect(obj id, sel objc.SEL, r NSRect) id {
+	return mainthread.Forward[id](msgSendAddr, obj, sel, r)
+}
+func msgInitRectID(obj id, sel objc.SEL, r NSRect, a id) id {
+	return mainthread.Forward[id](msgSendAddr, obj, sel, r, a)
+}
+func msgRectIDUint(obj id, sel objc.SEL, r NSRect, a id, n uint) {
+	mainthread.Forward[struct{}](msgSendAddr, obj, sel, r, a, n)
+}
+func msgInitIDPoint(obj id, sel objc.SEL, a id, p NSPoint) id {
+	return mainthread.Forward[id](msgSendAddr, obj, sel, a, p)
+}
+func msgInitWindow(obj id, sel objc.SEL, r NSRect, style uint, backing uint, deferFlag bool) id {
+	return mainthread.Forward[id](msgSendAddr, obj, sel, r, style, backing, deferFlag)
+}
+func msgColor(cls id, sel objc.SEL, r, g, b, a float64) id {
+	return mainthread.Forward[id](msgSendAddr, cls, sel, r, g, b, a)
+}
+func msgOtherEvent(cls id, sel objc.SEL, typ uint, loc NSPoint, flags uint, ts float64, wn int, ctx id, subtype int16, d1, d2 int) id {
+	return mainthread.Forward[id](msgSendAddr, cls, sel, typ, loc, flags, ts, wn, ctx, subtype, d1, d2)
+}
+func msgPopUpMenu(menu id, sel objc.SEL, item id, loc NSPoint, view id) bool {
+	return mainthread.Forward[bool](msgSendAddr, menu, sel, item, loc, view)
+}
+func msgNextEvent(app id, sel objc.SEL, mask uint64, until id, mode id, dequeue bool) id {
+	return mainthread.Forward[id](msgSendAddr, app, sel, mask, until, mode, dequeue)
+}
+func msgPointFromView(obj id, sel objc.SEL, p NSPoint, view id) NSPoint {
+	return mainthread.Forward[NSPoint](msgSendAddr, obj, sel, p, view)
+}
+func msgDateSince(cls id, sel objc.SEL, seconds float64) id {
+	return mainthread.Forward[id](msgSendAddr, cls, sel, seconds)
+}
+func msgFloatID(obj id, sel objc.SEL, v float64) id {
+	return mainthread.Forward[id](msgSendAddr, obj, sel, v)
+}
+func msgFloat2ID(obj id, sel objc.SEL, a, b float64) id {
+	return mainthread.Forward[id](msgSendAddr, obj, sel, a, b)
+}
+func msgFontFamily(obj id, sel objc.SEL, family id, traits uint, weight int, size float64) id {
+	return mainthread.Forward[id](msgSendAddr, obj, sel, family, traits, weight, size)
+}
+func msgMouseEvent(cls id, sel objc.SEL, typ uint, loc NSPoint, flags uint, ts float64, wn int, ctx id, eventNumber int, clickCount int, pressure float32) id {
+	return mainthread.Forward[id](msgSendAddr, cls, sel, typ, loc, flags, ts, wn, ctx, eventNumber, clickCount, pressure)
+}
+func msgKeyEvent(cls id, sel objc.SEL, typ uint, loc NSPoint, flags uint, ts float64, wn int, ctx id, chars, charsIgnoring id, repeat bool, keyCode uint16) id {
+	return mainthread.Forward[id](msgSendAddr, cls, sel, typ, loc, flags, ts, wn, ctx, chars, charsIgnoring, repeat, keyCode)
+}
+func msgDrawImage(obj id, sel objc.SEL, dst, src NSRect, op uint, fraction float64) {
+	mainthread.Forward[struct{}](msgSendAddr, obj, sel, dst, src, op, fraction)
+}
+func msgInitBitmap(obj id, sel objc.SEL, planes uintptr, width, height, bitsPerSample, samplesPerPixel int, alpha, planar bool, colorSpace id, bytesPerRow, bitsPerPixel int) id {
+	return mainthread.Forward[id](msgSendAddr, obj, sel, planes, width, height, bitsPerSample, samplesPerPixel, alpha, planar, colorSpace, bytesPerRow, bitsPerPixel)
+}
+func msgSetRateRange(obj id, sel objc.SEL, r caFrameRateRange) {
+	mainthread.Forward[struct{}](msgSendAddr, obj, sel, r)
+}
 
 func mustDlsym(lib uintptr, name string) uintptr {
 	p, err := purego.Dlsym(lib, name)
@@ -119,9 +196,9 @@ func load() {
 		}
 		// Methods returning structs larger than 16 bytes use a different
 		// entry point on amd64.
-		stret := msgSendAddr
+		msgSendStretAddr = msgSendAddr
 		if runtime.GOARCH == "amd64" {
-			stret, err = purego.Dlsym(libObjC, "objc_msgSend_stret")
+			msgSendStretAddr, err = purego.Dlsym(libObjC, "objc_msgSend_stret")
 			if err != nil {
 				panic(err)
 			}
@@ -130,44 +207,14 @@ func load() {
 		if err != nil {
 			panic(err)
 		}
-		purego.RegisterFunc(&msgRect, stret)
-		purego.RegisterFunc(&msgRectForRect, stret)
-		purego.RegisterFunc(&msgRectToRect, stret)
-		purego.RegisterFunc(&msgSetRect, msgSendAddr)
-		purego.RegisterFunc(&msgDrawImage, msgSendAddr)
-		purego.RegisterFunc(&msgInitBitmap, msgSendAddr)
-		purego.RegisterFunc(&msgSetRateRange, msgSendAddr)
-		purego.RegisterFunc(&msgSetRectBool, msgSendAddr)
-		purego.RegisterFunc(&msgFloat, msgSendAddr)
-		purego.RegisterFunc(&msgSetFloat, msgSendAddr)
-		purego.RegisterFunc(&msgSize, msgSendAddr)
-		purego.RegisterFunc(&msgSetSize, msgSendAddr)
-		purego.RegisterFunc(&msgSuperSetSize, msgSendSuperAddr)
-		purego.RegisterFunc(&msgSuperPoint, msgSendSuperAddr)
-		purego.RegisterFunc(&msgPoint, msgSendAddr)
-		purego.RegisterFunc(&msgSetPoint, msgSendAddr)
-		purego.RegisterFunc(&msgInitRect, msgSendAddr)
-		purego.RegisterFunc(&msgInitRectID, msgSendAddr)
-		purego.RegisterFunc(&msgRectIDUint, msgSendAddr)
-		purego.RegisterFunc(&msgInitIDPoint, msgSendAddr)
-		purego.RegisterFunc(&msgInitWindow, msgSendAddr)
-		purego.RegisterFunc(&msgColor, msgSendAddr)
-		purego.RegisterFunc(&msgOtherEvent, msgSendAddr)
-		purego.RegisterFunc(&msgPopUpMenu, msgSendAddr)
-		purego.RegisterFunc(&msgNextEvent, msgSendAddr)
-		purego.RegisterFunc(&msgPointFromView, msgSendAddr)
-		purego.RegisterFunc(&msgDateSince, msgSendAddr)
-		purego.RegisterFunc(&msgFloatID, msgSendAddr)
-		purego.RegisterFunc(&msgFloat2ID, msgSendAddr)
-		purego.RegisterFunc(&msgFontFamily, msgSendAddr)
-		purego.RegisterFunc(&msgKeyEvent, msgSendAddr)
-		purego.RegisterFunc(&msgMouseEvent, msgSendAddr)
 
 		poolPushFn = mustDlsym(libObjC, "objc_autoreleasePoolPush")
 		poolPopFn = mustDlsym(libObjC, "objc_autoreleasePoolPop")
-		purego.RegisterLibFunc(&blockCopy, libObjC, "_Block_copy")
-		purego.RegisterLibFunc(&blockRelease, libObjC, "_Block_release")
-		mainNPFn = mustDlsym(purego.RTLD_DEFAULT, "pthread_main_np")
+		blockCopyFn = mustDlsym(libObjC, "_Block_copy")
+		blockReleaseFn = mustDlsym(libObjC, "_Block_release")
+		purego.RegisterLibFunc(&methodImplementation, libObjC, "method_getImplementation")
+		purego.RegisterLibFunc(&setMethodImplementation, libObjC, "method_setImplementation")
+		purego.RegisterLibFunc(&instanceMethod, libObjC, "class_getInstanceMethod")
 		loadCF()
 	})
 }
@@ -216,10 +263,11 @@ func class(name string) id {
 // hasClass reports whether a class exists (for APIs of newer macOS versions).
 func hasClass(name string) bool { return objc.GetClass(name) != 0 }
 
-// send sends a message whose arguments are integers or pointers. Go
-// pointers converted in the call, as in uintptr(unsafe.Pointer(&x)), are
-// moved to the heap and kept alive until it returns (go:uintptrescapes):
-// otherwise stack growth could move x while Objective-C uses it.
+// send sends a message whose arguments are integers or pointers on the
+// main thread (mainthread.Send). Go pointers converted in the call, as in
+// uintptr(unsafe.Pointer(&x)), are moved to the heap and kept alive until
+// it returns (go:uintptrescapes): otherwise stack growth could move x
+// while Objective-C uses it.
 //
 //go:uintptrescapes
 func send(obj id, selector string, args ...uintptr) id {
@@ -228,11 +276,46 @@ func send(obj id, selector string, args ...uintptr) id {
 
 //go:uintptrescapes
 func sendSel(obj id, s objc.SEL, args ...uintptr) id {
+	rest := make([]any, len(args))
+	for i, a := range args {
+		rest[i] = a
+	}
+	return mainthread.Send[id](obj, s, rest...)
+}
+
+// sendRetained sends a message as send does and takes, on the main
+// thread, the caller's reference to the object that it returns, which the
+// caller releases (mainthread.SendRetained): the autorelease pool of the
+// main thread may otherwise drain it before the caller retains it.
+//
+//go:uintptrescapes
+func sendRetained(obj id, selector string, args ...uintptr) id {
+	rest := make([]any, len(args))
+	for i, a := range args {
+		rest[i] = a
+	}
+	return mainthread.SendRetained(obj, sel(selector), rest...)
+}
+
+// sendHere sends a message whose arguments are integers or pointers on
+// the calling thread: a message that mainthread.CallingThreadReceivers
+// runs there, to a value object, a collection that mygo made or any
+// object for retain and respondsToSelector:.
+//
+//go:uintptrescapes
+func sendHere(obj id, selector string, args ...uintptr) id {
 	var a [12]uintptr
-	a[0], a[1] = uintptr(obj), uintptr(s)
+	a[0], a[1] = uintptr(obj), uintptr(sel(selector))
 	n := copy(a[2:], args)
 	r, _, _ := purego.SyscallN(msgSendAddr, a[:n+2]...)
 	return id(r)
+}
+
+// byReceiver sends release, autorelease or commit through
+// mainthread.ByReceiver, which runs it on the calling thread or on the
+// main thread by the class of obj.
+func byReceiver(obj id, selector string) id {
+	return id(mainthread.ByReceiver(msgSendAddr, uintptr(obj), uintptr(sel(selector))))
 }
 
 // sendBool sends a message returning BOOL.
@@ -290,11 +373,12 @@ func superclass(name string) id {
 func sendSuper(self id, className string, s objc.SEL, args ...uintptr) id {
 	var pin runtime.Pinner
 	defer pin.Unpin()
-	var a [10]uintptr
-	a[0], a[1] = superOf(self, className, &pin), uintptr(s)
-	n := copy(a[2:], args)
-	r, _, _ := purego.SyscallN(msgSendSuperAddr, a[:n+2]...)
-	return id(r)
+	all := make([]any, 0, len(args)+2)
+	all = append(all, superOf(self, className, &pin), s)
+	for _, a := range args {
+		all = append(all, a)
+	}
+	return mainthread.Forward[id](msgSendSuperAddr, all...)
 }
 
 // sendSuperSize is sendSuper for a method taking an NSSize, which travels in
@@ -314,7 +398,7 @@ func sendSuperPoint(self id, className string, s objc.SEL, p NSPoint) id {
 }
 
 func respondsTo(obj id, selector string) bool {
-	return obj != 0 && sendBool(obj, "respondsToSelector:", uintptr(sel(selector)))
+	return obj != 0 && byte(sendHere(obj, "respondsToSelector:", uintptr(sel(selector)))) != 0
 }
 
 func boolArg(b bool) uintptr {
@@ -328,12 +412,12 @@ func retain(obj id) id {
 	if obj == 0 {
 		return 0
 	}
-	return send(obj, "retain")
+	return sendHere(obj, "retain")
 }
 
 func release(obj id) {
 	if obj != 0 {
-		send(obj, "release")
+		byReceiver(obj, "release")
 	}
 }
 
@@ -341,7 +425,7 @@ func autorelease(obj id) id {
 	if obj == 0 {
 		return 0
 	}
-	return send(obj, "autorelease")
+	return byReceiver(obj, "autorelease")
 }
 
 // appKitString returns an NSString constant that AppKit exports, such as
@@ -376,7 +460,7 @@ const nsUTF8StringEncoding = 4
 // nsString returns an autoreleased NSString.
 func nsString(s string) id {
 	b := unsafe.StringData(s)
-	str := send(send(class("NSString"), "alloc"), "initWithBytes:length:encoding:",
+	str := sendHere(sendHere(class("NSString"), "alloc"), "initWithBytes:length:encoding:",
 		uintptr(unsafe.Pointer(b)), uintptr(len(s)), nsUTF8StringEncoding)
 	runtime.KeepAlive(s)
 	return autorelease(str)
@@ -387,11 +471,11 @@ func goString(str id) string {
 	if str == 0 {
 		return ""
 	}
-	p := send(str, "UTF8String")
+	p := sendHere(str, "UTF8String")
 	if p == 0 {
 		return ""
 	}
-	n := sendInt(str, "lengthOfBytesUsingEncoding:", nsUTF8StringEncoding)
+	n := int(sendHere(str, "lengthOfBytesUsingEncoding:", nsUTF8StringEncoding))
 	return string(unsafe.Slice(*(**byte)(unsafe.Pointer(&p)), n))
 }
 
@@ -401,7 +485,7 @@ func nsData(b []byte) id {
 	if len(b) > 0 {
 		p = unsafe.Pointer(&b[0])
 	}
-	d := send(class("NSData"), "dataWithBytes:length:", uintptr(p), uintptr(len(b)))
+	d := sendHere(class("NSData"), "dataWithBytes:length:", uintptr(p), uintptr(len(b)))
 	runtime.KeepAlive(b)
 	return d
 }
@@ -445,13 +529,33 @@ func fileURL(path string) id {
 	return send(class("NSURL"), "fileURLWithPath:", uintptr(nsString(path)))
 }
 
-// nsArray returns an autoreleased NSArray of objs.
+// newDictionary returns an owned (+1) empty NSMutableDictionary, made on
+// the calling thread with alloc and init, which the caller releases: a
+// dictionary that a class method makes would be autoreleased, in the pool
+// of the main thread for a message that goes there, which a caller off the
+// worker's steps does not outlive.
+func newDictionary() id {
+	return sendHere(sendHere(class("NSMutableDictionary"), "alloc"), "init")
+}
+
+// setObject sets the value of key in a dictionary that newDictionary made.
+func setObject(d, v, key id) {
+	sendHere(d, "setObject:forKey:", uintptr(v), uintptr(key))
+}
+
+// emptyDictionary is an empty NSDictionary that the program keeps.
+var emptyDictionary = sync.OnceValue(func() id {
+	return sendHere(sendHere(class("NSDictionary"), "alloc"), "init")
+})
+
+// nsArray returns an autoreleased NSArray of objs, which the autorelease
+// pool of the main thread holds (mainthread.ByReceiver).
 func nsArray(objs ...id) id {
-	arr := send(class("NSMutableArray"), "arrayWithCapacity:", uintptr(len(objs)))
+	arr := sendHere(sendHere(class("NSMutableArray"), "alloc"), "initWithCapacity:", uintptr(len(objs)))
 	for _, o := range objs {
-		send(arr, "addObject:", uintptr(o))
+		sendHere(arr, "addObject:", uintptr(o))
 	}
-	return arr
+	return autorelease(arr)
 }
 
 func arrayItems(arr id) []id {
@@ -466,23 +570,32 @@ func arrayItems(arr id) []id {
 	return out
 }
 
-func nsNumberInt(v int) id { return send(class("NSNumber"), "numberWithLongLong:", uintptr(v)) }
+func nsNumberInt(v int) id { return sendHere(class("NSNumber"), "numberWithLongLong:", uintptr(v)) }
 
-func nsBool(v bool) id { return send(class("NSNumber"), "numberWithBool:", boolArg(v)) }
+func nsBool(v bool) id { return sendHere(class("NSNumber"), "numberWithBool:", boolArg(v)) }
 
 // callBlock invokes an Objective-C block received from the system, such as
-// a WebKit completion handler.
+// a WebKit completion handler, on the main thread.
 func callBlock(block uintptr, args ...uintptr) {
 	lit := *(**[3]uintptr)(unsafe.Pointer(&block))
-	var a [8]uintptr
-	a[0] = block
-	n := copy(a[1:], args)
-	purego.SyscallN(lit[2], a[:n+1]...)
+	all := make([]any, 0, len(args)+1)
+	all = append(all, block)
+	for _, a := range args {
+		all = append(all, a)
+	}
+	mainthread.Forward[struct{}](lit[2], all...)
 }
 
-// newBlock creates a block backed by a Go function. The function must take
-// objc.Block as its first parameter.
-func newBlock(fn any) objc.Block { return objc.NewBlock(fn) }
+// newBlock creates a block backed by a Go function, which runs on the
+// worker when the main thread calls it (mainthread.Block). The function
+// must take objc.Block as its first parameter.
+func newBlock(fn any) objc.Block { return mainthread.Block(objc.NewBlock(fn)) }
+
+// blockCopy copies a block, and blockRelease releases one, through
+// mainthread.ByReceiver.
+func blockCopy(block uintptr) uintptr { return mainthread.ByReceiver(blockCopyFn, block) }
+
+func blockRelease(block uintptr) { mainthread.ByReceiver(blockReleaseFn, block) }
 
 // nsError describes an NSError, preferring the JavaScript exception message
 // WebKit attaches.
@@ -508,6 +621,14 @@ func classDef(name, super string, protocols []string, methods []objc.MethodDef) 
 	c, err := objc.RegisterClass(name, objc.GetClass(super), ps, nil, methods)
 	if err != nil {
 		panic(fmt.Sprintf("mygo: cannot register class %s: %v", name, err))
+	}
+	// Each method enters through a trampoline of the worker, which runs it
+	// on the worker when the main thread calls it.
+	for _, m := range methods {
+		meth := instanceMethod(id(c), m.Cmd)
+		t := reflect.TypeOf(m.Fn)
+		returnsObject := t.NumOut() == 1 && t.Out(0) == reflect.TypeFor[id]()
+		setMethodImplementation(meth, mainthread.Method(methodImplementation(meth), returnsObject))
 	}
 	selMu.Lock()
 	clsCache[name] = id(c)

@@ -9,21 +9,55 @@ import (
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
 
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/platform"
 )
 
 // Network.framework, a C API: no Objective-C objects, no reference
 // counting beyond the monitor itself, and blocks instead of a delegate.
+// Its functions run on the main thread (mainthread.Forward); libdispatch
+// runs on the calling thread.
 var (
-	nwPathMonitorCreate           func() uintptr
-	nwPathMonitorSetUpdateHandler func(monitor, handler uintptr)
-	nwPathMonitorSetQueue         func(monitor, queue uintptr)
-	nwPathMonitorStart            func(monitor uintptr)
-	nwPathGetStatus               func(path uintptr) int32
-	nwPathIsExpensive             func(path uintptr) bool
-	nwPathIsConstrained           func(path uintptr) bool
-	dispatchQueueCreate           func(label *byte, attr uintptr) uintptr
+	nwPathFns           [7]uintptr
+	dispatchQueueCreate func(label *byte, attr uintptr) uintptr
 )
+
+// The functions of Network.framework, in nwPathFns.
+const (
+	nwMonitorCreate = iota
+	nwMonitorSetUpdateHandler
+	nwMonitorSetQueue
+	nwMonitorStart
+	nwGetStatus
+	nwIsExpensive
+	nwIsConstrained
+)
+
+func nwPathMonitorCreate() uintptr { return mainthread.Forward[uintptr](nwPathFns[nwMonitorCreate]) }
+
+func nwPathMonitorSetUpdateHandler(monitor, handler uintptr) {
+	mainthread.Forward[struct{}](nwPathFns[nwMonitorSetUpdateHandler], monitor, handler)
+}
+
+func nwPathMonitorSetQueue(monitor, queue uintptr) {
+	mainthread.Forward[struct{}](nwPathFns[nwMonitorSetQueue], monitor, queue)
+}
+
+func nwPathMonitorStart(monitor uintptr) {
+	mainthread.Forward[struct{}](nwPathFns[nwMonitorStart], monitor)
+}
+
+func nwPathGetStatus(path uintptr) int32 {
+	return mainthread.Forward[int32](nwPathFns[nwGetStatus], path)
+}
+
+func nwPathIsExpensive(path uintptr) bool {
+	return mainthread.Forward[bool](nwPathFns[nwIsExpensive], path)
+}
+
+func nwPathIsConstrained(path uintptr) bool {
+	return mainthread.Forward[bool](nwPathFns[nwIsConstrained], path)
+}
 
 // nw_path_status_satisfied: the path has a usable route to send and
 // receive data on.
@@ -74,13 +108,12 @@ func startNetworkMonitor() {
 	networkMonitor.once.Do(func() {
 		networkMonitor.ready = make(chan struct{})
 		lib := mustDlopen("/System/Library/Frameworks/Network.framework/Network")
-		purego.RegisterLibFunc(&nwPathMonitorCreate, lib, "nw_path_monitor_create")
-		purego.RegisterLibFunc(&nwPathMonitorSetUpdateHandler, lib, "nw_path_monitor_set_update_handler")
-		purego.RegisterLibFunc(&nwPathMonitorSetQueue, lib, "nw_path_monitor_set_queue")
-		purego.RegisterLibFunc(&nwPathMonitorStart, lib, "nw_path_monitor_start")
-		purego.RegisterLibFunc(&nwPathGetStatus, lib, "nw_path_get_status")
-		purego.RegisterLibFunc(&nwPathIsExpensive, lib, "nw_path_is_expensive")
-		purego.RegisterLibFunc(&nwPathIsConstrained, lib, "nw_path_is_constrained")
+		for i, name := range []string{
+			"nw_path_monitor_create", "nw_path_monitor_set_update_handler", "nw_path_monitor_set_queue",
+			"nw_path_monitor_start", "nw_path_get_status", "nw_path_is_expensive", "nw_path_is_constrained",
+		} {
+			nwPathFns[i] = mustDlsym(lib, name)
+		}
 		purego.RegisterLibFunc(&dispatchQueueCreate, purego.RTLD_DEFAULT, "dispatch_queue_create")
 
 		m := nwPathMonitorCreate()
@@ -112,7 +145,7 @@ func startNetworkMonitor() {
 		})
 		// The monitor copies the handler.
 		nwPathMonitorSetUpdateHandler(m, uintptr(blk))
-		blk.Release()
+		blockRelease(uintptr(blk))
 		label := []byte("mygo.network\x00")
 		nwPathMonitorSetQueue(m, dispatchQueueCreate(&label[0], 0))
 		// The monitor lives as long as the app.

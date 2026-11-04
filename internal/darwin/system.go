@@ -54,7 +54,7 @@ func (clipboard) ReadImage() []byte {
 		if data := send(pb, "dataForType:", uintptr(nsString(utTIFF))); data != 0 {
 			rep := send(class("NSBitmapImageRep"), "imageRepWithData:", uintptr(data))
 			if rep != 0 {
-				out = goBytes(send(rep, "representationUsingType:properties:", 4, uintptr(send(class("NSDictionary"), "dictionary"))))
+				out = goBytes(send(rep, "representationUsingType:properties:", 4, uintptr(emptyDictionary())))
 			}
 		}
 	})
