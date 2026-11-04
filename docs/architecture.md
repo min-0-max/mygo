@@ -370,10 +370,12 @@ a goroutine locked to a thread other than the main thread.
   `ByReceiver` decides `release`, `autorelease`, `commit`, `CFRetain`,
   `CFRelease`, `_Block_copy` and `_Block_release` by the class or the Core
   Foundation type of the receiver.
-- `RunOnWorkerAddress` and `RunOnMainAddress` give C code two functions
-  that take a block: the first runs it on the worker as a step when the
-  main thread calls it, the second on the main thread when the worker
-  calls it during a step, and each runs it at once on any other thread.
+- `RunOnWorkerAddress` and `RunOnMainAddress`, which the root package
+  makes public as `mygo.RunOnWorkerAddress` and `mygo.RunOnMainAddress`,
+  give C code two functions that take a block: the first runs it on the
+  worker as a step when the main thread calls it, the second on the main
+  thread when the worker calls it during a step, and each runs it at once
+  on any other thread.
 - `RunOnMain` runs a Go function on the worker: during a step as part of
   it, and from the main thread or another thread as a step of its own,
   which the main thread starts from its run loop for another thread. The
