@@ -81,22 +81,30 @@ func appleLanguages(own bool) []string {
 	return out
 }
 
+// PreferredLanguages, SavedLocale and Region read the preferences and the
+// current locale as one call on the main thread (mainthread.RunOnMain),
+// from any goroutine: what they read is autoreleased in a pool of that
+// call, which it outlives until it is copied.
 func (a appController) PreferredLanguages() []string {
-	if langs := appleLanguages(false); len(langs) > 0 {
-		return langs
-	}
-	// A user who never ordered languages: the system's.
 	var out []string
-	withPool(func() {
-		for _, s := range arrayItems(send(class("NSLocale"), "preferredLanguages")) {
-			out = append(out, goString(s))
+	mainthread.RunOnMain(func() {
+		if out = appleLanguages(false); len(out) > 0 {
+			return
 		}
+		// A user who never ordered languages: the system's.
+		withPool(func() {
+			for _, s := range arrayItems(send(class("NSLocale"), "preferredLanguages")) {
+				out = append(out, goString(s))
+			}
+		})
 	})
 	return out
 }
 
 func (a appController) SavedLocale() (string, bool) {
-	if langs := appleLanguages(true); len(langs) > 0 {
+	var langs []string
+	mainthread.RunOnMain(func() { langs = appleLanguages(true) })
+	if len(langs) > 0 {
 		return langs[0], true
 	}
 	return "", true
@@ -125,16 +133,18 @@ func (a appController) SetLanguages([]string, bool) {}
 // 24-hour time setting changes.
 func (a appController) Region() platform.Region {
 	r := platform.Region{FirstWeekday: -1}
-	withPool(func() {
-		locale := send(class("NSLocale"), "autoupdatingCurrentLocale")
-		r.Locale = goString(send(locale, "localeIdentifier"))
-		calendar := send(class("NSCalendar"), "autoupdatingCurrentCalendar")
-		if d := sendInt(calendar, "firstWeekday"); d >= 1 && d <= 7 {
-			r.FirstWeekday = d - 1
-		}
-		format := goString(send(class("NSDateFormatter"), "dateFormatFromTemplate:options:locale:",
-			uintptr(nsString("j")), 0, uintptr(locale)))
-		r.HourCycle = hourCycle(format)
+	mainthread.RunOnMain(func() {
+		withPool(func() {
+			locale := send(class("NSLocale"), "autoupdatingCurrentLocale")
+			r.Locale = goString(send(locale, "localeIdentifier"))
+			calendar := send(class("NSCalendar"), "autoupdatingCurrentCalendar")
+			if d := sendInt(calendar, "firstWeekday"); d >= 1 && d <= 7 {
+				r.FirstWeekday = d - 1
+			}
+			format := goString(send(class("NSDateFormatter"), "dateFormatFromTemplate:options:locale:",
+				uintptr(nsString("j")), 0, uintptr(locale)))
+			r.HourCycle = hourCycle(format)
+		})
 	})
 	return r
 }

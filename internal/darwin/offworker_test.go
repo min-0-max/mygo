@@ -75,6 +75,20 @@ var offWorkerCalls = []offWorkerCall{
 		}
 		return nil
 	}},
+	{"PreferredLanguages", 1, func(b *Backend, _ string) error {
+		b.App().PreferredLanguages()
+		return nil
+	}},
+	{"SavedLocale", 1, func(b *Backend, _ string) error {
+		b.App().SavedLocale()
+		return nil
+	}},
+	{"Region", 1, func(b *Backend, _ string) error {
+		if r := b.App().Region(); r.Locale == "" {
+			return fmt.Errorf("no locale in %+v", r)
+		}
+		return nil
+	}},
 }
 
 // drainAfterEachCall makes the method of cls that an off-worker call
@@ -144,6 +158,7 @@ func offWorkerMain() int {
 		{"NSFileManager", "displayNameAtPath:", false},
 		{"NSURL", "fileURLWithPath:", true},
 		{"NSBundle", "bundlePath", false},
+		{"NSCalendar", "autoupdatingCurrentCalendar", true},
 	} {
 		if err := drainAfterEachCall(m.cls, m.method, m.classMethod, &forwarded); err != nil {
 			return fail(err)
