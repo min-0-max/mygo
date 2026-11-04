@@ -65,24 +65,6 @@ func addressOf(v reflect.Value) uintptr {
 	return 0
 }
 
-// holds reports whether the group names the function.
-func (g FunctionGroup) holds(name string) bool {
-	if slices.Contains(g.Names, name) {
-		return true
-	}
-	for _, e := range g.Except {
-		if strings.HasPrefix(name, e) {
-			return false
-		}
-	}
-	for _, p := range g.Prefixes {
-		if strings.HasPrefix(name, p) {
-			return true
-		}
-	}
-	return false
-}
-
 // checks is what the checks read.
 var checks struct {
 	once           sync.Once

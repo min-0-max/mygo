@@ -20,6 +20,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -1465,6 +1466,7 @@ type callInfo struct {
 	bound *types.Var
 	api   apiCall
 	name  string
+	raw   bool // a bind of purego itself
 }
 
 // apiCall describes a function of purego's objc package: the native
@@ -1618,7 +1620,7 @@ func (a *analysis) classifyFunc(o *types.Func, recv ast.Expr) callInfo {
 			case "SyscallN":
 				return callInfo{kind: callSyscall}
 			case "RegisterFunc", "RegisterLibFunc":
-				return callInfo{kind: callBind, name: o.Name()}
+				return callInfo{kind: callBind, name: o.Name(), raw: true}
 			}
 			return callInfo{}
 		case path == a.r.rules.objcPk:
@@ -2932,6 +2934,7 @@ func (a *analysis) primitives(f *fn) {
 			return
 		}
 		info := a.classify(f.pkg, call)
+		a.checkpoint(f, call, info)
 		ctx := &ectx{}
 		var ts []tmpl
 		switch info.kind {
@@ -2980,6 +2983,93 @@ func (a *analysis) primitives(f *fn) {
 			a.place(t, call.Pos())
 		}
 	})
+}
+
+// checkpoint reports a native call that the tag of CheckTag cannot see:
+// a bind outside Bind and BindAddr, a message that no CheckSend precedes
+// in its function, and a function of the value objects made of
+// purego.SyscallN that no Check holds.
+func (a *analysis) checkpoint(f *fn, call *ast.CallExpr, info callInfo) {
+	if !f.pkg.scan || f.pkg.path == a.r.rules.workerPackage {
+		return
+	}
+	switch info.kind {
+	case callBind:
+		if info.raw {
+			a.report(call.Pos(), "binds a function outside "+BindFunc+" and "+BindAddrFunc)
+		}
+	case callAPI:
+		if info.api.send && !a.checkedSend(f, call) {
+			a.report(call.Pos(), "sends a message after no "+CheckSendFunc+" in "+f.name)
+		}
+	case callSyscall:
+		if len(call.Args) == 0 {
+			return
+		}
+		for _, name := range a.eval(f.pkg, call.Args[0], &ectx{}).sortedNames() {
+			switch {
+			case a.r.rules.messageSends[name]:
+				if !a.checkedSend(f, call) {
+					a.report(call.Pos(), "sends a message after no "+CheckSendFunc+" in "+f.name)
+				}
+			case cfValueFunctions.holds(name):
+				if !a.checkedFunc(f, name) {
+					a.report(call.Pos(), "calls "+name+" through purego.SyscallN outside "+CheckFunc)
+				}
+			}
+		}
+	}
+}
+
+// workerCall reports whether call calls the function name of the worker's
+// package.
+func (a *analysis) workerCall(f *fn, call *ast.CallExpr, name string) bool {
+	info := a.classify(f.pkg, call)
+	if info.kind != callGo || len(info.fns) != 1 {
+		return false
+	}
+	o := info.fns[0].obj
+	return o != nil && o.Name() == name && o.Pkg() != nil && o.Pkg().Path() == a.r.rules.workerPackage
+}
+
+// checkedSend reports whether a call of CheckSend comes before call in f.
+func (a *analysis) checkedSend(f *fn, call *ast.CallExpr) bool {
+	found := false
+	inspectOwn(f, func(n ast.Node) {
+		if c, ok := n.(*ast.CallExpr); ok && c.Pos() < call.Pos() && a.workerCall(f, c, CheckSendFunc) {
+			found = true
+		}
+	})
+	return found
+}
+
+// checkedFunc reports whether f is a function literal that its parent
+// assigns to a variable and passes to Check with the native function name.
+func (a *analysis) checkedFunc(f *fn, name string) bool {
+	if f.lit == nil || f.parent == nil {
+		return false
+	}
+	target, found := "", false
+	inspectOwn(f.parent, func(n ast.Node) {
+		if as, ok := n.(*ast.AssignStmt); ok {
+			for i, rhs := range as.Rhs {
+				if rhs == ast.Expr(f.lit) && i < len(as.Lhs) {
+					target = "&" + types.ExprString(as.Lhs[i])
+				}
+			}
+		}
+	})
+	inspectOwn(f.parent, func(n ast.Node) {
+		c, ok := n.(*ast.CallExpr)
+		if !ok || len(c.Args) != 2 || !a.workerCall(f.parent, c, CheckFunc) {
+			return
+		}
+		lit, ok := c.Args[1].(*ast.BasicLit)
+		if ok && lit.Value == strconv.Quote(name) && types.ExprString(c.Args[0]) == target {
+			found = true
+		}
+	})
+	return found
 }
 
 // apiArgs returns the receiver and the selector of a message send of

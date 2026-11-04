@@ -35,6 +35,13 @@ func Send(recv uintptr, s objc.SEL, args ...uintptr) uintptr {
 	return Forward(msgSend, append([]uintptr{recv, uintptr(s)}, args...)...)
 }
 
+// Bind, BindAddr, Check and CheckSend are the functions through which a
+// check at run time sees a native call on the calling thread.
+func Bind(fn any, lib uintptr, name string)      { purego.RegisterLibFunc(fn, lib, name) }
+func BindAddr(fn any, addr uintptr, name string) { purego.RegisterFunc(fn, addr) }
+func Check(fn any, name string)                  {}
+func CheckSend(recv, sel uintptr)                {}
+
 // RunOnMain runs fn on the main thread as one forwarded call.
 func RunOnMain(fn func()) { fn() }
 

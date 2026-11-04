@@ -142,7 +142,10 @@ func swizzle() error {
 	// The frame showing the events handled until it presents: frames
 	// present on the main thread, as soon as drawn (the command buffer's
 	// presentDrawable:) or with the transaction (the drawable's present).
-	queue := objc.ID(mainthread.Forward[uintptr](createDevice)).Send(sel("newCommandQueue"))
+	device := objc.ID(mainthread.Forward[uintptr](createDevice))
+	mainthread.CheckSend(uintptr(device), uintptr(sel("newCommandQueue")))
+	queue := device.Send(sel("newCommandQueue"))
+	mainthread.CheckSend(uintptr(queue), uintptr(sel("commandBuffer")))
 	buffer := queue.Send(sel("commandBuffer"))
 	origPresentIn, err = wrap(uintptr(getClass(uintptr(buffer))), "presentDrawable:", false, func(self, cmd, d uintptr) {
 		present(d)
@@ -296,6 +299,7 @@ func measure(m string, events, warmup, x, y, n int) error {
 		// As the app the user types into, which is active: App Nap would
 		// delay the inactive app's wakeups by milliseconds.
 		const userInitiated, latencyCritical = 0x00EFFFFF, 0xFF00000000
+		mainthread.CheckSend(uintptr(objc.GetClass("NSString")), uintptr(sel("stringWithUTF8String:")))
 		reason := objc.ID(objc.GetClass("NSString")).Send(sel("stringWithUTF8String:"), "measuring input latency\x00")
 		info := mainthread.Send[objc.ID](objc.ID(objc.GetClass("NSProcessInfo")), sel("processInfo"))
 		// The activity is held, retained, while the process lives.
@@ -313,6 +317,7 @@ func measure(m string, events, warmup, x, y, n int) error {
 }
 
 func findSurface(v objc.ID) objc.ID {
+	mainthread.CheckSend(uintptr(v), uintptr(sel("isKindOfClass:")))
 	if objc.Send[bool](v, sel("isKindOfClass:"), objc.GetClass("MyGoSurfaceView")) {
 		return v
 	}
@@ -344,6 +349,7 @@ func windowPoint(x, y float64) nsPoint {
 
 func sendKey() {
 	number := mainthread.Send[int](objc.ID(nsWindow), sel("windowNumber"))
+	mainthread.CheckSend(uintptr(objc.GetClass("NSString")), uintptr(sel("stringWithUTF8String:")))
 	s := objc.ID(objc.GetClass("NSString")).Send(sel("stringWithUTF8String:"), "a\x00")
 	for _, typ := range []uint{10, 11} { // NSEventTypeKeyDown, KeyUp
 		ev := mainthread.Forward[objc.ID](msgSend, objc.GetClass("NSEvent"), sel("keyEventWithType:location:modifierFlags:timestamp:windowNumber:context:characters:charactersIgnoringModifiers:isARepeat:keyCode:"),

@@ -27,18 +27,31 @@
 // two disagree with it.
 package mainthread
 
+import (
+	"slices"
+	"strings"
+)
+
 // CheckTag is the build tag that holds each call to these lists at run
 // time. It builds a test of mygo, which the reader of the call sites does
 // not read.
 const CheckTag = "mainthreadcheck"
 
-// The functions through which a call site binds a native function that
-// runs on the calling thread, which the tag of CheckTag holds to these
-// lists: BindFunc takes a library and a name as purego.RegisterLibFunc
-// does, BindAddrFunc an address as purego.RegisterFunc does, and a name.
+// The functions through which the tag of CheckTag sees the native calls
+// of mygo that run on the calling thread. A call site binds a native
+// function through BindFunc, which takes a library and a name as
+// purego.RegisterLibFunc does, or through BindAddrFunc, which takes an
+// address as purego.RegisterFunc does, and a name. Outside this package no
+// other call binds one. A function of cfValueFunctions that a call site
+// makes of purego.SyscallN goes through CheckFunc in the function that
+// assigns it, and a message that it sends through purego.SyscallN or
+// purego's objc package follows a call of CheckSendFunc in the same
+// function, as the reader of the call sites requires.
 const (
-	BindFunc     = "Bind"
-	BindAddrFunc = "BindAddr"
+	BindFunc      = "Bind"
+	BindAddrFunc  = "BindAddr"
+	CheckFunc     = "Check"
+	CheckSendFunc = "CheckSend"
 )
 
 // The functions of this package that the call sites of mygo reach.
@@ -365,6 +378,17 @@ var cfValueFunctions = FunctionGroup{
 	Names:    []string{"CFHash", "CFEqual"},
 	Prefixes: CFValueTypes,
 	Except:   []string{"CFStringTokenizer", "CFNumberFormatter"},
+}
+
+// holds reports whether the group names the function.
+func (g FunctionGroup) holds(name string) bool {
+	if slices.Contains(g.Names, name) {
+		return true
+	}
+	if slices.ContainsFunc(g.Except, func(e string) bool { return strings.HasPrefix(name, e) }) {
+		return false
+	}
+	return slices.ContainsFunc(g.Prefixes, func(p string) bool { return strings.HasPrefix(name, p) })
 }
 
 // CFCollectionTypes are the other types that a collection may hold at
