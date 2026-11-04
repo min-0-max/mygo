@@ -10,13 +10,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/ebitengine/purego"
 
 	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/fake"
 	"github.com/egoist/mygo/internal/platform"
+	"github.com/egoist/mygo/internal/wait"
 )
 
 func init() { workerTestMain = workerMain }
@@ -150,7 +150,7 @@ func workerMain() {
 // keeps running the work of the main thread through Backend.Step while it
 // waits.
 func TestTheMainThreadIsTheWorker(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*wait.Guard)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^$")
 	cmd.Env = append(os.Environ(), "MYGO_TEST_WORKER=1")
