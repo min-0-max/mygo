@@ -957,8 +957,10 @@ func (p *Painter) textForeground(l *text.Layout, x, y float32, color Color, ts t
 			sg := scene.Glyph{
 				X: ix + gi.Left, Y: baseline + gi.Top, W: float32(gi.W), H: float32(gi.H),
 				U: gi.X, V: gi.Y, UW: gi.W, VH: gi.H,
-				Transform: p.inlineTransform(g.Cluster).Pixels(s),
-				Color:     glyphColor.scene(), Wide: p.glyphWide(glyphColor), Colored: gi.Colored, Subpixel: gi.Subpixel, Thin: gi.Thin,
+				Color: glyphColor.scene(), Wide: p.glyphWide(glyphColor), Colored: gi.Colored, Subpixel: gi.Subpixel, Thin: gi.Thin,
+			}
+			if moves {
+				sg.Transform = p.inlineTransform(g.Cluster).Pixels(s)
 			}
 			if run != nil {
 				run.add(p, g, gi, pen, sg, glyphShade, baseline)

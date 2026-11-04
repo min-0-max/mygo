@@ -410,6 +410,9 @@ type System struct {
 
 	glyphs map[glyphKey]*atlasEntry
 	places map[placeKey]placement
+	// lastPlaceKey and lastPlace are the last of them place used.
+	lastPlaceKey placeKey
+	lastPlace    placement
 	// runs holds joined glyphs (GlyphRun).
 	runs  map[runKey]*atlasEntry
 	masks map[uint64]*atlasEntry
@@ -732,6 +735,7 @@ func (s *System) EndFrame() {
 		clear(s.fonts)
 		clear(s.glyphs)
 		clear(s.places)
+		s.lastPlaceKey = placeKey{}
 		clear(s.runs)
 		f.forgetFonts()
 		return
