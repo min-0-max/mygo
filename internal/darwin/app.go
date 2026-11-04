@@ -487,25 +487,31 @@ func (a appController) ShowAboutPanel(o platform.AboutPanelOptions) {
 	send(a.b.app, "orderFrontStandardAboutPanelWithOptions:", uintptr(dict))
 }
 
+// Package reads the main bundle as one call on the main thread
+// (mainthread.RunOnMain), from any goroutine: the strings that the bundle
+// returns are autoreleased in a pool of that call, which they outlive
+// until they are copied.
 func (a appController) Package() (platform.PackageInfo, bool) {
 	var info platform.PackageInfo
 	ok := false
-	withPool(func() {
-		bundle := send(class("NSBundle"), "mainBundle")
-		path := goString(send(bundle, "bundlePath"))
-		if !strings.HasSuffix(path, ".app") {
-			return
-		}
-		ok = true
-		get := func(key string) string {
-			return goString(send(bundle, "objectForInfoDictionaryKey:", uintptr(nsString(key))))
-		}
-		info.Name = get("CFBundleDisplayName")
-		if info.Name == "" {
-			info.Name = get("CFBundleName")
-		}
-		info.Version = get("CFBundleShortVersionString")
-		info.Identifier = goString(send(bundle, "bundleIdentifier"))
+	mainthread.RunOnMain(func() {
+		withPool(func() {
+			bundle := send(class("NSBundle"), "mainBundle")
+			path := goString(send(bundle, "bundlePath"))
+			if !strings.HasSuffix(path, ".app") {
+				return
+			}
+			ok = true
+			get := func(key string) string {
+				return goString(send(bundle, "objectForInfoDictionaryKey:", uintptr(nsString(key))))
+			}
+			info.Name = get("CFBundleDisplayName")
+			if info.Name == "" {
+				info.Name = get("CFBundleName")
+			}
+			info.Version = get("CFBundleShortVersionString")
+			info.Identifier = goString(send(bundle, "bundleIdentifier"))
+		})
 	})
 	return info, ok
 }

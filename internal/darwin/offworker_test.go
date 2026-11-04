@@ -68,6 +68,13 @@ var offWorkerCalls = []offWorkerCall{
 		}
 		return nil
 	}},
+	{"Package", 1, func(b *Backend, _ string) error {
+		// The helper process is no bundle, which the path shows.
+		if info, ok := b.App().Package(); ok {
+			return fmt.Errorf("a package in a test binary: %+v", info)
+		}
+		return nil
+	}},
 }
 
 // drainAfterEachCall makes the method of cls that an off-worker call
@@ -136,6 +143,7 @@ func offWorkerMain() int {
 	}{
 		{"NSFileManager", "displayNameAtPath:", false},
 		{"NSURL", "fileURLWithPath:", true},
+		{"NSBundle", "bundlePath", false},
 	} {
 		if err := drainAfterEachCall(m.cls, m.method, m.classMethod, &forwarded); err != nil {
 			return fail(err)
