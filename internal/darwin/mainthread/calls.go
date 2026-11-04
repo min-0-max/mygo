@@ -98,11 +98,12 @@ var ForwardingFuncs = append([]string{ForwardFunc, "ForwardRetained", RunOnMainF
 
 // OffWorkerFuncs are the functions that other goroutines call while the
 // worker runs: those that platform.Backend lets any goroutine call, the
-// methods that it lets any goroutine call of what they return, and the
-// proxy resolution of netproxy. Outside the function that RunOnMainFunc
-// runs, each of them, and each function that it reaches, makes no
-// forwarded call but one call of RunOnMainFunc at most, and none in a
-// loop. Forwarded one by one from another thread, two calls run in
+// methods that it lets any goroutine call of what they return, the proxy
+// resolution of netproxy, and what permissionflow asks the frameworks
+// from the goroutines of its callers. Outside the function that
+// RunOnMainFunc runs, each of them, and each function that it reaches,
+// makes no forwarded call but one call of RunOnMainFunc at most, and none
+// in a loop. Forwarded one by one from another thread, two calls run in
 // passes of the main run loop of their own, whose autorelease pool drains
 // between them: an object that the first returns is gone when the second
 // uses it.
@@ -126,6 +127,16 @@ var OffWorkerFuncs = []OffWorkerFunc{
 	{"internal/darwin", "appController.SavedLocale"},
 	{"internal/darwin", "appController.Package"},
 	{"netproxy", "system"},
+	{"plugins/permissionflow", "check"},
+	{"plugins/permissionflow", "usageDescription"},
+	{"plugins/permissionflow", "promptAccessibility"},
+	{"plugins/permissionflow", "askDevice"},
+	{"plugins/permissionflow", "fullEventAccess"},
+	{"plugins/permissionflow", "askEvents"},
+	{"plugins/permissionflow", "startBluetooth"},
+	{"plugins/permissionflow", "defaultApp"},
+	{"plugins/permissionflow", "settingsProcess"},
+	{"plugins/permissionflow", "settingsFrame"},
 }
 
 // OffWorkerFunc is a function by its package, as an import path below the

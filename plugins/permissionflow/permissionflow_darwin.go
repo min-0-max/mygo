@@ -19,6 +19,7 @@ import (
 	"github.com/ebitengine/purego/objc"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 )
 
 // macOS keeps the permissions in TCC, which the frameworks ask: the
@@ -26,6 +27,12 @@ import (
 // the input, AVFoundation for the microphone and the camera, EventKit for
 // calendars and reminders, and CoreBluetooth. Their frameworks are loaded
 // when a permission of theirs is first checked.
+//
+// Any goroutine calls this package while Go runs on the worker
+// (internal/darwin/mainthread), so what asks the frameworks is one call on
+// the main thread each (mainthread.RunOnMain), in a pool of that call, and
+// passes only Go values on: the objects of two calls forwarded from another
+// thread would live in pools of the main thread that drain between them.
 
 const (
 	applicationServicesPath = "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"
@@ -54,34 +61,49 @@ var (
 	coreOnce sync.Once
 	coreErr  error
 
-	axIsProcessTrusted             func() bool
-	axIsProcessTrustedWithOptions  func(options objc.ID) bool
+	// Called on the main thread by address.
+	axIsProcessTrusted, axIsProcessTrustedWithOptions uintptr
+
 	cgPreflightScreenCaptureAccess func() bool
 	cgRequestScreenCaptureAccess   func() bool
 	cgPreflightListenEventAccess   func() bool
 	cgRequestListenEventAccess     func() bool
 	cgWindowListCopyWindowInfo     func(option, relativeTo uint32) objc.ID
 	cgEventSourceButtonState       func(state int32, button uint32) bool
-	cfRelease                      func(obj objc.ID)
 
-	// Messages of the types that Guide sends 30 times a second, which
-	// objc.Send would register anew each time.
-	sendUint  func(obj objc.ID, s objc.SEL) uint
-	sendInt   func(obj objc.ID, s objc.SEL) int
-	sendFloat func(obj objc.ID, s objc.SEL) float64
+	// CFRelease and _Block_release, which go through mainthread.ByReceiver.
+	cfRelease, blockRelease uintptr
+
+	// msgSend is objc_msgSend, and msgSendStret the entry point of the
+	// messages that return a struct larger than 16 bytes, another one on
+	// amd64.
+	msgSend, msgSendStret uintptr
 
 	poolPush, poolPop uintptr
 	avMediaTypeAudio  objc.ID
 	avMediaTypeVideo  objc.ID
 
 	frameworks sync.Map // path → error of loading it
-
-	macMajor int // macOS's major version
 )
 
 func sel(name string) objc.SEL { return objc.RegisterName(name) }
 
 func class(name string) objc.ID { return objc.ID(objc.GetClass(name)) }
+
+// send sends a message on the main thread (mainthread.Send).
+func send(obj objc.ID, name string, args ...any) objc.ID {
+	return mainthread.Send[objc.ID](obj, sel(name), args...)
+}
+
+// sendRect sends a message that returns an nsRect on the main thread.
+func sendRect(obj objc.ID, name string) nsRect {
+	return mainthread.Forward[nsRect](msgSendStret, obj, sel(name))
+}
+
+// release releases obj through mainthread.ByReceiver.
+func release(obj objc.ID) {
+	mainthread.ByReceiver(msgSend, uintptr(obj), uintptr(sel("release")))
+}
 
 func loadCore() error {
 	coreOnce.Do(func() {
@@ -94,42 +116,35 @@ func loadCore() error {
 			}
 			libs[path] = h
 		}
-		for _, f := range []struct {
-			fn        any
-			lib, name string
-		}{
-			{&axIsProcessTrusted, applicationServicesPath, "AXIsProcessTrusted"},
-			{&axIsProcessTrustedWithOptions, applicationServicesPath, "AXIsProcessTrustedWithOptions"},
-			{&cgPreflightScreenCaptureAccess, coreGraphicsPath, "CGPreflightScreenCaptureAccess"},
-			{&cgRequestScreenCaptureAccess, coreGraphicsPath, "CGRequestScreenCaptureAccess"},
-			{&cgPreflightListenEventAccess, coreGraphicsPath, "CGPreflightListenEventAccess"},
-			{&cgRequestListenEventAccess, coreGraphicsPath, "CGRequestListenEventAccess"},
-			{&cgWindowListCopyWindowInfo, coreGraphicsPath, "CGWindowListCopyWindowInfo"},
-			{&cgEventSourceButtonState, coreGraphicsPath, "CGEventSourceButtonState"},
-			{&cfRelease, coreFoundationPath, "CFRelease"},
-		} {
-			p, err := purego.Dlsym(libs[f.lib], f.name)
-			if err != nil {
-				coreErr = fmt.Errorf("permissionflow: missing %s (macOS 10.15 and later): %w", f.name, errors.ErrUnsupported)
-				return
+		sym := func(lib, name string) uintptr {
+			p, err := purego.Dlsym(libs[lib], name)
+			if err != nil && coreErr == nil {
+				coreErr = fmt.Errorf("permissionflow: missing %s (macOS 10.15 and later): %w", name, errors.ErrUnsupported)
 			}
-			purego.RegisterFunc(f.fn, p)
+			return p
 		}
-		msgSend, err := purego.Dlsym(libs[libObjCPath], "objc_msgSend")
-		if err != nil {
-			coreErr = fmt.Errorf("permissionflow: %w", err)
-			return
+		bind := func(fn any, lib, name string) {
+			if p := sym(lib, name); p != 0 {
+				mainthread.BindAddr(fn, p, name)
+			}
 		}
-		purego.RegisterFunc(&sendUint, msgSend)
-		purego.RegisterFunc(&sendInt, msgSend)
-		purego.RegisterFunc(&sendFloat, msgSend)
-		poolPush, _ = purego.Dlsym(libs[libObjCPath], "objc_autoreleasePoolPush")
-		poolPop, _ = purego.Dlsym(libs[libObjCPath], "objc_autoreleasePoolPop")
-		withPool(func() {
-			type osVersion struct{ Major, Minor, Patch int }
-			info := class("NSProcessInfo").Send(sel("processInfo"))
-			macMajor = objc.Send[osVersion](info, sel("operatingSystemVersion")).Major
-		})
+		bind(&cgPreflightScreenCaptureAccess, coreGraphicsPath, "CGPreflightScreenCaptureAccess")
+		bind(&cgRequestScreenCaptureAccess, coreGraphicsPath, "CGRequestScreenCaptureAccess")
+		bind(&cgPreflightListenEventAccess, coreGraphicsPath, "CGPreflightListenEventAccess")
+		bind(&cgRequestListenEventAccess, coreGraphicsPath, "CGRequestListenEventAccess")
+		bind(&cgWindowListCopyWindowInfo, coreGraphicsPath, "CGWindowListCopyWindowInfo")
+		bind(&cgEventSourceButtonState, coreGraphicsPath, "CGEventSourceButtonState")
+		axIsProcessTrusted = sym(applicationServicesPath, "AXIsProcessTrusted")
+		axIsProcessTrustedWithOptions = sym(applicationServicesPath, "AXIsProcessTrustedWithOptions")
+		cfRelease = sym(coreFoundationPath, "CFRelease")
+		blockRelease = sym(libObjCPath, "_Block_release")
+		msgSend = sym(libObjCPath, "objc_msgSend")
+		msgSendStret = msgSend
+		if runtime.GOARCH == "amd64" {
+			msgSendStret = sym(libObjCPath, "objc_msgSend_stret")
+		}
+		poolPush = sym(libObjCPath, "objc_autoreleasePoolPush")
+		poolPop = sym(libObjCPath, "objc_autoreleasePoolPop")
 	})
 	return coreErr
 }
@@ -184,14 +199,14 @@ func cstr(s string) *byte {
 
 // nsString returns an autoreleased NSString.
 func nsString(s string) objc.ID {
-	return class("NSString").Send(sel("stringWithUTF8String:"), cstr(s))
+	return send(class("NSString"), "stringWithUTF8String:", cstr(s))
 }
 
 func goString(s objc.ID) string {
 	if s == 0 {
 		return ""
 	}
-	p := objc.Send[unsafe.Pointer](s, sel("UTF8String"))
+	p := mainthread.Send[unsafe.Pointer](s, sel("UTF8String"))
 	if p == nil {
 		return ""
 	}
@@ -204,9 +219,25 @@ func goString(s objc.ID) string {
 
 const ungated = true
 
+// macMajor returns macOS's major version, 0 when it can't be read.
+var macMajor = sync.OnceValue(func() int {
+	if loadCore() != nil {
+		return 0
+	}
+	type osVersion struct{ Major, Minor, Patch int }
+	var v osVersion
+	mainthread.RunOnMain(func() {
+		withPool(func() {
+			info := send(class("NSProcessInfo"), "processInfo")
+			v = mainthread.Forward[osVersion](msgSendStret, info, sel("operatingSystemVersion"))
+		})
+	})
+	return v.Major
+})
+
 func title(p Permission, t string) string {
 	// macOS 27 renamed Accessibility; its anchor stays.
-	if p == Accessibility && loadCore() == nil && macMajor >= 27 {
+	if p == Accessibility && macMajor() >= 27 {
 		return "Device Control and Data Access"
 	}
 	return t
@@ -231,13 +262,12 @@ func granted(ok bool) Status {
 	return Denied
 }
 
-func check(p Permission) (st Status, err error) {
+func check(p Permission) (Status, error) {
 	if err := loadCore(); err != nil {
 		return Unknown, err
 	}
 	switch p {
 	case Accessibility:
-		return granted(axIsProcessTrusted()), nil
 	case ScreenRecording:
 		return granted(cgPreflightScreenCaptureAccess()), nil
 	case InputMonitoring:
@@ -248,30 +278,39 @@ func check(p Permission) (st Status, err error) {
 		if err := loadAVFoundation(); err != nil {
 			return Unknown, err
 		}
-		withPool(func() {
-			st = tccStatus(objc.Send[int](class("AVCaptureDevice"), sel("authorizationStatusForMediaType:"), mediaType(p)))
-		})
-		return st, nil
 	case Calendars, Reminders:
 		if _, err := loadFramework(eventKitPath); err != nil {
 			return Unknown, err
 		}
-		withPool(func() {
-			st = tccStatus(objc.Send[int](class("EKEventStore"), sel("authorizationStatusForEntityType:"), entityType(p)))
-		})
-		return st, nil
 	case Bluetooth:
 		if _, err := loadFramework(coreBluetoothPath); err != nil {
 			return Unknown, err
 		}
-		cb := class("CBManager")
-		if cb == 0 || !objc.Send[bool](cb, sel("respondsToSelector:"), sel("authorization")) {
-			return Unknown, nil
-		}
-		withPool(func() { st = tccStatus(objc.Send[int](cb, sel("authorization"))) })
-		return st, nil
+	default:
+		return Unknown, nil
 	}
-	return Unknown, nil
+	var st Status
+	mainthread.RunOnMain(func() {
+		withPool(func() { st = frameworkStatus(p) })
+	})
+	return st, nil
+}
+
+// frameworkStatus asks the framework of p for its status.
+func frameworkStatus(p Permission) Status {
+	switch p {
+	case Accessibility:
+		return granted(mainthread.Forward[bool](axIsProcessTrusted))
+	case Microphone, Camera:
+		return tccStatus(mainthread.Send[int](class("AVCaptureDevice"), sel("authorizationStatusForMediaType:"), mediaType(p)))
+	case Calendars, Reminders:
+		return tccStatus(mainthread.Send[int](class("EKEventStore"), sel("authorizationStatusForEntityType:"), entityType(p)))
+	}
+	cb := class("CBManager")
+	if cb == 0 || !mainthread.Send[bool](cb, sel("respondsToSelector:"), sel("authorization")) {
+		return Unknown
+	}
+	return tccStatus(mainthread.Send[int](cb, sel("authorization")))
 }
 
 func mediaType(p Permission) objc.ID {
@@ -316,17 +355,19 @@ func fullDiskAccess() Status {
 // bundle asks for the app that started it.
 func usageDescription(keys ...string) error {
 	var err error
-	withPool(func() {
-		b := class("NSBundle").Send(sel("mainBundle"))
-		if !strings.HasSuffix(goString(b.Send(sel("bundlePath"))), ".app") {
-			return
-		}
-		for _, k := range keys {
-			if b.Send(sel("objectForInfoDictionaryKey:"), nsString(k)) == 0 {
-				err = fmt.Errorf("%w: add %s to macos.infoPlist", ErrUsageDescription, k)
+	mainthread.RunOnMain(func() {
+		withPool(func() {
+			b := send(class("NSBundle"), "mainBundle")
+			if !strings.HasSuffix(goString(send(b, "bundlePath")), ".app") {
 				return
 			}
-		}
+			for _, k := range keys {
+				if send(b, "objectForInfoDictionaryKey:", nsString(k)) == 0 {
+					err = fmt.Errorf("%w: add %s to macos.infoPlist", ErrUsageDescription, k)
+					return
+				}
+			}
+		})
 	})
 	return err
 }
@@ -347,12 +388,7 @@ func request(ctx context.Context, p Permission) (Status, error) {
 		if st == Granted {
 			return st, nil
 		}
-		withPool(func() {
-			opts := class("NSDictionary").Send(sel("dictionaryWithObject:forKey:"),
-				class("NSNumber").Send(sel("numberWithBool:"), true), nsString("AXTrustedCheckOptionPrompt"))
-			st = granted(axIsProcessTrustedWithOptions(opts))
-		})
-		return st, nil
+		return promptAccessibility(), nil
 	case ScreenRecording:
 		if st == Granted {
 			return st, nil
@@ -368,13 +404,13 @@ func request(ctx context.Context, p Permission) (Status, error) {
 		return st, nil
 	}
 	done := make(chan struct{}, 1)
-	blk := objc.NewBlock(func(objc.Block, bool, objc.ID) {
+	blk := mainthread.Block(objc.NewBlock(func(objc.Block, bool, objc.ID) {
 		select {
 		case done <- struct{}{}:
 		default:
 		}
-	})
-	defer blk.Release()
+	}))
+	defer mainthread.ByReceiver(blockRelease, uintptr(blk))
 	switch p {
 	case Microphone, Camera:
 		key := "NSMicrophoneUsageDescription"
@@ -384,11 +420,9 @@ func request(ctx context.Context, p Permission) (Status, error) {
 		if err := usageDescription(key); err != nil {
 			return st, err
 		}
-		withPool(func() {
-			class("AVCaptureDevice").Send(sel("requestAccessForMediaType:completionHandler:"), mediaType(p), blk)
-		})
+		askDevice(p, blk)
 	case Calendars, Reminders:
-		modern := objc.Send[bool](class("EKEventStore"), sel("instancesRespondToSelector:"), sel("requestFullAccessToEventsWithCompletion:"))
+		modern := fullEventAccess()
 		keys := []string{"NSCalendarsUsageDescription"}
 		if p == Reminders {
 			keys = []string{"NSRemindersUsageDescription"}
@@ -399,33 +433,12 @@ func request(ctx context.Context, p Permission) (Status, error) {
 		if err := usageDescription(keys...); err != nil {
 			return st, err
 		}
-		requestMu.Lock()
-		if eventStore == 0 {
-			eventStore = class("EKEventStore").Send(sel("alloc")).Send(sel("init"))
-		}
-		store := eventStore
-		requestMu.Unlock()
-		withPool(func() {
-			switch {
-			case modern && p == Calendars:
-				store.Send(sel("requestFullAccessToEventsWithCompletion:"), blk)
-			case modern:
-				store.Send(sel("requestFullAccessToRemindersWithCompletion:"), blk)
-			default:
-				store.Send(sel("requestAccessToEntityType:completion:"), entityType(p), blk)
-			}
-		})
+		askEvents(p, modern, blk)
 	case Bluetooth:
 		if err := usageDescription("NSBluetoothAlwaysUsageDescription"); err != nil {
 			return st, err
 		}
-		requestMu.Lock()
-		if centralManager == 0 {
-			// Its delegate would hear of the state of the radio:
-			// the prompt shows without one.
-			centralManager = class("CBCentralManager").Send(sel("alloc")).Send(sel("initWithDelegate:queue:"), objc.ID(0), objc.ID(0))
-		}
-		requestMu.Unlock()
+		startBluetooth()
 		// CoreBluetooth calls no block: wait for the status to change.
 		return waitDetermined(ctx, p)
 	default:
@@ -437,6 +450,69 @@ func request(ctx context.Context, p Permission) (Status, error) {
 		return st, ctx.Err()
 	}
 	return check(p)
+}
+
+// promptAccessibility shows the system's prompt for Accessibility.
+func promptAccessibility() (st Status) {
+	mainthread.RunOnMain(func() {
+		withPool(func() {
+			opts := send(class("NSDictionary"), "dictionaryWithObject:forKey:",
+				send(class("NSNumber"), "numberWithBool:", true), nsString("AXTrustedCheckOptionPrompt"))
+			st = granted(mainthread.Forward[bool](axIsProcessTrustedWithOptions, opts))
+		})
+	})
+	return st
+}
+
+// askDevice asks for the microphone or the camera.
+func askDevice(p Permission, done objc.Block) {
+	mainthread.RunOnMain(func() {
+		withPool(func() {
+			send(class("AVCaptureDevice"), "requestAccessForMediaType:completionHandler:", mediaType(p), done)
+		})
+	})
+}
+
+// fullEventAccess reports whether EventKit asks for full access.
+func fullEventAccess() (full bool) {
+	mainthread.RunOnMain(func() {
+		full = mainthread.Send[bool](class("EKEventStore"), sel("instancesRespondToSelector:"), sel("requestFullAccessToEventsWithCompletion:"))
+	})
+	return full
+}
+
+// askEvents asks for calendars or reminders.
+func askEvents(p Permission, full bool, done objc.Block) {
+	mainthread.RunOnMain(func() {
+		requestMu.Lock()
+		defer requestMu.Unlock()
+		if eventStore == 0 {
+			eventStore = send(send(class("EKEventStore"), "alloc"), "init")
+		}
+		withPool(func() {
+			switch {
+			case full && p == Calendars:
+				send(eventStore, "requestFullAccessToEventsWithCompletion:", done)
+			case full:
+				send(eventStore, "requestFullAccessToRemindersWithCompletion:", done)
+			default:
+				send(eventStore, "requestAccessToEntityType:completion:", entityType(p), done)
+			}
+		})
+	})
+}
+
+// startBluetooth makes the central manager, which shows the prompt.
+func startBluetooth() {
+	mainthread.RunOnMain(func() {
+		requestMu.Lock()
+		defer requestMu.Unlock()
+		if centralManager == 0 {
+			// Its delegate would hear of the state of the radio:
+			// the prompt shows without one.
+			centralManager = send(send(class("CBCentralManager"), "alloc"), "initWithDelegate:queue:", objc.ID(0), objc.ID(0))
+		}
+	})
 }
 
 // waitDetermined waits until the user has answered for p.
@@ -463,9 +539,9 @@ func openSettings(p Permission) error {
 	ok := false
 	mygo.RunOnMain(func() {
 		withPool(func() {
-			u := class("NSURL").Send(sel("URLWithString:"), nsString(macSettingsURL(p)))
-			ws := class("NSWorkspace").Send(sel("sharedWorkspace"))
-			ok = objc.Send[bool](ws, sel("openURL:"), u)
+			u := send(class("NSURL"), "URLWithString:", nsString(macSettingsURL(p)))
+			ws := send(class("NSWorkspace"), "sharedWorkspace")
+			ok = mainthread.Send[bool](ws, sel("openURL:"), u)
 		})
 	})
 	if !ok {
