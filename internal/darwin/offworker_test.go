@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -41,6 +42,31 @@ var offWorkerCalls = []offWorkerCall{
 			}
 		}
 		return fmt.Errorf("no Finder in %d applications", len(apps))
+	}},
+	{"ReplaceFile", 0, func(b *Backend, dir string) error {
+		target, replacement := filepath.Join(dir, "target"), filepath.Join(dir, "replacement")
+		if err := os.WriteFile(target, []byte("old"), 0o644); err != nil {
+			return err
+		}
+		if err := os.WriteFile(replacement, []byte("new"), 0o644); err != nil {
+			return err
+		}
+		if err := b.ReplaceFile(target, replacement); err != nil {
+			return err
+		}
+		got, err := os.ReadFile(target)
+		if err != nil {
+			return err
+		}
+		if string(got) != "new" {
+			return fmt.Errorf("the target holds %q", got)
+		}
+		// The replacement is gone: the system says why.
+		err = b.ReplaceFile(target, replacement)
+		if err == nil || strings.Contains(err.Error(), "cannot replace the file") {
+			return fmt.Errorf("replacing with a file that is gone: %v", err)
+		}
+		return nil
 	}},
 }
 
@@ -109,6 +135,7 @@ func offWorkerMain() int {
 		classMethod bool
 	}{
 		{"NSFileManager", "displayNameAtPath:", false},
+		{"NSURL", "fileURLWithPath:", true},
 	} {
 		if err := drainAfterEachCall(m.cls, m.method, m.classMethod, &forwarded); err != nil {
 			return fail(err)

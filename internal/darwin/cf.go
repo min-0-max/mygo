@@ -15,9 +15,10 @@ import (
 // address (…Fn) run on the main thread (mainthread.Forward), or by their
 // receiver (mainthread.ByReceiver) for CFRelease.
 var (
-	cfRunLoopGetMain      func() uintptr
-	cfRunLoopAddSource    func(rl, src, mode uintptr)
-	kCFRunLoopCommonModes uintptr
+	cfRunLoopGetMain       func() uintptr
+	cfRunLoopAddSource     func(rl, src, mode uintptr)
+	kCFRunLoopCommonModes  uintptr
+	cfErrorCopyDescription func(err id) uintptr
 
 	cfRunLoopSourceCreateFn, cfReleaseFn uintptr
 
@@ -102,6 +103,7 @@ func loadCF() {
 	purego.RegisterLibFunc(&cfRunLoopGetMain, libCF, "CFRunLoopGetMain")
 	cfRunLoopSourceCreateFn = mustDlsym(libCF, "CFRunLoopSourceCreate")
 	purego.RegisterLibFunc(&cfRunLoopAddSource, libCF, "CFRunLoopAddSource")
+	purego.RegisterLibFunc(&cfErrorCopyDescription, libCF, "CFErrorCopyDescription")
 	cfRunLoopSourceSignalFn = mustDlsym(libCF, "CFRunLoopSourceSignal")
 	cfRunLoopWakeUpFn = mustDlsym(libCF, "CFRunLoopWakeUp")
 	cfReleaseFn = mustDlsym(libCF, "CFRelease")

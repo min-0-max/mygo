@@ -12,6 +12,9 @@ import (
 // replaceItemAtURL:withItemAtURL:…], NSDocument's safe save: the target
 // keeps its permissions, creation date, extended attributes (Finder tags,
 // Finder info) and ACLs, and its identity, so that aliases still find it.
+// It runs on the calling thread, which saves a document off the main
+// thread: the URLs and the error are autoreleased in a pool of this
+// thread.
 func (*Backend) ReplaceFile(target, replacement string) error {
 	if _, err := os.Lstat(target); os.IsNotExist(err) {
 		return os.Rename(replacement, target)
@@ -19,14 +22,17 @@ func (*Backend) ReplaceFile(target, replacement string) error {
 	load()
 	var err error
 	withPool(func() {
-		fm := send(class("NSFileManager"), "defaultManager")
+		fm := sendHere(class("NSFileManager"), "defaultManager")
 		var nsErr id
-		ok := sendBool(fm, "replaceItemAtURL:withItemAtURL:backupItemName:options:resultingItemURL:error:",
-			uintptr(fileURL(target)), uintptr(fileURL(replacement)), 0, 0, 0, uintptr(unsafe.Pointer(&nsErr)))
+		ok := byte(sendHere(fm, "replaceItemAtURL:withItemAtURL:backupItemName:options:resultingItemURL:error:",
+			uintptr(fileURL(target)), uintptr(fileURL(replacement)), 0, 0, 0, uintptr(unsafe.Pointer(&nsErr)))) != 0
 		if !ok {
 			msg := "cannot replace the file"
 			if nsErr != 0 {
-				msg = goString(send(nsErr, "localizedDescription"))
+				// An NSError is a CFError.
+				desc := cfErrorCopyDescription(nsErr)
+				msg = goString(id(desc))
+				cfRelease(desc)
 			}
 			err = &os.LinkError{Op: "replace", Old: replacement, New: target, Err: errors.New(msg)}
 		}

@@ -215,7 +215,7 @@ var CallingThreadReceivers = []Receivers{
 		Name: "Foundation value objects that release on the calling thread",
 		Classes: []string{
 			"NSString", "NSMutableString", "NSAttributedString", "NSMutableAttributedString",
-			"NSNumber", "NSData", "NSMutableData",
+			"NSNumber", "NSData", "NSMutableData", "NSURL",
 		},
 		ClassMessages: true,
 		AllMessages:   true,
@@ -301,7 +301,7 @@ var CallingThreadFunctions = []FunctionGroup{
 		Names: []string{"CFHash", "CFEqual"},
 		Prefixes: []string{
 			"CFString", "CFAttributedString", "CFNumber", "CFData",
-			"CFArray", "CFDictionary", "CFSet",
+			"CFArray", "CFDictionary", "CFSet", "CFError",
 		},
 		Except: []string{"CFStringTokenizer", "CFNumberFormatter"},
 	},

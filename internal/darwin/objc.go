@@ -516,7 +516,7 @@ func filePathURLBytes(b []byte) []byte {
 }
 
 func fileURL(path string) id {
-	return send(class("NSURL"), "fileURLWithPath:", uintptr(nsString(path)))
+	return sendHere(class("NSURL"), "fileURLWithPath:", uintptr(nsString(path)))
 }
 
 // newDictionary returns an owned (+1) empty NSMutableDictionary, made on
