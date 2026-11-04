@@ -844,6 +844,9 @@ func roleDefaults(r MenuRole) (label, accel string) {
 func roleSubmenu(r MenuRole) []*MenuItem {
 	mac := runtime.GOOS == "darwin"
 	switch r {
+	case RoleServices:
+		// The system fills this submenu with the services.
+		return []*MenuItem{}
 	case RoleAppMenu:
 		return []*MenuItem{
 			{Role: RoleAbout},
