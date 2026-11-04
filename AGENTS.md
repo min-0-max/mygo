@@ -36,7 +36,8 @@ wire protocol, TypeScript generation, and the checklist for adding features.
   `internal/darwin/mainthread` during a step among them: every native call
   goes through `mainthread` (`Send`, `Forward`, `ByReceiver`) or runs on the
   calling thread as its `calls.go` decides, and every method, block and C
-  callback that mygo makes enters through `Method`, `Block` or `Callback`.
+  callback that mygo makes enters through `Method`, `Block` or `Callback`
+  (classes through `mainthread.RegisterClass`).
 - **purego callbacks are a scarce, never-freed resource.** Create them once
   per signature at startup and route by user data, never per window or call.
 - **Apps pay only for what they use.** A feature must not grow apps that

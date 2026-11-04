@@ -340,8 +340,8 @@ a goroutine locked to a thread other than the main thread.
   as another step and ends the worker (`Stop`). The main thread waits for
   a step on its own stack and meanwhile runs the calls that the worker
   forwards to it.
-- Each method of a class that mygo registers (`classDef` sets each
-  implementation to `mainthread.Method`), each block that it makes
+- Each method of a class that mygo registers (`mainthread.RegisterClass`
+  sets each implementation to `mainthread.Method`), each block that it makes
   (`mainthread.Block`) and each C callback that it passes
   (`mainthread.Callback`) enters through an assembly trampoline. Called on
   the main thread while the worker runs, a trampoline hands the call to
@@ -373,7 +373,10 @@ a goroutine locked to a thread other than the main thread.
 - `TestCallSitesGoThroughTheWorker` reads every package of the module and
   fails for a native call site that neither goes through `Forward` (and
   the functions built on it) nor runs on the calling thread as `calls.go`
-  decides.
+  decides, for a `purego.NewCallback`, `objc.NewBlock` or `objc.NewIMP`
+  that is not the argument of `Callback`, `Block` or `Method`, and for a
+  class registered with `objc.RegisterClass` instead of
+  `mainthread.RegisterClass`.
 
 ### Linux (`internal/linux`)
 

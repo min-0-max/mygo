@@ -704,12 +704,44 @@ func (r *reader) readConfig(root string, c buildConfig, extra *extraPackage) err
 				names = append(names, e.Name())
 			}
 		}
-		p, err := u.check(extra.path, extra.dir, names)
+		// Each directory below dir holds a package of the test too, which
+		// imports the one in dir by its path.
+		var subs []string
+		err = filepath.WalkDir(extra.dir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || !d.IsDir() || path == extra.dir {
+				return err
+			}
+			entries, err := os.ReadDir(path)
+			if err != nil {
+				return err
+			}
+			l := listed{Dir: path}
+			for _, e := range entries {
+				if strings.HasSuffix(e.Name(), ".go") {
+					l.GoFiles = append(l.GoFiles, e.Name())
+				}
+			}
+			rel, err := filepath.Rel(extra.dir, path)
+			if err != nil {
+				return err
+			}
+			l.ImportPath = extra.path + "/" + filepath.ToSlash(rel)
+			u.module[l.ImportPath] = l
+			subs = append(subs, l.ImportPath)
+			return nil
+		})
 		if err != nil {
 			return err
 		}
-		p.scan = true
-		scanned = append(scanned, p)
+		u.module[extra.path] = listed{ImportPath: extra.path, Dir: extra.dir, GoFiles: names}
+		for _, path := range append([]string{extra.path}, subs...) {
+			if _, err := u.Import(path); err != nil {
+				return err
+			}
+			p := u.checked[path]
+			p.scan = true
+			scanned = append(scanned, p)
+		}
 	} else {
 		paths := make([]string, 0, len(u.module))
 		for path := range u.module {
@@ -986,6 +1018,9 @@ func (a *analysis) run() {
 	a.methodSelectors()
 	for _, f := range a.fns {
 		a.primitives(f)
+	}
+	for _, p := range a.pkgs {
+		a.entries(p)
 	}
 	for {
 		for len(a.worklist) > 0 {
@@ -1266,6 +1301,104 @@ func (a *analysis) indexComposite(p *srcPackage, lit *ast.CompositeLit) {
 				a.litVars[v] = append(a.litVars[v], &fn{lit: fl})
 			}
 		}
+	}
+}
+
+// --- entries ---
+
+// entries holds the code that native code calls to the trampolines of the
+// worker: outside the worker package, each purego.NewCallback, objc.NewBlock
+// and objc.NewIMP is the argument of the function of the worker that makes
+// its trampoline (through conversions only), and objc.RegisterClass is a
+// finding, because a class is registered through the worker's
+// RegisterClass.
+func (a *analysis) entries(p *srcPackage) {
+	if !p.scan || p.path == a.r.rules.workerPackage {
+		return
+	}
+	// wrapped holds each argument of a function of the worker that makes a
+	// trampoline, with that function's name.
+	wrapped := map[*ast.CallExpr]string{}
+	called := func(call *ast.CallExpr) *types.Func {
+		var id *ast.Ident
+		switch f := ast.Unparen(call.Fun).(type) {
+		case *ast.Ident:
+			id = f
+		case *ast.SelectorExpr:
+			id = f.Sel
+		default:
+			return nil
+		}
+		f, _ := p.info.Uses[id].(*types.Func)
+		if f == nil || f.Pkg() == nil {
+			return nil
+		}
+		return f
+	}
+	for _, file := range p.files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok || len(call.Args) == 0 {
+				return true
+			}
+			f := called(call)
+			if f == nil || f.Pkg().Path() != a.r.rules.workerPackage {
+				return true
+			}
+			switch f.Name() {
+			case CallbackFunc, BlockFunc, MethodFunc:
+				if inner, ok := a.unconvert(p, call.Args[0]).(*ast.CallExpr); ok {
+					wrapped[inner] = f.Name()
+				}
+			}
+			return true
+		})
+	}
+	for _, file := range p.files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			f := called(call)
+			if f == nil {
+				return true
+			}
+			var msg string
+			var through []string
+			switch path, name := f.Pkg().Path(), f.Name(); {
+			case path == a.r.rules.purego && name == "NewCallback":
+				msg, through = "makes a C callback outside Callback or Method", []string{CallbackFunc, MethodFunc}
+			case path == a.r.rules.objcPk && name == "NewBlock":
+				msg, through = "makes a block outside Block", []string{BlockFunc}
+			case path == a.r.rules.objcPk && name == "NewIMP":
+				msg, through = "makes a method implementation outside Method", []string{MethodFunc}
+			case path == a.r.rules.objcPk && name == "RegisterClass":
+				msg = "registers a class outside " + RegisterClassFunc
+			default:
+				return true
+			}
+			a.r.stats.judged++
+			if slices.Contains(through, wrapped[call]) {
+				a.r.stats.accepted++
+				return true
+			}
+			a.report(call.Pos(), msg)
+			return true
+		})
+	}
+}
+
+// unconvert returns e without its parentheses and the type conversions
+// around it.
+func (a *analysis) unconvert(p *srcPackage, e ast.Expr) ast.Expr {
+	for {
+		e = ast.Unparen(e)
+		call, ok := e.(*ast.CallExpr)
+		if !ok || len(call.Args) != 1 || !p.info.Types[call.Fun].IsType() {
+			return e
+		}
+		e = call.Args[0]
 	}
 }
 

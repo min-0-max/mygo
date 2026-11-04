@@ -1354,7 +1354,7 @@ type cgPathElement struct {
 // segments. The text system's lock serializes its callers.
 func glyphOutline(font uintptr, glyph uint16) [][4]float64 {
 	outlineOnce.Do(func() {
-		outlineFn = purego.NewCallback(func(_ uintptr, el *cgPathElement) uintptr {
+		outlineFn = mainthread.Callback(purego.NewCallback(func(_ uintptr, el *cgPathElement) uintptr {
 			pt := func(i int) [2]float64 {
 				p := unsafe.Slice(el.points, i+1)[i]
 				return [2]float64{p.x, p.y}
@@ -1383,7 +1383,7 @@ func glyphOutline(font uintptr, glyph uint16) [][4]float64 {
 				line(outlineFrom)
 			}
 			return 0
-		})
+		}))
 	})
 	outlineSegs = outlineSegs[:0]
 	path := ct.fontCreatePath(font, glyph, 0)

@@ -6,7 +6,6 @@ package darwin
 
 import (
 	"fmt"
-	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -46,12 +45,6 @@ var (
 	// Functions on hot paths, called by address: RegisterFunc's wrappers
 	// use reflection and allocate on every call.
 	poolPushFn, poolPopFn uintptr
-
-	// method_getImplementation and method_setImplementation, with which
-	// classDef has the methods of a class enter through the worker.
-	methodImplementation    func(m uintptr) uintptr
-	setMethodImplementation func(m, imp uintptr) uintptr
-	instanceMethod          func(cls id, s objc.SEL) uintptr
 )
 
 // The messages that take or return floats or structs, which run on the
@@ -212,9 +205,6 @@ func load() {
 		poolPopFn = mustDlsym(libObjC, "objc_autoreleasePoolPop")
 		blockCopyFn = mustDlsym(libObjC, "_Block_copy")
 		blockReleaseFn = mustDlsym(libObjC, "_Block_release")
-		purego.RegisterLibFunc(&methodImplementation, libObjC, "method_getImplementation")
-		purego.RegisterLibFunc(&setMethodImplementation, libObjC, "method_setImplementation")
-		purego.RegisterLibFunc(&instanceMethod, libObjC, "class_getInstanceMethod")
 		loadCF()
 	})
 }
@@ -618,17 +608,11 @@ func classDef(name, super string, protocols []string, methods []objc.MethodDef) 
 			ps = append(ps, proto)
 		}
 	}
-	c, err := objc.RegisterClass(name, objc.GetClass(super), ps, nil, methods)
-	if err != nil {
-		panic(fmt.Sprintf("mygo: cannot register class %s: %v", name, err))
-	}
 	// Each method enters through a trampoline of the worker, which runs it
 	// on the worker when the main thread calls it.
-	for _, m := range methods {
-		meth := instanceMethod(id(c), m.Cmd)
-		t := reflect.TypeOf(m.Fn)
-		returnsObject := t.NumOut() == 1 && t.Out(0) == reflect.TypeFor[id]()
-		setMethodImplementation(meth, mainthread.Method(methodImplementation(meth), returnsObject))
+	c, err := mainthread.RegisterClass(name, objc.GetClass(super), ps, nil, methods)
+	if err != nil {
+		panic(fmt.Sprintf("mygo: cannot register class %s: %v", name, err))
 	}
 	selMu.Lock()
 	clsCache[name] = id(c)

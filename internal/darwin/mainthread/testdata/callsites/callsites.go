@@ -42,6 +42,17 @@ func ByReceiver(fn uintptr, args ...uintptr) uintptr {
 	return r
 }
 
+// Callback, Block and Method return the trampoline of a C callback, a
+// block and a method implementation, and RegisterClass registers a class
+// whose methods enter through trampolines.
+func Callback(fn uintptr) uintptr                    { return fn }
+func Block(b objc.Block) objc.Block                  { return b }
+func Method(imp uintptr, returnsObject bool) uintptr { return imp }
+
+func RegisterClass(name string, super objc.Class, protocols []*objc.Protocol, ivars []objc.FieldDef, methods []objc.MethodDef) (objc.Class, error) {
+	return 0, nil
+}
+
 func sym(name string) uintptr {
 	p, err := purego.Dlsym(lib, name)
 	if err != nil {

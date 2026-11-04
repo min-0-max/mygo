@@ -112,6 +112,12 @@ var native struct {
 	sourceContext       [10]uintptr
 	semaphores          []uint32
 	semaphoresMu        sync.Mutex
+
+	// The functions with which RegisterClass sets the implementations of
+	// the methods of a class.
+	classGetInstanceMethod  func(cls uintptr, sel objc.SEL) uintptr
+	methodGetImplementation func(m uintptr) uintptr
+	methodSetImplementation func(m, imp uintptr) uintptr
 }
 
 // loadNative resolves the C functions of the worker.
@@ -152,6 +158,9 @@ func resolve() error {
 	purego.RegisterLibFunc(&native.runLoopWakeUp, cf, "CFRunLoopWakeUp")
 	purego.RegisterLibFunc(&native.runLoopGetMain, cf, "CFRunLoopGetMain")
 	purego.RegisterLibFunc(&native.runLoopAddSource, cf, "CFRunLoopAddSource")
+	purego.RegisterLibFunc(&native.classGetInstanceMethod, libObjC, "class_getInstanceMethod")
+	purego.RegisterLibFunc(&native.methodGetImplementation, libObjC, "method_getImplementation")
+	purego.RegisterLibFunc(&native.methodSetImplementation, libObjC, "method_setImplementation")
 	if p := sym(cf, "kCFRunLoopCommonModes"); p != 0 {
 		native.runLoopCommonModes = *word(p)
 	}

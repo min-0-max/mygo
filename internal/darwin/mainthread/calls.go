@@ -39,6 +39,21 @@ const (
 	ByReceiverFunc = "ByReceiver"
 )
 
+// The functions of this package through which mygo makes the code that
+// native code calls, so that it enters through a trampoline of the
+// worker: a C callback that purego.NewCallback makes goes through
+// CallbackFunc, or MethodFunc for a method implementation; a block that
+// objc.NewBlock makes through BlockFunc; a method implementation that
+// objc.NewIMP makes through MethodFunc; and a class is registered only
+// through RegisterClassFunc, which sets each implementation of its
+// methods to a trampoline. Each goes directly into its function.
+const (
+	CallbackFunc      = "Callback"
+	BlockFunc         = "Block"
+	MethodFunc        = "Method"
+	RegisterClassFunc = "RegisterClass"
+)
+
 // SendFuncs name the functions that send a message through the function
 // named ForwardFunc: their first argument is the receiver and their second
 // the selector.
