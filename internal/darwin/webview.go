@@ -7,7 +7,6 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
 
 	"github.com/egoist/mygo/internal/darwin/mainthread"
@@ -118,13 +117,12 @@ func (s *surface) PlaceWebViews(views []platform.WebViewPlacement) {
 }
 
 var (
-	paneOnce        sync.Once
-	msgPointToLayer func(obj id, sel objc.SEL, p NSPoint) NSPoint
-	cgPathCreate    func() uintptr
-	cgPathMoveTo    func(path, transform uintptr, x, y float64)
-	cgPathArcTo     func(path, transform uintptr, x1, y1, x2, y2, radius float64)
-	cgPathClose     func(path uintptr)
-	cgPathRelease   func(path uintptr)
+	paneOnce      sync.Once
+	cgPathCreate  func() uintptr
+	cgPathMoveTo  func(path, transform uintptr, x, y float64)
+	cgPathArcTo   func(path, transform uintptr, x1, y1, x2, y2, radius float64)
+	cgPathClose   func(path uintptr)
+	cgPathRelease func(path uintptr)
 )
 
 // roundPane cuts the pane of the web view w, its bounds width by height,
@@ -132,12 +130,11 @@ var (
 // as continuous as the content's when they are the same.
 func (w *window) roundPane(radii [4]float64, width, height float64) {
 	paneOnce.Do(func() {
-		purego.RegisterFunc(&msgPointToLayer, msgSendAddr)
-		purego.RegisterLibFunc(&cgPathCreate, libCG, "CGPathCreateMutable")
-		purego.RegisterLibFunc(&cgPathMoveTo, libCG, "CGPathMoveToPoint")
-		purego.RegisterLibFunc(&cgPathArcTo, libCG, "CGPathAddArcToPoint")
-		purego.RegisterLibFunc(&cgPathClose, libCG, "CGPathCloseSubpath")
-		purego.RegisterLibFunc(&cgPathRelease, libCG, "CGPathRelease")
+		mainthread.Bind(&cgPathCreate, libCG, "CGPathCreateMutable")
+		mainthread.Bind(&cgPathMoveTo, libCG, "CGPathMoveToPoint")
+		mainthread.Bind(&cgPathArcTo, libCG, "CGPathAddArcToPoint")
+		mainthread.Bind(&cgPathClose, libCG, "CGPathCloseSubpath")
+		mainthread.Bind(&cgPathRelease, libCG, "CGPathRelease")
 	})
 	layer := send(w.pane, "layer")
 	if radii == [4]float64{} {
@@ -147,7 +144,7 @@ func (w *window) roundPane(radii [4]float64, width, height float64) {
 	}
 	// The pane's corners in its layer, which AppKit scales and flips as
 	// it does: by the layer's own transform, or its sublayers'.
-	toLayer := func(x, y float64) NSPoint { return msgPointToLayer(w.pane, sel("convertPointToLayer:"), NSPoint{x, y}) }
+	toLayer := func(x, y float64) NSPoint { return msgPointToPoint(w.pane, sel("convertPointToLayer:"), NSPoint{x, y}) }
 	corners := [4]NSPoint{toLayer(0, 0), toLayer(width, 0), toLayer(width, height), toLayer(0, height)}
 	k := math.Abs(corners[1].X-corners[0].X) / width // the layer's units per the bounds'
 	same, r := true, 0.0

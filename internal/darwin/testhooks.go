@@ -156,9 +156,9 @@ func TestAppPress(handle uintptr, x, y float64, down bool) {
 // (Accessibility).
 func TestPostMouse(x, y float64, down bool) bool {
 	testPostOnce.Do(func() {
-		purego.RegisterLibFunc(&cgPreflightPostEventAccess, libCG, "CGPreflightPostEventAccess")
-		purego.RegisterLibFunc(&cgEventCreateMouseEvent, libCG, "CGEventCreateMouseEvent")
-		purego.RegisterLibFunc(&cgEventPost, libCG, "CGEventPost")
+		mainthread.Bind(&cgPreflightPostEventAccess, libCG, "CGPreflightPostEventAccess")
+		mainthread.Bind(&cgEventCreateMouseEvent, libCG, "CGEventCreateMouseEvent")
+		mainthread.Bind(&cgEventPost, libCG, "CGEventPost")
 	})
 	if !cgPreflightPostEventAccess() {
 		return false
@@ -383,12 +383,12 @@ func TestSecondaryClickAsPrimary(handle uintptr, x, y float64) (ok bool) {
 		return false
 	}
 	testSideOnce.Do(func() {
-		purego.RegisterLibFunc(&cgEventSetIntegerValueField, libCG, "CGEventSetIntegerValueField")
+		mainthread.Bind(&cgEventSetIntegerValueField, libCG, "CGEventSetIntegerValueField")
 	})
 	testPinchOnce.Do(func() {
-		purego.RegisterLibFunc(&cgEventSetType, libCG, "CGEventSetType")
-		purego.RegisterLibFunc(&cgEventSetDoubleValueField, libCG, "CGEventSetDoubleValueField")
-		purego.RegisterLibFunc(&cgEventSetLocation, libCG, "CGEventSetLocation")
+		mainthread.Bind(&cgEventSetType, libCG, "CGEventSetType")
+		mainthread.Bind(&cgEventSetDoubleValueField, libCG, "CGEventSetDoubleValueField")
+		mainthread.Bind(&cgEventSetLocation, libCG, "CGEventSetLocation")
 	})
 	withPool(func() {
 		content := msgRect(send(w.win, "contentView"), sel("frame"))
@@ -1559,11 +1559,11 @@ func TestWindowPixels(handle uintptr) (img *image.RGBA, ok bool) {
 		if err != nil {
 			return // gone from the system
 		}
-		purego.RegisterFunc(&cgWindowListCreateImage, create)
-		purego.RegisterLibFunc(&cgBitmapContextCreate, libCG, "CGBitmapContextCreate")
-		purego.RegisterLibFunc(&cgContextSetInterpolationQuality, libCG, "CGContextSetInterpolationQuality")
-		purego.RegisterLibFunc(&cgContextDrawImage, libCG, "CGContextDrawImage")
-		purego.RegisterLibFunc(&cgContextRelease, libCG, "CGContextRelease")
+		mainthread.BindAddr(&cgWindowListCreateImage, create, "CGWindowListCreateImage")
+		mainthread.Bind(&cgBitmapContextCreate, libCG, "CGBitmapContextCreate")
+		mainthread.Bind(&cgContextSetInterpolationQuality, libCG, "CGContextSetInterpolationQuality")
+		mainthread.Bind(&cgContextDrawImage, libCG, "CGContextDrawImage")
+		mainthread.Bind(&cgContextRelease, libCG, "CGContextRelease")
 	})
 	if cgWindowListCreateImage == nil {
 		return nil, false
