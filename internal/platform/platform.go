@@ -479,6 +479,10 @@ type WindowOptions struct {
 	// itself fills, instead of a webview: Window.Surface returns it, the
 	// webview methods do nothing and the webview options are ignored.
 	Surface bool
+	// DrawWhileOccluded has the Surface give the frames the content asks
+	// for while nothing of the window shows, rather than wait until some
+	// of it does.
+	DrawWhileOccluded bool
 }
 
 // DataStoreOptions describe a website data store (AppController.NewDataStore).

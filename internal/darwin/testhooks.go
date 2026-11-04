@@ -88,6 +88,16 @@ func TestPerformKeyEquivalent(key string, shift bool) bool {
 	return handled
 }
 
+// TestFrameFirings returns how many times the display link of a window's
+// surface ticked and its frame timer fired (mygoTick:, mygoTimer:), 0 for
+// a window without a surface.
+func TestFrameFirings(handle uintptr) int {
+	if w := theBackend.byNSWindow[id(handle)]; w != nil && w.surface != nil {
+		return w.surface.firings
+	}
+	return 0
+}
+
 // TestOnScreen reports whether some of a window shows on screen, as the
 // window server reports once it put the window there.
 func TestOnScreen(handle uintptr) bool {

@@ -77,9 +77,10 @@ func (w *Window) attachContent() {
 				}
 			}()
 		},
-		DevTools:   w.devTools,
-		Invalidate: w.Invalidate,
-		Ready:      w.readyToShow,
+		DevTools:          w.devTools,
+		DrawWhileOccluded: w.drawWhileOccluded,
+		Invalidate:        w.Invalidate,
+		Ready:             w.readyToShow,
 		Post: func(fn func()) {
 			postMain(func() {
 				if w.native != nil {

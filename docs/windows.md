@@ -41,6 +41,7 @@ on the screen. Sizes and positions are in device-independent pixels.
 | `Title` | the window title; defaults to the app name, and a page's `<title>` replaces it |
 | `URL` | loaded once the window exists; `/` and other URLs without a scheme are pages of the [frontend](frontend.md#how-pages-load) |
 | `Content` | shows [native UI](ui/README.md) that MyGo draws, instead of a page |
+| `DrawWhileOccluded` | has native UI draw the frames it asks for while nothing of the window shows, as when it is hidden, minimized or covered, where they otherwise wait until some of it shows; on macOS they come one display refresh apart, through a timer whenever the window does not show, even covered where its display link may still tick: each frame asked for goes either to the link or to the timer, never both, and the option asks for the frames to draw |
 | `Width`, `Height` | the size of the window, or of what it shows with `UseContentSize` |
 | `X`, `Y` | the top-left corner; the window is centered when both are 0 |
 | `MinWidth`, `MinHeight`, `MaxWidth`, `MaxHeight` | limits of resizing; 0 means none |

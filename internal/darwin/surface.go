@@ -169,6 +169,9 @@ type surface struct {
 	drawn     bool
 	resized   bool
 	lastFrame time.Time
+	// firings counts the ticks of the display link and the firings of
+	// the timer (TestFrameFirings).
+	firings   int
 	soonAfter time.Time
 	framePass uint64
 	cursor    platform.Cursor
@@ -273,7 +276,9 @@ func (s *surface) RequestFrame() {
 	if s.w.closed {
 		return
 	}
-	if s.link != 0 {
+	// The link of a window out of sight does not tick: a window drawing
+	// its frames there (DrawWhileOccluded) paces them with the timer.
+	if s.link != 0 && !(s.w.opts.DrawWhileOccluded && !s.visible()) {
 		switch {
 		case s.linkRunning:
 			s.due = true
@@ -298,12 +303,15 @@ func (s *surface) RequestFrame() {
 	if s.timing {
 		return
 	}
-	// One refresh after the last frame, or at once after a pause.
+	// One refresh after the last frame began, or at once after a pause:
+	// without a link from the backend's queue, with one through the timer,
+	// so that each frame follows a tick or a firing.
 	delay := s.refresh() - time.Since(s.lastFrame)
-	if delay <= 0 {
+	if delay <= 0 && s.link == 0 {
 		s.drawSoon()
 		return
 	}
+	delay = max(delay, 0)
 	s.timing = true
 	withPool(func() {
 		t := msgTimer(class("NSTimer"), sel("timerWithTimeInterval:target:selector:userInfo:repeats:"), delay.Seconds(), s.view, sel("mygoTimer:"), 0, false)
@@ -947,6 +955,9 @@ func registerSurfaceClass() {
 		}),
 		method("mygoTick:", func(self id, _ objc.SEL, link id) {
 			s := b().surfaceOf(self)
+			if s != nil {
+				s.firings++
+			}
 			if s == nil || !s.due && !s.deferred {
 				// No frame was asked for since the last refresh, nor
 				// does the content wait to draw the last one.
@@ -968,6 +979,7 @@ func registerSurfaceClass() {
 		method("mygoTimer:", func(self id, _ objc.SEL, timer id) {
 			// A closed window's view lives until its timer fires.
 			if s := b().surfaceOf(self); s != nil {
+				s.firings++
 				s.timing = false
 				s.frameNow(false)
 			}

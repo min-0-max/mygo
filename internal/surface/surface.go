@@ -63,6 +63,10 @@ type Conn struct {
 	// DevTools tells that the window's developer tools are on
 	// (PageOptions.DevTools): the content then opens its inspector.
 	DevTools bool
+	// DrawWhileOccluded tells that the content draws the frames it asks
+	// for while nothing of the window shows, holding none
+	// (WindowOptions.DrawWhileOccluded).
+	DrawWhileOccluded bool
 	// Invalidate asks for a frame; it is safe from any goroutine.
 	Invalidate func()
 	// Changed asks for a frame built anew after the app changed the state
