@@ -89,6 +89,10 @@ func TestTheCallReaderJudgesEachKindOfCall(t *testing.T) {
 	}
 	rules := defaultRules()
 	rules.workerPackage = "callsites"
+	rules.offWorker = nil
+	for _, name := range []string{"oneMainCall", "noForward", "twoForwards", "reused", "twoMainCalls", "mainInLoop", "throughHelpers"} {
+		rules.offWorker = append(rules.offWorker, offWorkerFunc{path: "callsites/offworker", name: name})
+	}
 	r := newReader(rules)
 	findings, stats, err := r.readDir(root, dir, "callsites")
 	if err != nil {
@@ -184,7 +188,16 @@ type rules struct {
 	functions      []FunctionGroup
 	excludePrefix  []string
 	purego, objcPk string
+	// forwarding are ForwardingFuncs, runOnMain RunOnMainFunc, and
+	// offWorker the functions of OffWorkerFuncs, by import path.
+	forwarding map[string]bool
+	runOnMain  string
+	offWorker  []offWorkerFunc
 }
+
+// offWorkerFunc is a function of OffWorkerFuncs by the import path of its
+// package and its name.
+type offWorkerFunc struct{ path, name string }
 
 func defaultRules() rules {
 	r := rules{
@@ -207,6 +220,11 @@ func defaultRules() rules {
 		functions:     CallingThreadFunctions,
 		purego:        "github.com/ebitengine/purego",
 		objcPk:        "github.com/ebitengine/purego/objc",
+		forwarding:    set(ForwardingFuncs),
+		runOnMain:     RunOnMainFunc,
+	}
+	for _, f := range OffWorkerFuncs {
+		r.offWorker = append(r.offWorker, offWorkerFunc{path: modulePath + "/" + f.Package, name: f.Name})
 	}
 	for i := range CallingThreadReceivers {
 		g := &CallingThreadReceivers[i]
@@ -374,10 +392,13 @@ type reader struct {
 	stats    readStats
 	files    map[string]bool
 	packages map[string]bool
+	// offWorkerRead holds the functions of OffWorkerFuncs that the reader
+	// found.
+	offWorkerRead map[offWorkerFunc]bool
 }
 
 func newReader(r rules) *reader {
-	return &reader{rules: r, findings: map[string]finding{}, files: map[string]bool{}, packages: map[string]bool{}}
+	return &reader{rules: r, findings: map[string]finding{}, files: map[string]bool{}, packages: map[string]bool{}, offWorkerRead: map[offWorkerFunc]bool{}}
 }
 
 // listed is a package as go list describes it.
@@ -567,13 +588,30 @@ func (r *reader) readModule(root string) ([]finding, readStats, error) {
 		}
 	}
 	r.stats.files = len(all)
+	if err := r.offWorkerMissing(); err != nil {
+		return nil, readStats{}, err
+	}
 	return r.sorted(), r.stats, nil
+}
+
+// offWorkerMissing fails for a function of OffWorkerFuncs that the reader
+// did not find.
+func (r *reader) offWorkerMissing() error {
+	for _, e := range r.rules.offWorker {
+		if !r.offWorkerRead[e] {
+			return fmt.Errorf("OffWorkerFuncs names %s of %s, which the reader did not find", e.name, e.path)
+		}
+	}
+	return nil
 }
 
 // readDir reads the package in dir, whose import path is path, outside
 // the module's own packages: the test of the reader.
 func (r *reader) readDir(root, dir, path string) ([]finding, readStats, error) {
 	if err := r.readConfig(root, buildConfig{arch: "arm64"}, &extraPackage{dir: dir, path: path}); err != nil {
+		return nil, readStats{}, err
+	}
+	if err := r.offWorkerMissing(); err != nil {
 		return nil, readStats{}, err
 	}
 	return r.sorted(), r.stats, nil
@@ -1030,6 +1068,7 @@ func (a *analysis) run() {
 			a.instantiate(f)
 		}
 		if !a.unfollowed() {
+			a.offWorker()
 			return
 		}
 	}
@@ -3128,4 +3167,252 @@ func (a *analysis) judge(t tmpl, at token.Pos) {
 	if ok {
 		a.r.stats.accepted++
 	}
+}
+
+// --- the functions that other goroutines call ---
+
+// offWorkerCall is a forwarded call that a function of OffWorkerFuncs
+// reaches outside the function that RunOnMain runs: call is the call in
+// code that only that function reaches, a forwarded call itself or the
+// call of a function that other code reaches too and that makes it.
+type offWorkerCall struct {
+	call *ast.CallExpr
+	main bool // a call of RunOnMain
+	loop bool // in a loop, or reached through a call in one
+}
+
+// offWorker holds each function of OffWorkerFuncs, and each function that
+// it reaches, to the rule of OffWorkerFuncs.
+func (a *analysis) offWorker() {
+	for _, e := range a.r.rules.offWorker {
+		for _, f := range a.fns {
+			if f.obj != nil && f.pkg.scan && f.pkg.path == e.path && f.name == e.name {
+				a.r.offWorkerRead[e] = true
+				a.judgeOffWorker(f, a.offWorkerCalls(f))
+			}
+		}
+	}
+}
+
+// only returns the functions that only entry reaches: entry, the function
+// literals in them, and the functions that the reader sees called from
+// them alone and that nothing uses as a value.
+func (a *analysis) only(entry *fn) map[*fn]bool {
+	own := map[*fn]bool{entry: true}
+	for changed := true; changed; {
+		changed = false
+		for _, f := range a.fns {
+			if own[f] {
+				continue
+			}
+			ok := false
+			switch {
+			case f.lit != nil:
+				ok = own[f.parent]
+			case len(f.sites) > 0 && len(f.escapes) == 0:
+				ok = !slices.ContainsFunc(f.sites, func(s site) bool { return !own[s.in] })
+			}
+			if ok {
+				own[f], changed = true, true
+			}
+		}
+	}
+	return own
+}
+
+// forwardingCall returns the name of the function of ForwardingFuncs that
+// call calls, or "".
+func (a *analysis) forwardingCall(p *srcPackage, call *ast.CallExpr) string {
+	fun := ast.Unparen(call.Fun)
+	switch f := fun.(type) {
+	case *ast.IndexExpr:
+		fun = f.X
+	case *ast.IndexListExpr:
+		fun = f.X
+	}
+	var id *ast.Ident
+	switch f := ast.Unparen(fun).(type) {
+	case *ast.Ident:
+		id = f
+	case *ast.SelectorExpr:
+		id = f.Sel
+	default:
+		return ""
+	}
+	o, _ := p.info.Uses[id].(*types.Func)
+	if o == nil || o.Pkg() == nil || o.Pkg().Path() != a.r.rules.workerPackage || !a.r.rules.forwarding[o.Name()] {
+		return ""
+	}
+	return o.Name()
+}
+
+// offWorkerCalls returns the forwarded calls that entry reaches outside
+// the functions that RunOnMain runs, each once.
+func (a *analysis) offWorkerCalls(entry *fn) []offWorkerCall {
+	own := a.only(entry)
+	var calls []offWorkerCall
+	seen := map[*ast.CallExpr]bool{}
+	type visit struct {
+		f     *fn
+		blame *ast.CallExpr
+		loop  bool
+	}
+	visited := map[visit]bool{}
+	var walk func(f *fn, blame *ast.CallExpr, loop bool)
+	walk = func(f *fn, blame *ast.CallExpr, loop bool) {
+		if visited[visit{f, blame, loop}] {
+			return
+		}
+		visited[visit{f, blame, loop}] = true
+		var loops []ast.Node // the loops around the node visited
+		var stack []ast.Node
+		ast.Inspect(f.body, func(n ast.Node) bool {
+			if n == nil {
+				top := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				if len(loops) > 0 && loops[len(loops)-1] == top {
+					loops = loops[:len(loops)-1]
+				}
+				return true
+			}
+			inLoop := loop || len(loops) > 0
+			switch n := n.(type) {
+			case *ast.FuncLit:
+				if n != f.lit {
+					if g := a.byLit[n]; g != nil {
+						walk(g, blame, inLoop)
+					}
+					return false
+				}
+			case *ast.CallExpr:
+				if name := a.forwardingCall(f.pkg, n); name != "" {
+					at := blame
+					if at == nil {
+						at = n
+					}
+					if !seen[at] {
+						seen[at] = true
+						calls = append(calls, offWorkerCall{call: at, main: name == a.r.rules.runOnMain, loop: inLoop})
+					}
+					// The function that RunOnMain runs runs on the main
+					// thread, where its calls run at once.
+					return false
+				}
+				// A function that the call passes is reached at the call:
+				// a function literal where it is written, any other
+				// function value here. A call through a parameter calls
+				// what the call of its function passed.
+				var callees []*fn
+				if id, ok := ast.Unparen(n.Fun).(*ast.Ident); !ok || !a.isParam(f.pkg, id) {
+					if info := a.classify(f.pkg, n); info.kind == callGo {
+						callees = info.fns
+					}
+				}
+				for _, arg := range n.Args {
+					_, lit := ast.Unparen(arg).(*ast.FuncLit)
+					if _, isFunc := f.pkg.info.TypeOf(arg).Underlying().(*types.Signature); isFunc && !lit {
+						callees = append(callees, a.funcExprValues(f.pkg, arg)...)
+					}
+				}
+				for _, g := range callees {
+					if g == nil || g.pkg.path == a.r.rules.workerPackage {
+						continue
+					}
+					next := blame
+					if next == nil && !own[g] {
+						next = n
+					}
+					walk(g, next, inLoop)
+				}
+			case *ast.ForStmt, *ast.RangeStmt:
+				loops = append(loops, n)
+			}
+			stack = append(stack, n)
+			return true
+		})
+	}
+	walk(entry, nil, false)
+	sort.Slice(calls, func(i, j int) bool { return calls[i].call.Pos() < calls[j].call.Pos() })
+	return calls
+}
+
+// isParam reports whether id names a parameter of a function.
+func (a *analysis) isParam(p *srcPackage, id *ast.Ident) bool {
+	v, ok := p.info.Uses[id].(*types.Var)
+	if !ok {
+		return false
+	}
+	_, ok = a.params[v]
+	return ok
+}
+
+// judgeOffWorker reports the forwarded calls of calls, which entry reaches,
+// that break the rule of OffWorkerFuncs.
+func (a *analysis) judgeOffWorker(entry *fn, calls []offWorkerCall) {
+	rules := &a.r.rules
+	where := ", off the worker in " + entry.name
+	mains := 0
+	for _, c := range calls {
+		a.r.stats.judged++
+		switch {
+		case c.main && c.loop:
+			a.report(c.call.Pos(), "makes "+rules.runOnMain+" in a loop"+where)
+		case c.main && mains > 0:
+			a.report(c.call.Pos(), "makes a second "+rules.runOnMain+where)
+		case c.main:
+			mains++
+			a.r.stats.accepted++
+		default:
+			if from := a.forwardedResult(entry, c, calls); from != nil {
+				p := a.pos(from.Pos())
+				a.report(c.call.Pos(), fmt.Sprintf("forwards the result of the forwarded call at %s:%d%s", filepath.Base(p.Filename), p.Line, where))
+			} else {
+				a.report(c.call.Pos(), "forwards a call outside "+rules.runOnMain+where)
+			}
+		}
+	}
+}
+
+// forwardedResult returns the call of calls whose result c passes on, as
+// an argument or its receiver, directly or through a variable that holds
+// it, or nil.
+func (a *analysis) forwardedResult(entry *fn, c offWorkerCall, calls []offWorkerCall) *ast.CallExpr {
+	forwarded := map[*ast.CallExpr]bool{}
+	for _, o := range calls {
+		if o.call != c.call && !o.main {
+			forwarded[o.call] = true
+		}
+	}
+	var from *ast.CallExpr
+	operands := slices.Clone(c.call.Args)
+	if s, ok := ast.Unparen(c.call.Fun).(*ast.SelectorExpr); ok {
+		operands = append(operands, s.X)
+	}
+	for _, e := range operands {
+		ast.Inspect(e, func(n ast.Node) bool {
+			if from != nil {
+				return false
+			}
+			switch n := n.(type) {
+			case *ast.CallExpr:
+				if forwarded[n] {
+					from = n
+				}
+			case *ast.Ident:
+				for _, p := range a.pkgs {
+					v, ok := p.info.Uses[n].(*types.Var)
+					if !ok {
+						continue
+					}
+					for _, as := range a.assigns[v] {
+						if call, ok := ast.Unparen(as.rhs).(*ast.CallExpr); ok && forwarded[call] {
+							from = call
+						}
+					}
+				}
+			}
+			return true
+		})
+	}
+	return from
 }

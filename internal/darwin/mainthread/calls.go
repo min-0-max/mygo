@@ -59,6 +59,53 @@ const (
 // the selector.
 var SendFuncs = []string{"Send", "SendRetained"}
 
+// RunOnMainFunc names the function that runs a Go function on the main
+// thread as one forwarded call, inside which the calls that the function
+// makes run at once.
+const RunOnMainFunc = "RunOnMain"
+
+// ForwardingFuncs name the functions of this package whose every call is
+// a forwarded call: ForwardFunc, the function that takes the result of
+// one on the main thread, the functions of SendFuncs and RunOnMainFunc.
+var ForwardingFuncs = append([]string{ForwardFunc, "ForwardRetained", RunOnMainFunc}, SendFuncs...)
+
+// OffWorkerFuncs are the functions that other goroutines call while the
+// worker runs: those that platform.Backend lets any goroutine call, the
+// methods that it lets any goroutine call of what they return, and the
+// proxy resolution of netproxy. Outside the function that RunOnMainFunc
+// runs, each of them, and each function that it reaches, makes no
+// forwarded call but one call of RunOnMainFunc at most, and none in a
+// loop. Forwarded one by one from another thread, two calls run in
+// passes of the main run loop of their own, whose autorelease pool drains
+// between them: an object that the first returns is gone when the second
+// uses it.
+var OffWorkerFuncs = []OffWorkerFunc{
+	{"internal/darwin", "Backend.IsMainThread"},
+	{"internal/darwin", "Backend.Signal"},
+	{"internal/darwin", "Backend.Wake"},
+	{"internal/darwin", "Backend.WebViewAvailable"},
+	{"internal/darwin", "Backend.Secrets"},
+	{"internal/darwin", "secrets.SetSecret"},
+	{"internal/darwin", "secrets.Secret"},
+	{"internal/darwin", "secrets.DeleteSecret"},
+	{"internal/darwin", "Backend.Applications"},
+	{"internal/darwin", "Backend.NewFileWatch"},
+	{"internal/darwin", "fseWatch.Add"},
+	{"internal/darwin", "fseWatch.Remove"},
+	{"internal/darwin", "fseWatch.Close"},
+	{"internal/darwin", "Backend.ReplaceFile"},
+	{"internal/darwin", "appController.PreferredLanguages"},
+	{"internal/darwin", "appController.Region"},
+	{"internal/darwin", "appController.SavedLocale"},
+	{"internal/darwin", "appController.Package"},
+	{"netproxy", "system"},
+}
+
+// OffWorkerFunc is a function by its package, as an import path below the
+// module, and its name, after the type of its receiver for a method
+// (Backend.Wake).
+type OffWorkerFunc struct{ Package, Name string }
+
 // MessageSendFunctions are the functions of the Objective-C runtime whose
 // call is a message send: their first argument is the receiver (for the
 // super variants, a struct objc_super that holds it) and their second the

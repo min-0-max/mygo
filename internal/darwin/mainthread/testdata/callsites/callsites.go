@@ -35,6 +35,9 @@ func Send(recv uintptr, s objc.SEL, args ...uintptr) uintptr {
 	return Forward(msgSend, append([]uintptr{recv, uintptr(s)}, args...)...)
 }
 
+// RunOnMain runs fn on the main thread as one forwarded call.
+func RunOnMain(fn func()) { fn() }
+
 // ByReceiver runs a native call on the calling thread or the main thread
 // by its receiver.
 func ByReceiver(fn uintptr, args ...uintptr) uintptr {
