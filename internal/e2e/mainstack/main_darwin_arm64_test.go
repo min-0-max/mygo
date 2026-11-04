@@ -28,6 +28,8 @@ func TestMain(m *testing.M) {
 	switch child := os.Getenv(childEnv); child {
 	case "":
 		os.Exit(m.Run())
+	case "stack":
+		os.Exit(stackChild())
 	case "collector":
 		os.Exit(collectorChild())
 	default:

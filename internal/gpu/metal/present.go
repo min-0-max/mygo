@@ -248,6 +248,7 @@ func (r *Renderer) finishPending(prefetch bool) error {
 		release(&p.cb)
 		return err
 	}
+	r.presenting(drawable)
 	send(p.cb, "presentDrawable:", drawable)
 	byReceiver(p.cb, "commit")
 	if prefetch {

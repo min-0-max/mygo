@@ -1728,8 +1728,10 @@ func (r *Renderer) render(s *scene.Scene) error {
 	if sync {
 		byReceiver(cb, "commit")
 		send(cb, "waitUntilScheduled")
+		r.presenting(drawable)
 		sendMain(drawable, "present")
 	} else {
+		r.presenting(drawable)
 		send(cb, "presentDrawable:", drawable)
 		byReceiver(cb, "commit")
 		// The next frame's drawable, while this one is shown.
@@ -1742,6 +1744,19 @@ func (r *Renderer) render(s *scene.Scene) error {
 		r.sweep()
 	}
 	return nil
+}
+
+// TestPresenting, when set, is called with the layer and the drawable of
+// each frame before the frame requests the drawable's presentation, on
+// the thread that draws the frame. The tests of internal/e2e set it.
+var TestPresenting func(layer, drawable uintptr)
+
+// presenting calls TestPresenting with the drawable that a frame of r
+// presents.
+func (r *Renderer) presenting(drawable id) {
+	if TestPresenting != nil {
+		TestPresenting(r.layer, drawable)
+	}
 }
 
 // prefetched returns the drawable the presenter fetched, autoreleased, or
