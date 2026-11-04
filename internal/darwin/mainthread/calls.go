@@ -345,6 +345,6 @@ var CallingThreadFunctions = []FunctionGroup{
 	},
 	{
 		Name:  "the keychain",
-		Names: []string{"SecItemAdd", "SecItemCopyMatching", "SecItemUpdate", "SecItemDelete"},
+		Names: []string{"SecItemAdd", "SecItemCopyMatching", "SecItemUpdate", "SecItemDelete", "SecCopyErrorMessageString"},
 	},
 }

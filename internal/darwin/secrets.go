@@ -10,7 +10,6 @@ import (
 
 	"github.com/ebitengine/purego"
 
-	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/platform"
 )
 
@@ -79,7 +78,7 @@ func (k *keychainAPI) status(op string, s int32) error {
 		return platform.ErrSecretNotFound
 	}
 	msg := ""
-	if str := mainthread.Forward[uintptr](k.message, s, uintptr(0)); str != 0 {
+	if str, _, _ := purego.SyscallN(k.message, uintptr(s), 0); str != 0 {
 		msg = goString(id(str))
 		cfRelease(str)
 	}
@@ -143,10 +142,7 @@ func (secrets) Secret(service, account string) (secret []byte, err error) {
 			err = errors.New("keychain: read: no data")
 			return
 		}
-		secret = goBytes(id(data))
-		if secret == nil {
-			secret = []byte{}
-		}
+		secret = cfDataBytes(data)
 		cfRelease(data)
 	})
 	return secret, err

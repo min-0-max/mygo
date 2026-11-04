@@ -19,6 +19,8 @@ var (
 	cfRunLoopAddSource     func(rl, src, mode uintptr)
 	kCFRunLoopCommonModes  uintptr
 	cfErrorCopyDescription func(err id) uintptr
+	cfDataGetLength        func(data uintptr) int
+	cfDataGetBytePtr       func(data uintptr) unsafe.Pointer
 
 	cfRunLoopSourceCreateFn, cfReleaseFn uintptr
 
@@ -47,6 +49,16 @@ func cfRunLoopSourceCreate(alloc uintptr, order int, ctx unsafe.Pointer) uintptr
 }
 
 func cfRelease(obj uintptr) { mainthread.ByReceiver(cfReleaseFn, obj) }
+
+// cfDataBytes copies the contents of a CFData on the calling thread, an
+// empty slice for none.
+func cfDataBytes(data uintptr) []byte {
+	n := cfDataGetLength(data)
+	if n == 0 {
+		return []byte{}
+	}
+	return append([]byte(nil), unsafe.Slice((*byte)(cfDataGetBytePtr(data)), n)...)
+}
 
 func lsSetDefaultHandlerForURLScheme(scheme, bundleID id) int32 {
 	return mainthread.Forward[int32](lsSetDefaultHandlerForURLSchemeFn, scheme, bundleID)
@@ -104,6 +116,8 @@ func loadCF() {
 	cfRunLoopSourceCreateFn = mustDlsym(libCF, "CFRunLoopSourceCreate")
 	purego.RegisterLibFunc(&cfRunLoopAddSource, libCF, "CFRunLoopAddSource")
 	purego.RegisterLibFunc(&cfErrorCopyDescription, libCF, "CFErrorCopyDescription")
+	purego.RegisterLibFunc(&cfDataGetLength, libCF, "CFDataGetLength")
+	purego.RegisterLibFunc(&cfDataGetBytePtr, libCF, "CFDataGetBytePtr")
 	cfRunLoopSourceSignalFn = mustDlsym(libCF, "CFRunLoopSourceSignal")
 	cfRunLoopWakeUpFn = mustDlsym(libCF, "CFRunLoopWakeUp")
 	cfReleaseFn = mustDlsym(libCF, "CFRelease")
