@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/internal/wait"
 )
 
@@ -24,19 +25,24 @@ const (
 
 // notifyDelegateMain is the helper process of TestNotificationDelegate,
 // which runs it from an application bundle, where the notification center
-// exists. It gives the center the delegate as Init does, and prints what
-// the center's delegate is then: MyGo's, none or another.
+// exists. It starts the backend with the option of the application, and
+// prints what the center's delegate is then: MyGo's, none or another. The
+// policy keeps the helper out of the Dock.
 func notifyDelegateMain() int {
 	load()
 	b := New()
-	theBackend = b
-	registerNotificationDelegate()
 	if !b.NotificationsSupported() {
 		fmt.Println("the helper process has no notification center: it does not run from an application bundle with UNUserNotificationCenter")
 		return 1
 	}
-	b.noNotificationDelegate = os.Getenv(notifyOwnedEnv) == "1"
-	b.attachNotificationDelegate()
+	err := b.Init(notifyHandler{}, platform.AppOptions{
+		ActivationPolicy:       "prohibited",
+		NoNotificationDelegate: os.Getenv(notifyOwnedEnv) == "1",
+	})
+	if err != nil {
+		fmt.Println(err)
+		return 1
+	}
 	var delegate id
 	withPool(func() { delegate = send(notificationCenter(), "delegate") })
 	switch {
@@ -49,6 +55,10 @@ func notifyDelegateMain() int {
 	}
 	return 0
 }
+
+// notifyHandler answers no callback: the helper runs no event loop, so
+// the backend calls none of them.
+type notifyHandler struct{ platform.AppHandler }
 
 // notifyBundle returns the executable of an application bundle that holds
 // the test binary, through a hard link, so that the binary runs as an
