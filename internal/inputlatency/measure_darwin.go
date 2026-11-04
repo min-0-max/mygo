@@ -14,6 +14,7 @@ import (
 	"github.com/ebitengine/purego/objc"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -21,20 +22,21 @@ type nsPoint struct{ X, Y float64 }
 
 type nsRect struct{ X, Y, W, H float64 }
 
+// The functions that run on the calling thread are bound; those that run
+// on the main thread, through mainthread.Forward, are addresses: the
+// AppKit messages that take or return a struct, CFRelease of an event and
+// MTLCreateSystemDefaultDevice.
 var (
 	mediaTime    func() float64
 	getMethod    func(cls, sel uintptr) uintptr
 	setImp       func(m, imp uintptr) uintptr
-	keyEvent     func(cls, sel uintptr, typ uint, loc nsPoint, flags uint, ts float64, window int, ctx, chars, unmodified uintptr, repeat bool, code uint16) uintptr
-	mouseEvent   func(cls, sel uintptr, typ uint, loc nsPoint, flags uint, ts float64, window int, ctx uintptr, number, clicks int, pressure float32) uintptr
-	convertPoint func(obj, sel uintptr, p nsPoint, view uintptr) nsPoint
 	scrollEvent  func(source uintptr, units, count uint32, dy, dx, dz int32) uintptr
 	setField     func(event uintptr, field uint32, v int64)
 	setLocation  func(event uintptr, p nsPoint)
-	cfRelease    func(uintptr)
-	createDevice func() uintptr
 	getClass     func(obj uintptr) uintptr
-	isMain       func() int32
+	msgSend      uintptr
+	cfRelease    uintptr
+	createDevice uintptr
 )
 
 func load() error {
@@ -45,7 +47,6 @@ func load() error {
 		"/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics",
 		"/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
 		"/System/Library/Frameworks/Metal.framework/Metal",
-		"/usr/lib/libSystem.B.dylib",
 	} {
 		h, err := purego.Dlopen(path, purego.RTLD_GLOBAL|purego.RTLD_NOW)
 		if err != nil {
@@ -60,18 +61,16 @@ func load() error {
 	purego.RegisterLibFunc(&scrollEvent, cg, "CGEventCreateScrollWheelEvent2")
 	purego.RegisterLibFunc(&setField, cg, "CGEventSetIntegerValueField")
 	purego.RegisterLibFunc(&setLocation, cg, "CGEventSetLocation")
-	purego.RegisterLibFunc(&cfRelease, libs["CoreFoundation"], "CFRelease")
-	purego.RegisterLibFunc(&createDevice, libs["Metal"], "MTLCreateSystemDefaultDevice")
 	purego.RegisterLibFunc(&getClass, objcLib, "object_getClass")
-	purego.RegisterLibFunc(&isMain, libs["libSystem.B.dylib"], "pthread_main_np")
-	send, err := purego.Dlsym(objcLib, "objc_msgSend")
-	if err != nil {
+	var err error
+	if msgSend, err = purego.Dlsym(objcLib, "objc_msgSend"); err != nil {
 		return err
 	}
-	purego.RegisterFunc(&keyEvent, send)
-	purego.RegisterFunc(&mouseEvent, send)
-	purego.RegisterFunc(&convertPoint, send)
-	return nil
+	if cfRelease, err = purego.Dlsym(libs["CoreFoundation"], "CFRelease"); err != nil {
+		return err
+	}
+	createDevice, err = purego.Dlsym(libs["Metal"], "MTLCreateSystemDefaultDevice")
+	return err
 }
 
 func sel(name string) objc.SEL { return objc.RegisterName(name) }
@@ -113,20 +112,22 @@ var (
 )
 
 // swizzle wraps -[CAMetalLayer nextDrawable], the presents of drawables,
-// and the surface view's frame methods.
+// and the surface view's frame methods. The wrappers are methods of the
+// worker (mainthread.Method), and the implementations that they wrap run
+// on the main thread.
 func swizzle() error {
-	wrap := func(class uintptr, name string, fn any) (uintptr, error) {
+	wrap := func(class uintptr, name string, returnsObject bool, fn any) (uintptr, error) {
 		m := getMethod(class, uintptr(sel(name)))
 		if m == 0 {
 			return 0, fmt.Errorf("no method %s", name)
 		}
-		return setImp(m, purego.NewCallback(fn)), nil
+		return setImp(m, mainthread.Method(purego.NewCallback(fn), returnsObject)), nil
 	}
 	var err error
-	origNext, err = wrap(uintptr(objc.GetClass("CAMetalLayer")), "nextDrawable", func(self, cmd uintptr) uintptr {
+	origNext, err = wrap(uintptr(objc.GetClass("CAMetalLayer")), "nextDrawable", true, func(self, cmd uintptr) uintptr {
 		asked := mediaTime()
-		d, _, _ := purego.SyscallN(origNext, self, cmd)
-		if isMain() != 0 {
+		d := mainthread.Forward[uintptr](origNext, self, cmd)
+		if mainthread.IsMainThread() {
 			mu.Lock()
 			if measuring {
 				mainWaits = append(mainWaits, mediaTime()-asked)
@@ -141,33 +142,33 @@ func swizzle() error {
 	// The frame showing the events handled until it presents: frames
 	// present on the main thread, as soon as drawn (the command buffer's
 	// presentDrawable:) or with the transaction (the drawable's present).
-	queue := objc.ID(createDevice()).Send(sel("newCommandQueue"))
+	queue := objc.ID(mainthread.Forward[uintptr](createDevice)).Send(sel("newCommandQueue"))
 	buffer := queue.Send(sel("commandBuffer"))
-	origPresentIn, err = wrap(uintptr(getClass(uintptr(buffer))), "presentDrawable:", func(self, cmd, d uintptr) {
+	origPresentIn, err = wrap(uintptr(getClass(uintptr(buffer))), "presentDrawable:", false, func(self, cmd, d uintptr) {
 		present(d)
-		purego.SyscallN(origPresentIn, self, cmd, d)
+		mainthread.Forward[struct{}](origPresentIn, self, cmd, d)
 	})
 	if err != nil {
 		return err
 	}
-	origPresent, err = wrap(uintptr(objc.GetClass("CAMetalDrawable")), "present", func(self, cmd uintptr) {
+	origPresent, err = wrap(uintptr(objc.GetClass("CAMetalDrawable")), "present", false, func(self, cmd uintptr) {
 		present(self)
-		purego.SyscallN(origPresent, self, cmd)
+		mainthread.Forward[struct{}](origPresent, self, cmd)
 	})
 	if err != nil {
 		return err
 	}
 	view := uintptr(objc.GetClass("MyGoSurfaceView"))
-	origTick, err = wrap(view, "mygoTick:", func(self, cmd, link uintptr) {
+	origTick, err = wrap(view, "mygoTick:", false, func(self, cmd, link uintptr) {
 		frameStart = mediaTime()
-		purego.SyscallN(origTick, self, cmd, link)
+		mainthread.Forward[struct{}](origTick, self, cmd, link)
 	})
 	if err != nil {
 		return err
 	}
-	origUpdate, err = wrap(view, "updateLayer", func(self, cmd uintptr) {
+	origUpdate, err = wrap(view, "updateLayer", false, func(self, cmd uintptr) {
 		frameStart = mediaTime()
-		purego.SyscallN(origUpdate, self, cmd)
+		mainthread.Forward[struct{}](origUpdate, self, cmd)
 	})
 	return err
 }
@@ -176,7 +177,7 @@ func swizzle() error {
 // buffer's presentDrawable: may present it with present.
 func present(d uintptr) {
 	f := &frame{start: frameStart, presented: mediaTime()}
-	id := objc.Send[uint64](objc.ID(d), sel("drawableID"))
+	id := mainthread.Send[uint64](objc.ID(d), sel("drawableID"))
 	mu.Lock()
 	if frames[id] != nil {
 		mu.Unlock()
@@ -188,13 +189,13 @@ func present(d uintptr) {
 		presents++
 	}
 	mu.Unlock()
-	objc.ID(d).Send(sel("addPresentedHandler:"), presented)
+	mainthread.Send[struct{}](objc.ID(d), sel("addPresentedHandler:"), presented)
 }
 
 func init() {
-	presented = objc.NewBlock(func(_ objc.Block, d objc.ID) {
-		at := objc.Send[float64](d, sel("presentedTime"))
-		id := objc.Send[uint64](d, sel("drawableID"))
+	presented = mainthread.Block(objc.NewBlock(func(_ objc.Block, d objc.ID) {
+		at := mainthread.Send[float64](d, sel("presentedTime"))
+		id := mainthread.Send[uint64](d, sel("drawableID"))
 		mu.Lock()
 		defer mu.Unlock()
 		f := frames[id]
@@ -212,7 +213,7 @@ func init() {
 		for _, e := range f.events {
 			samples = append(samples, sample{e, f, at})
 		}
-	})
+	}))
 }
 
 // The window's state.
@@ -296,8 +297,10 @@ func measure(m string, events, warmup, x, y, n int) error {
 		// delay the inactive app's wakeups by milliseconds.
 		const userInitiated, latencyCritical = 0x00EFFFFF, 0xFF00000000
 		reason := objc.ID(objc.GetClass("NSString")).Send(sel("stringWithUTF8String:"), "measuring input latency\x00")
-		objc.ID(objc.GetClass("NSProcessInfo")).Send(sel("processInfo")).Send(sel("beginActivityWithOptions:reason:"), uint64(userInitiated|latencyCritical), reason).Send(sel("retain"))
-		objc.ID(nsWindow).Send(sel("orderFrontRegardless"))
+		info := mainthread.Send[objc.ID](objc.ID(objc.GetClass("NSProcessInfo")), sel("processInfo"))
+		// The activity is held, retained, while the process lives.
+		mainthread.SendRetained(info, sel("beginActivityWithOptions:reason:"), uint64(userInitiated|latencyCritical), reason)
+		mainthread.Send[struct{}](objc.ID(nsWindow), sel("orderFrontRegardless"))
 		go func() {
 			errResult = run(events, warmup)
 			mygo.App.Quit()
@@ -313,9 +316,9 @@ func findSurface(v objc.ID) objc.ID {
 	if objc.Send[bool](v, sel("isKindOfClass:"), objc.GetClass("MyGoSurfaceView")) {
 		return v
 	}
-	subviews := v.Send(sel("subviews"))
-	for i := range objc.Send[int](subviews, sel("count")) {
-		if s := findSurface(subviews.Send(sel("objectAtIndex:"), i)); s != 0 {
+	subviews := mainthread.Send[objc.ID](v, sel("subviews"))
+	for i := range mainthread.Send[int](subviews, sel("count")) {
+		if s := findSurface(mainthread.Send[objc.ID](subviews, sel("objectAtIndex:"), i)); s != 0 {
 			return s
 		}
 	}
@@ -336,24 +339,24 @@ func inject(handle func()) {
 }
 
 func windowPoint(x, y float64) nsPoint {
-	return convertPoint(surface, uintptr(sel("convertPoint:toView:")), nsPoint{x, y}, 0)
+	return mainthread.Forward[nsPoint](msgSend, surface, sel("convertPoint:toView:"), nsPoint{x, y}, uintptr(0))
 }
 
 func sendKey() {
-	number := objc.Send[int](objc.ID(nsWindow), sel("windowNumber"))
+	number := mainthread.Send[int](objc.ID(nsWindow), sel("windowNumber"))
 	s := objc.ID(objc.GetClass("NSString")).Send(sel("stringWithUTF8String:"), "a\x00")
 	for _, typ := range []uint{10, 11} { // NSEventTypeKeyDown, KeyUp
-		ev := keyEvent(uintptr(objc.GetClass("NSEvent")), uintptr(sel("keyEventWithType:location:modifierFlags:timestamp:windowNumber:context:characters:charactersIgnoringModifiers:isARepeat:keyCode:")),
-			typ, nsPoint{}, 0, mediaTime(), number, 0, uintptr(s), uintptr(s), false, 0)
-		objc.ID(nsWindow).Send(sel("sendEvent:"), ev)
+		ev := mainthread.Forward[objc.ID](msgSend, objc.GetClass("NSEvent"), sel("keyEventWithType:location:modifierFlags:timestamp:windowNumber:context:characters:charactersIgnoringModifiers:isARepeat:keyCode:"),
+			typ, nsPoint{}, uint(0), mediaTime(), number, uintptr(0), s, s, false, uint16(0))
+		mainthread.Send[struct{}](objc.ID(nsWindow), sel("sendEvent:"), ev)
 	}
 }
 
 func sendMouse(typ uint, x, y float64) {
-	number := objc.Send[int](objc.ID(nsWindow), sel("windowNumber"))
-	ev := mouseEvent(uintptr(objc.GetClass("NSEvent")), uintptr(sel("mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:pressure:")),
-		typ, windowPoint(x, y), 0, mediaTime(), number, 0, 0, 1, 1)
-	objc.ID(nsWindow).Send(sel("sendEvent:"), ev)
+	number := mainthread.Send[int](objc.ID(nsWindow), sel("windowNumber"))
+	ev := mainthread.Forward[objc.ID](msgSend, objc.GetClass("NSEvent"), sel("mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:pressure:"),
+		typ, windowPoint(x, y), uint(0), mediaTime(), number, uintptr(0), 0, 1, float32(1))
+	mainthread.Send[struct{}](objc.ID(nsWindow), sel("sendEvent:"), ev)
 }
 
 // sendScroll scrolls as a trackpad does, by dy points, in a phase of the
@@ -366,10 +369,12 @@ func sendScroll(phase int64, dy int32) {
 	// A window-less event's location is on the screen, flipped by Core
 	// Graphics: its locationInWindow is then this point.
 	p := windowPoint(300, 300)
-	screen := objc.ID(objc.GetClass("NSScreen")).Send(sel("screens")).Send(sel("objectAtIndex:"), 0)
-	setLocation(ev, nsPoint{p.X, objc.Send[nsRect](screen, sel("frame")).H - p.Y})
-	objc.ID(surface).Send(sel("scrollWheel:"), objc.ID(objc.GetClass("NSEvent")).Send(sel("eventWithCGEvent:"), ev))
-	cfRelease(ev)
+	screens := mainthread.Send[objc.ID](objc.ID(objc.GetClass("NSScreen")), sel("screens"))
+	screen := mainthread.Send[objc.ID](screens, sel("objectAtIndex:"), 0)
+	setLocation(ev, nsPoint{p.X, mainthread.Send[nsRect](screen, sel("frame")).H - p.Y})
+	nsEvent := mainthread.Send[objc.ID](objc.ID(objc.GetClass("NSEvent")), sel("eventWithCGEvent:"), ev)
+	mainthread.Send[struct{}](objc.ID(surface), sel("scrollWheel:"), nsEvent)
+	mainthread.ByReceiver(cfRelease, ev)
 }
 
 func run(events, warmup int) error {
@@ -378,12 +383,13 @@ func run(events, warmup int) error {
 	var err error
 	var refresh float64
 	mygo.RunOnMain(func() {
-		surface = uintptr(findSurface(objc.ID(nsWindow).Send(sel("contentView"))))
+		surface = uintptr(findSurface(mainthread.Send[objc.ID](objc.ID(nsWindow), sel("contentView"))))
 		if surface == 0 {
 			err = errors.New("no MyGoSurfaceView in the window")
 			return
 		}
-		refresh = float64(objc.Send[int](objc.ID(nsWindow).Send(sel("screen")), sel("maximumFramesPerSecond")))
+		screen := mainthread.Send[objc.ID](objc.ID(nsWindow), sel("screen"))
+		refresh = float64(mainthread.Send[int](screen, sel("maximumFramesPerSecond")))
 		err = swizzle()
 	})
 	if err != nil {
