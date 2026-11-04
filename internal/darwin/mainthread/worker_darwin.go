@@ -334,7 +334,9 @@ var mainFuncs struct {
 // runs fn, so that the calls that fn makes run on the main thread at once
 // and a callback that reaches the main thread meanwhile runs on the
 // worker as a nested step; anywhere else through Forward, which runs it
-// at once while the worker does not run.
+// at once while the worker does not run. Off the worker, fn reaches no
+// callback of Go on the main thread: that step waits for the worker, which
+// may be waiting for the caller.
 func RunOnMain(fn func()) {
 	mainFuncs.Lock()
 	if mainFuncs.callback == 0 {

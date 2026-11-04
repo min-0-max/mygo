@@ -85,9 +85,11 @@ var (
 	dispatchSyncF    func(queue, context, work uintptr)
 	libcRealpath     func(path, resolved *byte) uintptr
 
-	// fseCallback is the process's one FSEventStreamCallback, and fseFlush
-	// what dispatch_sync_f runs to wait for the callbacks already queued:
-	// created with the first watch and never freed.
+	// fseCallback is the process's one FSEventStreamCallback, created with
+	// the first watch and never freed. fseFlush is what dispatch_sync_f
+	// runs to wait for the callbacks already queued, free of no pointer:
+	// native, as dispatch_sync_f may run it on the main thread, where a
+	// callback of Go would wait for a worker that may wait for this watch.
 	fseCallback, fseFlush uintptr
 
 	// fseQueue is the one serial queue every stream delivers on, off the
@@ -128,7 +130,7 @@ func loadFSEvents() {
 		purego.RegisterLibFunc(&libcRealpath, purego.RTLD_DEFAULT, realpath)
 		fseCallback = mainthread.Callback(purego.NewCallback(fseEvents))
 		// Our callback never blocks, so waiting for it cannot deadlock.
-		fseFlush = mainthread.Callback(purego.NewCallback(func() {}))
+		fseFlush = mustDlsym(purego.RTLD_DEFAULT, "free")
 		label := []byte("mygo.watch\x00")
 		fseQueue = watchQueueCreate(&label[0], 0)
 	})
@@ -291,9 +293,23 @@ func (s *fseStream) deliver(n platform.FileWatchNotice) {
 	d.Wake()
 }
 
-// stop stops and releases the stream. Only the goroutine of the watch calls
-// it, but a callback may be running: dispatch_sync_f waits for the queue,
-// after which nothing touches s.
+// stopStreams stops and releases streams as one call on the main thread
+// (mainthread.RunOnMain), where FSEvents runs: the goroutine of the watch
+// calls it.
+func stopStreams(streams []*fseStream) {
+	if len(streams) == 0 {
+		return
+	}
+	mainthread.RunOnMain(func() {
+		for _, s := range streams {
+			s.stop()
+		}
+	})
+}
+
+// stop stops and releases the stream, on the main thread. A callback may
+// be running on the queue: dispatch_sync_f waits for it, after which
+// nothing touches s.
 func (s *fseStream) stop() {
 	if s.stream == 0 {
 		return
@@ -408,30 +424,40 @@ func (d *fseWatch) Add(t platform.FileWatchTarget) error {
 	}
 	s := &fseStream{id: t.ID, path: streamPath, subtree: t.Subtree, driver: d}
 	s.context.info = uintptr(unsafe.Pointer(s))
-	// kFSEventStreamEventIdSinceNow: the core's snapshot is taken already.
-	stream := fseStreamCreate(0, fseCallback, &s.context, cfPaths, ^uint64(0), fseLatency, fseNoDefer|fseFileEvents|fseWatchRoot)
+	// The stream is made, scheduled and started as one call on the main
+	// thread (mainthread.RunOnMain), where FSEvents runs.
+	var startErr error
+	mainthread.RunOnMain(func() {
+		// kFSEventStreamEventIdSinceNow: the core's snapshot is taken
+		// already.
+		s.stream = fseStreamCreate(0, fseCallback, &s.context, cfPaths, ^uint64(0), fseLatency, fseNoDefer|fseFileEvents|fseWatchRoot)
+		if s.stream == 0 {
+			startErr = errors.New("cannot create an FSEventStream")
+			return
+		}
+		fseStreams.Lock()
+		fseStreams.m[s.context.info] = s
+		fseStreams.Unlock()
+		fseStreamSetQueue(s.stream, fseQueue)
+		if fseStreamStart(s.stream) == 0 {
+			s.stop()
+			startErr = errors.New("cannot start an FSEventStream")
+			return
+		}
+		s.started = true
+	})
 	cfRelease(cfPaths)
 	cfRelease(cfPath)
-	if stream == 0 {
-		return errors.New("cannot create an FSEventStream")
+	if startErr != nil {
+		return startErr
 	}
-	s.stream = stream
-	fseStreams.Lock()
-	fseStreams.m[s.context.info] = s
-	fseStreams.Unlock()
-	fseStreamSetQueue(stream, fseQueue)
-	if fseStreamStart(stream) == 0 {
-		s.stop()
-		return errors.New("cannot start an FSEventStream")
-	}
-	s.started = true
 	d.streams[t.ID] = s
 	return nil
 }
 
 func (d *fseWatch) Remove(id uint64) {
 	if s := d.streams[id]; s != nil {
-		s.stop()
+		stopStreams([]*fseStream{s})
 		delete(d.streams, id)
 	}
 }
@@ -461,8 +487,10 @@ func (d *fseWatch) Wake() {
 }
 
 func (d *fseWatch) Close() {
+	streams := make([]*fseStream, 0, len(d.streams))
 	for id, s := range d.streams {
-		s.stop()
+		streams = append(streams, s)
 		delete(d.streams, id)
 	}
+	stopStreams(streams)
 }

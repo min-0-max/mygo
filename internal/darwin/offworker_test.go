@@ -15,6 +15,7 @@ import (
 	"github.com/ebitengine/purego"
 
 	"github.com/egoist/mygo/internal/darwin/mainthread"
+	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/internal/wait"
 )
 
@@ -87,6 +88,37 @@ var offWorkerCalls = []offWorkerCall{
 		if r := b.App().Region(); r.Locale == "" {
 			return fmt.Errorf("no locale in %+v", r)
 		}
+		return nil
+	}},
+	// One call for each Add, one for Remove, which the last Add follows in
+	// the queue of the watch, and one for Close, however many streams it
+	// stops.
+	{"FileWatch", 6, func(b *Backend, dir string) error {
+		w, err := b.NewFileWatch(func(platform.FileWatchNotice) {})
+		if err != nil {
+			return err
+		}
+		add := func(id uint64, name string) error {
+			path := filepath.Join(dir, name)
+			if err := os.Mkdir(path, 0700); err != nil {
+				return err
+			}
+			info, err := os.Lstat(path)
+			if err != nil {
+				return err
+			}
+			return w.Add(platform.FileWatchTarget{ID: id, Path: path, Directory: true, Info: info})
+		}
+		for id, name := range []string{"one", "two", "three"} {
+			if err := add(uint64(id+1), name); err != nil {
+				return err
+			}
+		}
+		w.Remove(1)
+		if err := add(4, "four"); err != nil {
+			return err
+		}
+		w.Close()
 		return nil
 	}},
 }
