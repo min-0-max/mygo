@@ -20,21 +20,6 @@ import (
 // TestOtherThreadsForwardWhileTheMainThreadRunsALoop.
 const loopEnv = "MYGO_MAINTHREAD_TEST_LOOP"
 
-func init() {
-	if os.Getenv(loopEnv) == "1" {
-		// The main goroutine stays on the main thread, whose run loop is
-		// the main run loop.
-		runtime.LockOSThread()
-	}
-}
-
-func TestMain(m *testing.M) {
-	if os.Getenv(loopEnv) == "1" {
-		os.Exit(loopMain())
-	}
-	os.Exit(m.Run())
-}
-
 // loopMain is the helper process of
 // TestOtherThreadsForwardWhileTheMainThreadRunsALoop. On the main thread
 // it starts the worker, and a step runs, through RunOnMain, the main run

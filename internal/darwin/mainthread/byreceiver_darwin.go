@@ -3,6 +3,7 @@
 package mainthread
 
 import (
+	"bytes"
 	"sync"
 
 	"github.com/ebitengine/purego"
@@ -13,21 +14,24 @@ import (
 // selectors of the messages, and the receivers whose calls run on the
 // calling thread.
 var decisions struct {
-	msgSend                   uintptr
-	cfRetain, cfRelease       uintptr
-	blockCopy, blockRelease   uintptr
-	selectors                 map[uintptr]string
-	cfRetainIDs, cfReleaseIDs map[uintptr]bool
-	groups                    []decidedGroup
-	mu                        sync.Mutex
-	byClass                   map[[2]uintptr]bool
-	getTypeID                 func(obj uintptr) uintptr
-	objectGetClass            func(obj uintptr) uintptr
-	classIsMetaClass          func(cls uintptr) bool
-	classGetSuperclass        func(cls uintptr) uintptr
-	classConformsToProtocol   func(cls, proto uintptr) bool
-	sendBool                  func(obj uintptr, sel objc.SEL, arg uintptr) bool
-	isKindOfClass             objc.SEL
+	msgSend                 uintptr
+	cfRetain, cfRelease     uintptr
+	blockCopy, blockRelease uintptr
+	selectors               map[uintptr]string
+	cfTypes                 map[string]CFType  // CFTypes by name
+	cfByID                  map[uintptr]CFType // the entries of CFTypes found by type ID, under mu
+	groups                  []decidedGroup
+	mu                      sync.Mutex
+	byClass                 map[[2]uintptr]bool
+	getTypeID               func(obj uintptr) uintptr
+	copyTypeIDDescription   func(typeID uintptr) uintptr
+	stringGetCString        func(s uintptr, buf *byte, size int, encoding uint32) bool
+	objectGetClass          func(obj uintptr) uintptr
+	classIsMetaClass        func(cls uintptr) bool
+	classGetSuperclass      func(cls uintptr) uintptr
+	classConformsToProtocol func(cls, proto uintptr) bool
+	sendBool                func(obj uintptr, sel objc.SEL, arg uintptr) bool
+	isKindOfClass           objc.SEL
 }
 
 // decidedGroup is a group of CallingThreadReceivers with the messages of
@@ -40,10 +44,6 @@ type decidedGroup struct {
 // loadDecisions resolves what ByReceiver reads.
 func loadDecisions(cf uintptr) error {
 	libObjC, err := purego.Dlopen("/usr/lib/libobjc.A.dylib", purego.RTLD_NOW|purego.RTLD_GLOBAL)
-	if err != nil {
-		return err
-	}
-	ct, err := purego.Dlopen("/System/Library/Frameworks/CoreText.framework/CoreText", purego.RTLD_NOW|purego.RTLD_GLOBAL)
 	if err != nil {
 		return err
 	}
@@ -68,6 +68,8 @@ func loadDecisions(cf uintptr) error {
 		return err
 	}
 	purego.RegisterLibFunc(&d.getTypeID, cf, "CFGetTypeID")
+	purego.RegisterLibFunc(&d.copyTypeIDDescription, cf, "CFCopyTypeIDDescription")
+	purego.RegisterLibFunc(&d.stringGetCString, cf, "CFStringGetCString")
 	purego.RegisterLibFunc(&d.objectGetClass, libObjC, "object_getClass")
 	purego.RegisterLibFunc(&d.classIsMetaClass, libObjC, "class_isMetaClass")
 	purego.RegisterLibFunc(&d.classGetSuperclass, libObjC, "class_getSuperclass")
@@ -81,25 +83,13 @@ func loadDecisions(cf uintptr) error {
 	for _, s := range ByReceiverSelectors {
 		d.selectors[uintptr(objc.RegisterName(s))] = s
 	}
-	d.cfRetainIDs, d.cfReleaseIDs = map[uintptr]bool{}, map[uintptr]bool{}
+	// The type of a receiver is found by name, never by asking a type for
+	// its ID: asking CTFont for its ID (CTFontGetTypeID) before AppKit is
+	// loaded leaves CTFont without its bridge to NSFont, and every font
+	// that NSFont makes afterwards fails.
+	d.cfTypes, d.cfByID = map[string]CFType{}, map[uintptr]CFType{}
 	for _, t := range CFTypes {
-		lib := cf
-		if t.Name[:2] == "CT" {
-			lib = ct
-		}
-		var typeID func() uintptr
-		p, e := purego.Dlsym(lib, t.Name+"GetTypeID")
-		if e != nil {
-			return e
-		}
-		purego.RegisterFunc(&typeID, p)
-		id := typeID()
-		if t.Retain {
-			d.cfRetainIDs[id] = true
-		}
-		if t.Release {
-			d.cfReleaseIDs[id] = true
-		}
+		d.cfTypes[t.Name] = t
 	}
 	for _, g := range CallingThreadReceivers {
 		if len(g.Decided) == 0 {
@@ -151,9 +141,9 @@ func callingThread(fn uintptr, args []uintptr) bool {
 	recv := args[0]
 	switch fn {
 	case d.cfRetain:
-		return d.cfRetainIDs[d.getTypeID(recv)]
+		return cfType(recv).Retain
 	case d.cfRelease:
-		return d.cfReleaseIDs[d.getTypeID(recv)]
+		return cfType(recv).Release
 	case d.blockCopy, d.blockRelease:
 		return madeBlock(recv)
 	case d.msgSend:
@@ -179,6 +169,36 @@ func callingThread(fn uintptr, args []uintptr) bool {
 		return v
 	}
 	return false
+}
+
+// cfType returns the entry of CFTypes for the type of recv, a Core
+// Foundation object, or the zero CFType when CFTypes does not name it. The
+// type is found by the description of its type ID
+// (CFCopyTypeIDDescription), which is its name.
+func cfType(recv uintptr) CFType {
+	const utf8 = 0x08000100 // kCFStringEncodingUTF8
+	d := &decisions
+	typeID := d.getTypeID(recv)
+	d.mu.Lock()
+	t, seen := d.cfByID[typeID]
+	d.mu.Unlock()
+	if seen {
+		return t
+	}
+	desc := d.copyTypeIDDescription(typeID)
+	var buf [256]byte
+	if d.stringGetCString(desc, &buf[0], len(buf), utf8) {
+		name, _, _ := bytes.Cut(buf[:], []byte{0})
+		t = d.cfTypes[string(name)]
+	}
+	d.mu.Lock()
+	d.cfByID[typeID] = t
+	d.mu.Unlock()
+	// The description is a CFString: once the type of the description
+	// of CFString's type ID is found, the release finds it without
+	// another description.
+	ByReceiver(d.cfRelease, desc)
+	return t
 }
 
 // decideClass reports whether message name to recv, an instance of cls,

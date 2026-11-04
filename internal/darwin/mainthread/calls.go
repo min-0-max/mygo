@@ -255,8 +255,8 @@ var CFTypes = []CFType{
 	{Name: "CFRunLoopObserver", Release: true},
 }
 
-// CFType is a Core Foundation type by the name of its type ID function
-// (CFStringGetTypeID for CFString).
+// CFType is a Core Foundation type by its name, which is the description
+// of its type ID (CFCopyTypeIDDescription): CFString.
 type CFType struct {
 	Name            string
 	Retain, Release bool
@@ -316,11 +316,11 @@ var CallingThreadFunctions = []FunctionGroup{
 		},
 	},
 	{
-		Name:    "the worker: the Mach semaphores with which the main thread and the worker wake each other, the run loop source through which other threads wake the main thread, the type of a run loop observer, which ByReceiver reads, and the assembly of this package that runs a record and hands a record to the other side",
+		Name:    "the worker: the Mach semaphores with which the main thread and the worker wake each other, the run loop source through which other threads wake the main thread, the description of a type ID, by which ByReceiver finds a type in CFTypes, and the assembly of this package that runs a record and hands a record to the other side",
 		Package: "internal/darwin/mainthread",
 		Names: []string{
 			"semaphore_create", "semaphore_signal", "semaphore_wait",
-			"CFRunLoopSourceCreate", "CFRunLoopObserverGetTypeID",
+			"CFRunLoopSourceCreate", "CFCopyTypeIDDescription",
 			"callRecord", "exchange",
 		},
 	},
