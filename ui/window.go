@@ -96,6 +96,7 @@ func (v *Content) AttachContent(conn *surface.Conn) {
 	conn.Capture = h.capture
 	conn.Detach = h.detach
 	conn.AfterPresent = h.afterPresent
+	conn.HoldFrames = h.holdFrames
 	if conn.ContentSize != nil && conn.FitWidth != nil {
 		rt.fit = newFitter(conn.FitWidth, conn.ContentSize)
 		conn.Fit = h.fit
@@ -168,6 +169,15 @@ type windowHost struct {
 	// the web views.
 	placed []platform.WebViewPlacement
 	views  []NativeWebView
+	// natives is where the application shows the native view elements,
+	// misplaced that one was logged, and transact that a frame is to show
+	// a change of the two, until one presents.
+	natives   []platform.NativeViewPlacement
+	misplaced bool
+	transact  bool
+	// holding tells that the window holds its frames (holdFrames), and
+	// heldFrame that a frame was asked for meanwhile.
+	holding, heldFrame bool
 	// waiting tells that a frame paced by the display waits for waitingOn,
 	// the GPU renderer or refresh, to be able to draw it (displayWaiter);
 	// wake and displayReady draw it then, at the time the display asked
@@ -338,6 +348,13 @@ func (h *windowHost) event(ev platform.SurfaceEvent) bool {
 		h.requestFrame()
 		return false
 	}
+	if ev.Kind == platform.WebViewTabOut && ev.View != 0 {
+		i := slices.IndexFunc(h.natives, func(p platform.NativeViewPlacement) bool { return p.View == ev.View })
+		if i >= 0 {
+			h.rt.webViewTabOut(nativeElement{ev.View, h.natives[i].KeyView}, ev.Mods&platform.ModShift != 0)
+		}
+		return false
+	}
 	if ev.Kind == platform.WebViewTabOut || ev.Kind == platform.WebViewKey {
 		i := slices.IndexFunc(h.placed, func(p platform.WebViewPlacement) bool { return p.WebView == ev.WebView })
 		switch {
@@ -353,6 +370,11 @@ func (h *windowHost) event(ev platform.SurfaceEvent) bool {
 		if r, ok := h.gpu.(invalidator); ok {
 			r.Invalidate()
 		}
+	}
+	if ev.Kind == platform.SurfaceFrame && h.holding {
+		h.heldFrame = true
+		h.frameAsked = false
+		return false
 	}
 	if ev.Kind == platform.SurfaceFrame {
 		if ev.Paced && h.waitDisplay(time.Now()) {
@@ -493,6 +515,16 @@ func (h *windowHost) present(s *scene.Scene) {
 	h.useWide(s, now)
 	defer h.ready()
 	done, again := h.takeNotices()
+	if s.Transact = h.transact; s.Transact {
+		// A frame that shows nothing of the change leaves it to the next.
+		told := done
+		done = func(p platform.Presentation, err error) {
+			if p == platform.Presented {
+				h.transact = false
+			}
+			told(p, err)
+		}
+	}
 	if h.render(s, done, again) {
 		h.path = "drawn on the GPU"
 		if h.degraded {
@@ -524,11 +556,39 @@ func (h *windowHost) afterPresent(fn func(platform.Presentation, error)) {
 	switch {
 	case h.detached:
 		fn(platform.PresentClosed, nil)
-	case h.occluded():
+	case h.holding || h.occluded():
 		fn(platform.PresentHeld, nil)
 	default:
 		h.notices = append(h.notices, fn)
 		h.rt.changed()
+	}
+}
+
+// frameHolder is a GPU renderer that keeps its last frame as the window
+// holds its frames (Metal's): HoldFrames(true) drops the frame waiting for
+// its drawable, which would present while the window holds its frames,
+// and has the frame shown stay as drawn; HoldFrames(false) ends that.
+type frameHolder interface{ HoldFrames(hold bool) }
+
+// holdFrames keeps the surface's frames from drawing while hold is set,
+// those that the system asks for among them, and draws one once it is not
+// if one was asked for meanwhile (surface.Conn.HoldFrames). The notices
+// waiting hear that the window holds its frames.
+func (h *windowHost) holdFrames(hold bool) {
+	if h.holding == hold {
+		return
+	}
+	h.holding = hold
+	if g, ok := h.gpu.(frameHolder); ok {
+		g.HoldFrames(hold)
+	}
+	switch {
+	case hold:
+		h.framesHeld()
+	case h.detached:
+	case h.heldFrame || h.frameAsked:
+		h.heldFrame = false
+		h.requestFrame()
 	}
 }
 
@@ -1004,28 +1064,63 @@ func (h *windowHost) openURL(u string, done func(error)) {
 	}
 }
 
-// placeWebViews gives the surface where the frame shows the window's web
-// views, unless it is where the last frame showed them.
-func (h *windowHost) placeWebViews(views []placedWebView) {
+// samePlace reports whether a and b show the same web view in the same
+// place.
+func samePlace(a, b platform.WebViewPlacement) bool {
+	return a.WebView == b.WebView && a.Frame == b.Frame && a.Clip == b.Clip && a.Width == b.Width && a.Height == b.Height &&
+		a.Radii == b.Radii && slices.Equal(a.Covers, b.Covers)
+}
+
+// placeWebViews gives the surface where the frame the surface asked for
+// shows the window's web views, unless it is where the last frame showed
+// them, and the application where it shows its native view elements, as
+// they were or not. A frame built for something else, which does not
+// present, gives nothing. A change has the frame present with the
+// transaction (scene.Scene.Transact).
+func (h *windowHost) placeWebViews(views []placedWebView) bool {
+	if !h.framing {
+		return false
+	}
 	list := make([]platform.WebViewPlacement, 0, len(views))
-	natives := make([]NativeWebView, 0, len(views))
+	webs := make([]NativeWebView, 0, len(views))
+	var natives []platform.NativeViewPlacement
 	for _, v := range views {
-		if n := v.v.SurfaceWebView(h.conn); n != nil {
+		if n, ok := v.v.(nativeElement); ok {
+			natives = append(natives, platform.NativeViewPlacement{WebViewPlacement: v.placement(nil), View: n.view, KeyView: n.key})
+		} else if n := v.v.SurfaceWebView(h.conn); n != nil {
 			list = append(list, v.placement(n))
-			natives = append(natives, v.v)
+			webs = append(webs, v.v)
 		}
 	}
-	if slices.EqualFunc(list, h.placed, func(a, b platform.WebViewPlacement) bool {
-		return a.WebView == b.WebView && a.Frame == b.Frame && a.Clip == b.Clip && a.Width == b.Width && a.Height == b.Height &&
-			a.Radii == b.Radii && slices.Equal(a.Covers, b.Covers)
-	}) {
-		return
+	if !slices.EqualFunc(list, h.placed, samePlace) {
+		h.transact = true
+		h.placed, h.views = list, webs
+		if h.conn.PlaceWebViews != nil {
+			h.conn.PlaceWebViews(list)
+		} else {
+			h.conn.Surface.PlaceWebViews(list)
+		}
 	}
-	h.placed, h.views = list, natives
-	if h.conn.PlaceWebViews != nil {
-		h.conn.PlaceWebViews(list)
-	} else {
-		h.conn.Surface.PlaceWebViews(list)
+	if len(natives) > 0 || len(h.natives) > 0 {
+		h.placeNativeViews(natives)
+	}
+	return true
+}
+
+// placeNativeViews gives the application where the frame shows its native
+// view elements.
+func (h *windowHost) placeNativeViews(views []platform.NativeViewPlacement) {
+	if !slices.EqualFunc(views, h.natives, func(a, b platform.NativeViewPlacement) bool {
+		return a.View == b.View && a.KeyView == b.KeyView && samePlace(a.WebViewPlacement, b.WebViewPlacement)
+	}) {
+		h.transact = true
+	}
+	h.natives = views
+	if h.conn.PlaceNativeViews != nil {
+		h.conn.PlaceNativeViews(views)
+	} else if !h.misplaced {
+		h.misplaced = true
+		log.Print("mygo: a native view element in a window without a native view (Window.NewNativeView)")
 	}
 }
 
@@ -1034,6 +1129,12 @@ func (h *windowHost) platformWebView(v NativeWebView) platform.WebView {
 }
 
 func (h *windowHost) tabIntoWebView(v NativeWebView, back bool) {
+	if e, ok := v.(nativeElement); ok {
+		if s, ok := h.conn.Surface.(platform.NativeViewSurface); ok {
+			s.TabIntoNativeView(e.key, back)
+		}
+		return
+	}
 	if n := v.SurfaceWebView(h.conn); n != nil {
 		n.TabInto(back)
 	}

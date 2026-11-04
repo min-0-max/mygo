@@ -397,19 +397,24 @@ func (rt *engine) accessElement(t *platform.AccessTree, e *node, parent int, scr
 			rt.accessInline(t, e, parent)
 			return
 		}
-		if leafRole(role) {
+		if leafRole(role) && e.webView == nil {
 			return
 		}
 	}
 	if e.webView != nil {
 		// Its page first, as it paints, in a node of its own that the
 		// platform's elements of the page are inside.
-		if v := rt.host.platformWebView(e.webView); v != nil {
-			b := e.contentBox()
-			t.Nodes = append(t.Nodes, platform.AccessNode{
-				ID: e.id ^ pageNodeID, Parent: parent, Role: platform.RoleGroup, WebView: v,
-				Bounds: platform.RectF{X: float64(b.X), Y: float64(b.Y), W: float64(b.W), H: float64(b.H)},
-			})
+		b := e.contentBox()
+		n := platform.AccessNode{
+			ID: e.id ^ pageNodeID, Parent: parent, Role: platform.RoleGroup,
+			Bounds: platform.RectF{X: float64(b.X), Y: float64(b.Y), W: float64(b.W), H: float64(b.H)},
+		}
+		if native, ok := e.webView.(nativeElement); ok {
+			n.View, n.KeyView = native.view, native.key
+			t.Nodes = append(t.Nodes, n)
+		} else if v := rt.host.platformWebView(e.webView); v != nil {
+			n.WebView = v
+			t.Nodes = append(t.Nodes, n)
 		}
 	}
 	// Children in flow first, absolute ones above them, as they paint.

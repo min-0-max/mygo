@@ -45,6 +45,45 @@ func coreWebView(c *context, v NativeWebView) *node {
 	return e
 }
 
+// NativeView shows a view that the application made, inside the native
+// view of the window (mygo.Window.NewNativeView), in the element's content
+// box. key is the view of the element that takes the keyboard, view or a
+// view inside it; 0 is view. As a web view, the view has no size of its
+// own, and the element stretches across its container:
+//
+//	ui.Row(c).Fill().Children(func() {
+//		sidebar(c)
+//		ui.NativeView(c, holder, editor).Grow(1)
+//	})
+//
+// The element paints a hole through the window's content over its box, so
+// that what paints after it shows over the view, and in the frame that
+// draws it the window tells the application its box, clip and covers,
+// which sets the frame of the view before the frame presents; a frame
+// that does not build the element tells nothing of it, and the keyboard
+// leaves the view. The view takes the pointer where the element shows and
+// nothing painted over it takes it, if the hit test of the native view
+// finds a view there, and leaves it to the content otherwise; a press on
+// it reaches the content as one on a web view does, closing the popovers
+// it is outside of, and the view sets the cursor. Tab stops at the
+// element, and takes the keyboard into key, and Tab out of key goes on
+// from the element. Assistive technology finds what is in the view inside
+// the element, and nowhere else.
+func coreNativeView(c *context, view, key uintptr) *node {
+	if key == 0 {
+		key = view
+	}
+	return coreWebView(c, nativeElement{view, key})
+}
+
+// nativeElement is what a native view element shows, where elements note
+// the web view they show: the content treats the two alike, but for what
+// goes to the host. Comparing two compares what they name.
+type nativeElement struct{ view, key uintptr }
+
+// SurfaceWebView returns nil: a native view element shows no web view.
+func (nativeElement) SurfaceWebView(*surface.Conn) platform.WebView { return nil }
+
 // webPlace is where a frame shows a web view: size is the size its page
 // lays out at, which frame shows scaled, and radii its corners', in its
 // DIPs; hit is the index of its element's own hit, inert that it shows
@@ -218,13 +257,17 @@ func rectF(r Rect) platform.RectF {
 	return platform.RectF{X: float64(r.X), Y: float64(r.Y), W: float64(r.W), H: float64(r.H)}
 }
 
-// placeWebViews tells the host where the frame shows its web views.
+// placeWebViews tells the host where the frame about to present shows its
+// web views and native view elements. The host takes that only of a frame
+// the surface asked for: the next such frame tells it of one built for
+// something else.
 func (rt *engine) placeWebViews() {
 	if len(rt.webPlaces) == 0 && !rt.webShown {
 		return
 	}
-	rt.webShown = len(rt.webPlaces) > 0
-	rt.host.placeWebViews(rt.windowWebViews(rt.webViewPlacements()))
+	if rt.host.placeWebViews(rt.windowWebViews(rt.webViewPlacements())) {
+		rt.webShown = len(rt.webPlaces) > 0
+	}
 }
 
 // webViewPress handles a press that went to the web view at x, y: the
@@ -300,13 +343,19 @@ func (rt *engine) webViewTabOut(v NativeWebView, back bool) {
 }
 
 // overWebView reports whether the element under the pointer is a web
-// view, whose page has the cursor.
+// view, whose page has the cursor. Over a native view element the platform
+// leaves the content's cursor out where the view takes the pointer
+// (surface.applyCursor).
 func (rt *engine) overWebView() bool {
 	if len(rt.hover) == 0 {
 		return false
 	}
 	s := rt.states[rt.hover[0]]
-	return s != nil && s.webView != nil
+	if s == nil || s.webView == nil {
+		return false
+	}
+	_, native := s.webView.(nativeElement)
+	return !native
 }
 
 // hole paints the hole showing the web view of e: its content box,
