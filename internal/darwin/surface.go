@@ -205,7 +205,7 @@ type surface struct {
 	placed []platform.WebViewPlacement
 	// native holds the native view of the window and where the content
 	// shows views inside it (native_view.go), nil without one.
-	native *nativeViews
+	native nativeHost
 }
 
 func (w *window) createSurface(content NSRect) {
@@ -529,7 +529,7 @@ func (s *surface) applyCursor() {
 func (s *surface) leavesCursor(p NSPoint) bool {
 	local := msgPointFromView(s.view, sel("convertPoint:fromView:"), p, 0)
 	return s.webViewAt(local.X, local.Y) != nil ||
-		s.nativeTakes(local.X, local.Y, msgPointFromView(send(s.view, "superview"), sel("convertPoint:fromView:"), p, 0))
+		s.native != nil && s.native.takes(local.X, local.Y, msgPointFromView(send(s.view, "superview"), sel("convertPoint:fromView:"), p, 0))
 }
 
 // nsCursor returns the NSCursor of c. The diagonal resize cursors are the
@@ -919,7 +919,7 @@ func registerSurfaceClass() {
 		method("hitTest:", func(self id, cmd objc.SEL, p NSPoint) id {
 			if s := b().surfaceOf(self); s != nil && (len(s.placed) > 0 || s.native != nil) {
 				local := msgPointFromView(self, sel("convertPoint:fromView:"), p, send(self, "superview"))
-				if s.webViewAt(local.X, local.Y) != nil || s.nativeTakes(local.X, local.Y, p) {
+				if s.webViewAt(local.X, local.Y) != nil || s.native != nil && s.native.takes(local.X, local.Y, p) {
 					return 0
 				}
 			}
@@ -1036,7 +1036,7 @@ func registerSurfaceClass() {
 		method("mouseMoved:", func(self id, cmd objc.SEL, ev id) {
 			moved(self, cmd, ev)
 			if s := b().surfaceOf(self); s != nil && s.native != nil {
-				s.nativeMoved(ev)
+				s.native.moved(ev)
 			}
 		}),
 		method("mouseEntered:", func(self id, _ objc.SEL, ev id) {

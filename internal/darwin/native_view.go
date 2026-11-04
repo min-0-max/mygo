@@ -24,8 +24,31 @@ import (
 // the cursor is left alone, and the elements of assistive technology adopt
 // what is in the views by the setters of NSAccessibility.
 
+// nativeHost is what a window does for its native view: what every app
+// reaches goes through it, so that only NewNativeView, in the apps that
+// call it, links nativeViews.
+type nativeHost interface {
+	// takes reports whether the native view takes the pointer at x, y in
+	// the surface, p in the view around the surface.
+	takes(x, y float64, p NSPoint) bool
+	// moved follows the pointer of the mouse event ev.
+	moved(ev id)
+	// access returns what assistive technology finds in the element of
+	// the node n.
+	access(n *platform.AccessNode) []id
+	// adopt has the element el the accessibility parent of kids, and of
+	// none that it was of.
+	adopt(el *accessElement, kids []id)
+	// tabOut gives the content the keyboard back as Tab leaves view, and
+	// reports whether view is in a key view.
+	tabOut(view id, back bool) bool
+	// close takes the native view out of a window that closes.
+	close()
+}
+
 // nativeViews is the state of the native view elements of a surface.
 type nativeViews struct {
+	s    *surface
 	view id
 	// placed are the elements of the last frame.
 	placed []platform.NativeViewPlacement
@@ -51,7 +74,7 @@ func (s *surface) NewNativeView(view uintptr) error {
 	if send(v, "superview") != 0 {
 		return errors.New("mygo: the native view is in a view")
 	}
-	s.native = &nativeViews{view: retain(v), logged: map[uintptr]bool{}}
+	s.native = &nativeViews{s: s, view: retain(v), logged: map[uintptr]bool{}}
 	withPool(func() {
 		msgSetRect(v, sel("setFrame:"), msgRect(host.view, sel("bounds")))
 		send(v, "setAutoresizingMask:", nsViewWidthHeightSizable)
@@ -72,15 +95,13 @@ func (s *surface) NewNativeView(view uintptr) error {
 // nsWindowAbove is NSWindowAbove, for addSubview:positioned:relativeTo:.
 const nsWindowAbove = 1
 
-// closeNativeView takes the native view out of a window that closes.
-func (s *surface) closeNativeView() {
-	n := s.native
-	if n == nil {
+func (n *nativeViews) close() {
+	if n.view == 0 {
 		return
 	}
-	s.native = nil
 	send(n.view, "removeFromSuperview")
 	release(n.view)
+	n.view, n.placed = 0, nil
 }
 
 // PlaceNativeViews notes where the frame shows its elements, calls apply,
@@ -89,7 +110,7 @@ func (s *surface) closeNativeView() {
 // view that left the keyboard as the application hid it leaves it where
 // AppKit moved it.
 func (s *surface) PlaceNativeViews(views []platform.NativeViewPlacement, apply func()) {
-	n := s.native
+	n, _ := s.native.(*nativeViews)
 	if n == nil || s.w.closed {
 		return
 	}
@@ -112,7 +133,7 @@ func (s *surface) named(last []platform.NativeViewPlacement, p platform.NativeVi
 	if slices.ContainsFunc(last, func(o platform.NativeViewPlacement) bool { return o.View == p.View && o.KeyView == p.KeyView }) {
 		return true
 	}
-	n := s.native
+	n := s.native.(*nativeViews)
 	view, key := id(p.View), id(p.KeyView)
 	if view != 0 && key != 0 && view != n.view && sendBool(view, "isDescendantOf:", uintptr(n.view)) && sendBool(key, "isDescendantOf:", uintptr(view)) {
 		return true
@@ -148,21 +169,21 @@ func (s *surface) TabIntoNativeView(key uintptr, back bool) {
 	})
 }
 
-// tabOutOfNativeView gives the content the keyboard back as Tab leaves
-// the key view of an element that holds view, and reports whether one
-// does. WebKit moves the keyboard out of a page past its ends through the
-// window's key view loop, as other views do.
-func (w *window) tabOutOfNativeView(view id, back bool) bool {
-	s := w.surface
-	if s == nil || s.native == nil || view == 0 || view == s.view {
+// tabOut gives the content the keyboard back as Tab leaves the key view of
+// an element that holds view, and reports whether one does. WebKit moves
+// the keyboard out of a page past its ends through the window's key view
+// loop, as other views do.
+func (n *nativeViews) tabOut(view id, back bool) bool {
+	s := n.s
+	if view == 0 || view == s.view {
 		return false
 	}
-	for i := range s.native.placed {
-		p := &s.native.placed[i]
+	for i := range n.placed {
+		p := &n.placed[i]
 		if !sendBool(view, "isDescendantOf:", p.KeyView) {
 			continue
 		}
-		send(w.win, "makeFirstResponder:", uintptr(s.view))
+		send(s.w.win, "makeFirstResponder:", uintptr(s.view))
 		ev := platform.SurfaceEvent{Kind: platform.WebViewTabOut, Key: platform.KeyTab, View: p.View}
 		if back {
 			ev.Mods = platform.ModShift
@@ -173,15 +194,9 @@ func (w *window) tabOutOfNativeView(view id, back bool) bool {
 	return false
 }
 
-// nativeTakes reports whether the native view takes the pointer at x, y
-// in the surface, p in the view around the surface: an element shows
-// there, nothing covers it, and the hit test of the native view finds a
-// view inside it.
-func (s *surface) nativeTakes(x, y float64, p NSPoint) bool {
-	n := s.native
-	if n == nil {
-		return false
-	}
+// takes finds that an element shows at x, y, nothing covers it, and the
+// hit test of the native view finds a view inside it.
+func (n *nativeViews) takes(x, y float64, p NSPoint) bool {
 	for i := range n.placed {
 		if n.placed[i].At(x, y) {
 			hit := msgHitTest(n.view, sel("hitTest:"), p)
@@ -197,22 +212,23 @@ func msgHitTest(obj id, sel objc.SEL, p NSPoint) id {
 	return mainthread.Forward[id](msgSendAddr, obj, sel, p)
 }
 
-// nativeUnder reports whether the native view takes the pointer of the
-// mouse event ev.
-func (s *surface) nativeUnder(ev id) bool {
+// under reports whether the native view takes the pointer of the mouse
+// event ev.
+func (n *nativeViews) under(ev id) bool {
+	s := n.s
 	x, y := s.location(ev)
-	return s.nativeTakes(x, y, msgPointFromView(send(s.view, "superview"), sel("convertPoint:fromView:"), msgPoint(ev, sel("locationInWindow")), 0))
+	return n.takes(x, y, msgPointFromView(send(s.view, "superview"), sel("convertPoint:fromView:"), msgPoint(ev, sel("locationInWindow")), 0))
 }
 
-// nativeMoved sets the content's cursor again as the pointer leaves what
-// the native view takes: the view set its own meanwhile, and the content,
+// moved sets the content's cursor again as the pointer leaves what the
+// native view takes: the view set its own meanwhile, and the content,
 // whose cursor may be the same, tells nothing.
-func (s *surface) nativeMoved(ev id) {
-	over := s.nativeUnder(ev)
-	if over != s.native.over {
-		s.native.over = over
+func (n *nativeViews) moved(ev id) {
+	over := n.under(ev)
+	if over != n.over {
+		n.over = over
 		if !over {
-			s.applyCursor()
+			n.s.applyCursor()
 		}
 	}
 }
@@ -225,8 +241,10 @@ func (b *Backend) armPressMonitor() {
 	pressMonitor.Do(func() {
 		const mask = 1<<1 | 1<<3 | 1<<25 // left, right and other mouse down
 		block := newBlock(func(_ objc.Block, ev id) id {
-			if w := b.byNSWindow[send(ev, "window")]; w != nil && !w.closed {
-				w.nativePressed(ev)
+			if w := b.byNSWindow[send(ev, "window")]; w != nil && !w.closed && w.surface != nil {
+				if n, ok := w.surface.native.(*nativeViews); ok {
+					n.pressed(ev)
+				}
 			}
 			return ev
 		})
@@ -235,13 +253,13 @@ func (b *Backend) armPressMonitor() {
 	})
 }
 
-// nativePressed tells the content of a press that goes to a view of the
-// native view: it takes no event of the press itself.
-func (w *window) nativePressed(ev id) {
-	s := w.surface
-	if s == nil || !s.nativeUnder(ev) {
+// pressed tells the content of a press that goes to a view of the native
+// view: it takes no event of the press itself.
+func (n *nativeViews) pressed(ev id) {
+	if !n.under(ev) {
 		return
 	}
+	s := n.s
 	button := 0
 	switch typ := sendInt(ev, "type"); typ {
 	case 3: // NSEventTypeRightMouseDown
@@ -253,14 +271,14 @@ func (w *window) nativePressed(ev id) {
 	s.send(platform.SurfaceEvent{Kind: platform.WebViewPress, X: x, Y: y, Button: button, Mods: eventMods(ev)})
 }
 
-// nativeAccess returns what assistive technology finds in the element of
-// the node n, in a pool: the nearest unignored descendants of its view,
-// and its key view; nothing for a node of no element the last frame shows.
-func (s *surface) nativeAccess(n *platform.AccessNode) []id {
-	if n.View == 0 || s.native == nil || !slices.ContainsFunc(s.native.placed, func(p platform.NativeViewPlacement) bool { return p.View == n.View }) {
+// access returns, in a pool, the nearest unignored descendants of the view
+// of node, and its key view; nothing for a node of no element the last
+// frame shows.
+func (n *nativeViews) access(node *platform.AccessNode) []id {
+	if node.View == 0 || !slices.ContainsFunc(n.placed, func(p platform.NativeViewPlacement) bool { return p.View == node.View }) {
 		return nil
 	}
-	view, key := id(n.View), id(n.KeyView)
+	view, key := id(node.View), id(node.KeyView)
 	if view == key {
 		return []id{key}
 	}
@@ -271,10 +289,9 @@ func (s *surface) nativeAccess(n *platform.AccessNode) []id {
 	return kids
 }
 
-// adopt has the element el the accessibility parent of kids, and of none
-// that it was of. It holds them, which the application may free once an
-// element no longer shows them.
-func (el *accessElement) adopt(kids []id) {
+// adopt holds kids, which the application may free once an element no
+// longer shows them.
+func (n *nativeViews) adopt(el *accessElement, kids []id) {
 	for _, k := range el.adopted {
 		if !slices.Contains(kids, k) {
 			send(k, "setAccessibilityParent:", 0)

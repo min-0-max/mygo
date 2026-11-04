@@ -80,6 +80,7 @@ func (w *Window) NewNativeView(view uintptr, place func(views []NativePlacement)
 		w.conn.PlaceNativeViews = func(views []platform.NativeViewPlacement) {
 			s.PlaceNativeViews(views, func() { place(nativePlacements(views)) })
 		}
+		w.conn.TabIntoNativeView = s.TabIntoNativeView
 		// A frame that waits for its element now places it.
 		w.conn.Invalidate()
 	})
