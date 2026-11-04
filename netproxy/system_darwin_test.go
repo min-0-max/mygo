@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"slices"
 	"testing"
+
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 )
 
 // TestSystemDarwin asks CFNetwork for the proxy of a URL: whatever the
@@ -32,11 +34,11 @@ func TestPACScript(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	script := a.stringCreate(0, `function FindProxyForURL(url, host) { return "PROXY p.example:8080; SOCKS s.example:1080; DIRECT"; }`, cfStringEncodingUTF8)
-	defer a.release(script)
+	defer a.releaseCF(script)
 	s := a.stringCreate(0, "https://example.com/", cfStringEncodingUTF8)
-	defer a.release(s)
-	target := a.urlCreate(0, s, 0)
-	defer a.release(target)
+	defer a.releaseCF(s)
+	target := mainthread.Forward[uintptr](a.cfURLCreate, uintptr(0), s, uintptr(0))
+	defer a.releaseCF(target)
 	got := a.runPAC(script, target, true)
 	want := []string{"http://p.example:8080", "socks5://s.example:1080", "direct://"}
 	if !slices.Equal(got, want) {

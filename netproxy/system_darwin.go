@@ -13,6 +13,8 @@ import (
 	"unsafe"
 
 	"github.com/ebitengine/purego"
+
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 )
 
 // macOS asks CFNetwork, as Safari does: CFNetworkCopyProxiesForURL applies
@@ -38,7 +40,11 @@ type streamClientContext struct {
 }
 
 type cfAPI struct {
-	release        func(cf uintptr)
+	// cfRelease is decided by its receiver (mainthread.ByReceiver), and
+	// cfURLCreate runs on the main thread (mainthread.Forward); the other
+	// functions run on the calling thread.
+	cfRelease, cfURLCreate uintptr
+
 	typeID         func(cf uintptr) uint
 	equal          func(a, b uintptr) bool
 	stringTypeID   func() uint
@@ -49,7 +55,6 @@ type cfAPI struct {
 	stringMaxSize  func(length int, encoding uint32) int
 	stringGet      func(s uintptr, buf *byte, size int, encoding uint32) bool
 	numberGet      func(n uintptr, typ int, value *int32) bool
-	urlCreate      func(alloc, s, base uintptr) uintptr
 	arrayCount     func(a uintptr) int
 	arrayAt        func(a uintptr, i int) uintptr
 	dictGet        func(d, key uintptr) uintptr
@@ -97,7 +102,6 @@ func loadCF() *cfAPI {
 		fn   any
 		name string
 	}{
-		{core, &a.release, "CFRelease"},
 		{core, &a.typeID, "CFGetTypeID"},
 		{core, &a.equal, "CFEqual"},
 		{core, &a.stringTypeID, "CFStringGetTypeID"},
@@ -108,7 +112,6 @@ func loadCF() *cfAPI {
 		{core, &a.stringMaxSize, "CFStringGetMaximumSizeForEncoding"},
 		{core, &a.stringGet, "CFStringGetCString"},
 		{core, &a.numberGet, "CFNumberGetValue"},
-		{core, &a.urlCreate, "CFURLCreateWithString"},
 		{core, &a.arrayCount, "CFArrayGetCount"},
 		{core, &a.arrayAt, "CFArrayGetValueAtIndex"},
 		{core, &a.dictGet, "CFDictionaryGetValue"},
@@ -130,6 +133,12 @@ func loadCF() *cfAPI {
 		purego.RegisterFunc(f.fn, p)
 	}
 	var err error
+	if a.cfRelease, err = purego.Dlsym(core, "CFRelease"); err != nil {
+		return nil
+	}
+	if a.cfURLCreate, err = purego.Dlsym(core, "CFURLCreateWithString"); err != nil {
+		return nil
+	}
 	if a.poolPush, err = purego.Dlsym(objc, "objc_autoreleasePoolPush"); err != nil {
 		return nil
 	}
@@ -161,7 +170,7 @@ func loadCF() *cfAPI {
 	if a.mode = a.stringCreate(0, "github.com/egoist/mygo/netproxy", cfStringEncodingUTF8); a.mode == 0 {
 		return nil
 	}
-	a.callback = purego.NewCallback(pacDone)
+	a.callback = mainthread.Callback(purego.NewCallback(pacDone))
 	return a
 }
 
@@ -180,22 +189,22 @@ func system(target *url.URL) *url.URL {
 	if s == 0 {
 		return nil
 	}
-	u := a.urlCreate(0, s, 0)
-	a.release(s)
+	u := mainthread.Forward[uintptr](a.cfURLCreate, uintptr(0), s, uintptr(0))
+	a.releaseCF(s)
 	if u == 0 {
 		return nil
 	}
-	defer a.release(u)
+	defer a.releaseCF(u)
 	settings := a.copySettings()
 	if settings == 0 {
 		return nil
 	}
-	defer a.release(settings)
+	defer a.releaseCF(settings)
 	list := a.copyProxies(u, settings)
 	if list == 0 {
 		return nil
 	}
-	defer a.release(list)
+	defer a.releaseCF(list)
 	return firstSupported(a.proxies(list, u))
 }
 
@@ -327,7 +336,7 @@ func (a *cfAPI) runPAC(script, target uintptr, isScript bool) []string {
 	// Cancels a script that is still running.
 	a.invalidate(source)
 	a.removeSource(rl, source, a.mode)
-	a.release(source)
+	a.releaseCF(source)
 	runtime.KeepAlive(ctx)
 	pacs.Lock()
 	defer pacs.Unlock()
@@ -349,3 +358,7 @@ func pacDone(info, list, cfErr uintptr) {
 	pacs.Unlock()
 	a.stop(a.runLoopCurrent())
 }
+
+// releaseCF releases cf, on the calling thread or on the main thread as
+// its type decides.
+func (a *cfAPI) releaseCF(cf uintptr) { mainthread.ByReceiver(a.cfRelease, cf) }
