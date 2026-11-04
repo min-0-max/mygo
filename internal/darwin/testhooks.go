@@ -71,17 +71,19 @@ func menuItemAt(path []string) (menu id, index int, err error) {
 	return 0, 0, fmt.Errorf("mygo: no menu item")
 }
 
-// TestMenuItemHasSubmenu reports whether an item of the application menu,
-// found as TestPerformMenuItem finds it, holds a submenu.
-func TestMenuItemHasSubmenu(path ...string) (has bool, err error) {
+// TestIsServicesMenu reports whether the submenu of an item of the
+// application menu, found as TestPerformMenuItem finds it, is the menu that
+// AppKit fills with the services.
+func TestIsServicesMenu(path ...string) (services bool, err error) {
 	withPool(func() {
 		var menu id
 		var index int
 		if menu, index, err = menuItemAt(path); err == nil {
-			has = sendBool(send(menu, "itemAtIndex:", uintptr(index)), "hasSubmenu")
+			sub := send(send(menu, "itemAtIndex:", uintptr(index)), "submenu")
+			services = sub != 0 && sub == send(theBackend.app, "servicesMenu")
 		}
 	})
-	return has, err
+	return services, err
 }
 
 // TestPerformKeyEquivalent sends a key press with the Command key (and

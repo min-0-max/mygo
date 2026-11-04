@@ -10,20 +10,23 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// The services role is a submenu that AppKit fills, so the item is not dead.
-func TestTheServicesRoleHoldsASubmenu(t *testing.T) {
+// AppKit fills only the first menu it is given, so each application menu
+// holds that one menu in the item of the services role.
+func TestTheServicesRoleHoldsTheServicesMenuOfTheApp(t *testing.T) {
 	newWindow(t, mygo.WindowOptions{Title: "Services", Width: 200, Height: 100, Content: ui.View(func(c *ui.Context) {})})
-	mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{{Label: "Test", Submenu: []*mygo.MenuItem{
-		{Label: "Services", Role: mygo.RoleServices},
-	}}}))
 	defer mygo.App.SetMenu(nil)
-	var has bool
-	var err error
-	mygo.RunOnMain(func() { has, err = darwin.TestMenuItemHasSubmenu("Test", "Services") })
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !has {
-		t.Fatal("the item of the services role holds no submenu")
+	for _, title := range []string{"First", "Second"} {
+		mygo.App.SetMenu(mygo.NewMenu([]*mygo.MenuItem{{Label: title, Submenu: []*mygo.MenuItem{
+			{Label: "Services", Role: mygo.RoleServices},
+		}}}))
+		var services bool
+		var err error
+		mygo.RunOnMain(func() { services, err = darwin.TestIsServicesMenu(title, "Services") })
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !services {
+			t.Fatalf("the services item of %s does not hold the services menu of the app", title)
+		}
 	}
 }

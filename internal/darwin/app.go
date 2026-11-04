@@ -20,6 +20,8 @@ type Backend struct {
 	delegate id
 	source   uintptr
 	mainLoop uintptr
+	// services is the one services menu of the app (servicesMenu).
+	services id
 
 	// noSelfActivation is AppOptions.NoSelfActivation: neither the launch
 	// nor Show activates the app (selfActivate).
