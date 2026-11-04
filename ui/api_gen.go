@@ -1623,6 +1623,41 @@ func Modal(c *Context, open *bool, fn func()) Element {
 	return wrapElement(_e)
 }
 
+// NativeView shows a view that the application made, inside the native
+// view of the window (mygo.Window.NewNativeView), in the element's content
+// box. key is the view of the element that takes the keyboard, view or a
+// view inside it; 0 is view. As a web view, the view has no size of its
+// own, and the element stretches across its container:
+//
+//	ui.Row(c).Fill().Children(func() {
+//		sidebar(c)
+//		ui.NativeView(c, holder, editor).Grow(1)
+//	})
+//
+// The element paints a hole through the window's content over its box, so
+// that what paints after it shows over the view, and in the frame that
+// draws it the window tells the application its box, clip and covers,
+// which sets the frame of the view before the frame presents; a frame
+// that does not build the element tells nothing of it, and the keyboard
+// leaves the view. The view takes the pointer where the element shows and
+// nothing painted over it takes it, if the hit test of the native view
+// finds a view there, and leaves it to the content otherwise; a press on
+// it reaches the content as one on a web view does, closing the popovers
+// it is outside of, and the view sets the cursor. Tab stops at the
+// element, and takes the keyboard into key, and Tab out of key goes on
+// from the element. Assistive technology finds what is in the view inside
+// the element, and nowhere else.
+func NativeView(c *Context, view uintptr, key uintptr) Element {
+	_ctx := c.build()
+	if _ctx == nil {
+		return Element{}
+	}
+	_ctx.rt.beginBuild()
+	_e := coreNativeView(_ctx, view, key)
+	_ctx.rt.endBuild()
+	return wrapElement(_e)
+}
+
 // NewTester starts testing view in a window of width×height DIPs. Two
 // elements given one key under one parent make it panic where the second
 // was given, as apps only log it.

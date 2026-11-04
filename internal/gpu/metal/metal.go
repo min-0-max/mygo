@@ -102,7 +102,10 @@ const (
 	filterLinear           = 1
 	statusError            = 5
 	layerWidthSizable      = 1 << 1
+	layerMaxXMargin        = 1 << 2
+	layerMinYMargin        = 1 << 3
 	layerHeightSizable     = 1 << 4
+	layerMaxYMargin        = 1 << 5
 )
 
 var (
@@ -457,12 +460,11 @@ type Renderer struct {
 	scale             float64
 
 	// synced tells that the layer presents with the Core Animation
-	// transaction, and holes that the last frame had holes (web views
-	// under it). pre fetches the drawables of frames following each
+	// transaction. pre fetches the drawables of frames following each
 	// other, and pending is a frame waiting for its drawable (present.go).
-	synced, holes bool
-	pre           presenter
-	pending       pendingFrame
+	synced  bool
+	pre     presenter
+	pending pendingFrame
 	// post runs a function on the main thread (SetPost), fetched has the
 	// presenter's thread draw pending through it, and wake is what Ready
 	// was given while a frame was pending.
@@ -1596,15 +1598,26 @@ func (r *Renderer) fitBackdrop(b *gpu.Builder) error {
 	return nil
 }
 
-// hasHoles reports whether s has holes (scene.OpHole), where it shows
-// web views under it.
-func hasHoles(s *scene.Scene) bool {
-	for i := range s.Ops {
-		if s.Ops[i].Kind == scene.OpHole {
-			return true
+// HoldFrames has the window hold its frames, or stop (the window's
+// HoldFrames). While it does, the layer stays at the size of the last
+// frame, at the top left of its superlayer, as that resizes, rather than
+// scale the frame to it: the next frame gives it the new size (fit). A
+// frame waiting for its drawable goes: it would present while the window
+// holds its frames.
+func (r *Renderer) HoldFrames(hold bool) {
+	pool(func() {
+		mask := uintptr(layerWidthSizable | layerHeightSizable)
+		if hold {
+			r.dropPending()
+			// The margin that grows is the one away from the top left,
+			// whichever way the superlayer's y goes.
+			mask = layerMaxXMargin | layerMinYMargin
+			if byte(sendMain(r.superlayer, "isGeometryFlipped")) != 0 {
+				mask = layerMaxXMargin | layerMaxYMargin
+			}
 		}
-	}
-	return false
+		sendMain(r.layer, "setAutoresizingMask:", mask)
+	})
 }
 
 // Ready reports whether a frame following the last one can draw at once,
@@ -1672,7 +1685,7 @@ func (r *Renderer) render(s *scene.Scene, done func(platform.Presentation, error
 		// A frame not paced by the display, as a resize's, draws after
 		// the one waiting for its drawable, which fetches none for it
 		// when it takes its own.
-		if err := r.finishPending(!changes && !hasHoles(s) && !r.holes); err != nil {
+		if err := r.finishPending(!changes && !s.Transact); err != nil {
 			return err
 		}
 	}
@@ -1686,14 +1699,11 @@ func (r *Renderer) render(s *scene.Scene, done func(platform.Presentation, error
 	}
 	changed := r.setLayerWide(r.wide)
 	changed = r.fit(s.Width, s.Height, scale) || changed
-	// A frame changing the layer, or showing web views, which move with
-	// the window's other changes, presents with the Core Animation
-	// transaction, so that they show together, as during a live resize.
-	// Others present as soon as the GPU has them, sparing a commit of the
-	// transaction for each.
-	holes := hasHoles(s)
-	sync := changed || holes || r.holes
-	r.holes = holes
+	// A frame changing the layer, or moving the views under its holes,
+	// presents with the Core Animation transaction, so that they show
+	// together, as during a live resize. Others present as soon as the
+	// GPU has them, sparing a commit of the transaction for each.
+	sync := changed || s.Transact
 	if sync {
 		// A drawable fetched before the layer changed, or to present
 		// on its own, is not this frame's.
