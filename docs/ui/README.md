@@ -210,6 +210,8 @@ UI as they read other apps (see [Accessibility](accessibility.md)).
 - [Form](form.md): labeled controls with descriptions and errors.
 - [Web view](web-view.md): a web page in the window, under the native UI
   painted after it, as menus and dialogs.
+- [Native view](native-view.md): a view the application made in the window,
+  under the native UI painted after it.
 
 ## Navigation
 
