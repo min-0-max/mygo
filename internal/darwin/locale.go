@@ -82,9 +82,9 @@ func appleLanguages(own bool) []string {
 }
 
 // PreferredLanguages, SavedLocale and Region read the preferences and the
-// current locale as one call on the main thread (mainthread.RunOnMain),
-// from any goroutine: what they read is autoreleased in a pool of that
-// call, which it outlives until it is copied.
+// current locale in one step each (mainthread.RunOnMain), from any
+// goroutine: what they read is autoreleased on the main thread, which
+// drains no pool until the step returned, and the step copies it.
 func (a appController) PreferredLanguages() []string {
 	var out []string
 	mainthread.RunOnMain(func() {

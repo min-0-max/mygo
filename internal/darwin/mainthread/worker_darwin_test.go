@@ -324,12 +324,14 @@ func TestRunStartsAndStopsTheWorkerAroundTheLoop(t *testing.T) {
 	<-done
 }
 
-// RunOnMain runs a Go function on the main thread as one forwarded call:
-// the calls that it makes run there at once, uncounted, and a callback
-// that reaches the main thread meanwhile runs on the worker as a nested
-// step. Anywhere but on the worker during a step it runs the function at
+// RunOnMain runs a Go function on the worker: on the worker during a step
+// as part of that step, and on the main thread as a step of its own. The
+// native calls that the function forwards run on the main thread, each
+// one forwarded call, and a callback that reaches the main thread
+// meanwhile runs on the worker as a nested step; no Go code runs on the
+// main thread. While the worker does not run, it runs the function at
 // once.
-func TestRunOnMainIsOneForwardedCall(t *testing.T) {
+func TestRunOnMainRunsOnTheWorker(t *testing.T) {
 	self := pthreadSelf(t)
 	var callbackOn uintptr
 	whoAmI := Callback(purego.NewCallback(func() uintptr {
@@ -344,7 +346,7 @@ func TestRunOnMainIsOneForwardedCall(t *testing.T) {
 	}
 	onFakeMain(t, func() {
 		main := direct[uintptr](self)
-		var worker, ranOn, answered, inner uintptr
+		var worker, ranOn, inner, answered uintptr
 		var counted bool
 		var n uint64
 		RunOnWorker(func() {
@@ -354,18 +356,24 @@ func TestRunOnMainIsOneForwardedCall(t *testing.T) {
 				ranOn = direct[uintptr](self)
 				counted = IsMainThread()
 				inner = Forward[uintptr](self)
-				answered = direct[uintptr](whoAmI)
+				answered = Forward[uintptr](whoAmI)
 			})
 			n = Forwarded() - before
 		})
-		if n != 1 {
-			t.Errorf("RunOnMain on the worker forwarded %d calls, want 1", n)
+		if ranOn != worker || !counted {
+			t.Errorf("RunOnMain in a step ran its function on %#x (IsMainThread %v), not on the worker %#x; the main thread is %#x", ranOn, counted, worker, main)
 		}
-		if ranOn != main || inner != main || !counted {
-			t.Errorf("the function ran on %#x (IsMainThread %v) and its call on %#x, not on the main thread %#x", ranOn, counted, inner, main)
+		if inner != main || n != 2 {
+			t.Errorf("the function's call ran on %#x and the function forwarded %d calls, want the main thread %#x and 2", inner, n, main)
 		}
 		if callbackOn != worker || answered != worker {
 			t.Errorf("the callback of the main thread ran on %#x, not on the worker %#x as a nested step", callbackOn, worker)
+		}
+
+		var fromMain uintptr
+		RunOnMain(func() { fromMain = direct[uintptr](self) })
+		if fromMain != worker {
+			t.Errorf("RunOnMain on the main thread ran its function on %#x, not on the worker %#x", fromMain, worker)
 		}
 	})
 }

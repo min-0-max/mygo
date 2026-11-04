@@ -203,11 +203,12 @@ const (
 )
 
 // postEvent posts an application-defined event of subtype, from any
-// thread, as one call on the main thread (mainthread.RunOnMain): the event
-// is autoreleased in a pool of that call. Made and posted by two calls
-// forwarded from another thread, it would be autoreleased in the pool of
-// the run loop's pass that ran the first, which the main thread drains
-// before it runs the second.
+// thread, in one step (mainthread.RunOnMain): from another thread the main
+// thread runs the two calls of the step inside one callout of its run
+// loop, so the event that the first autoreleases there is still there for
+// the second. Forwarded one by one from another thread, the two calls would
+// run in passes of the main run loop of their own, whose autorelease pool
+// the main thread drains between them.
 func (b *Backend) postEvent(subtype int16) {
 	mainthread.RunOnMain(func() {
 		withPool(func() {
@@ -218,25 +219,30 @@ func (b *Backend) postEvent(subtype int16) {
 	})
 }
 
-// Step runs on the main thread as one forwarded call
-// (mainthread.RunOnMain): the event loop runs there once, and the
-// callbacks of the event that it sends run on the worker as nested steps.
+// Step runs the event loop of the main thread once (mainthread.RunOnMain):
+// its Go runs on the worker, the main thread runs the calls that it
+// forwards, and the callbacks of the event that it sends run on the worker
+// as nested steps. What it autoreleases on the worker and what its calls
+// autorelease on the main thread go in pools of the two threads that each
+// Step drains, as await runs Step again and again inside one step.
 func (b *Backend) Step() { mainthread.RunOnMain(b.step) }
 
 func (b *Backend) step() {
 	b.stepping++
 	defer func() { b.stepping-- }()
 	withPool(func() {
-		until := msgDateSince(class("NSDate"), sel("dateWithTimeIntervalSinceNow:"), 0.5)
-		mode := nsString("kCFRunLoopDefaultMode")
-		ev := msgNextEvent(b.app, sel("nextEventMatchingMask:untilDate:inMode:dequeue:"), ^uint64(0), until, mode, true)
-		if ev == 0 {
-			return
-		}
-		if sendInt(ev, "type") == nsEventTypeApplicationDefined && int16(sendInt(ev, "subtype")) == wakeSubtype {
-			return
-		}
-		send(b.app, "sendEvent:", uintptr(ev))
+		withMainPool(func() {
+			until := msgDateSince(class("NSDate"), sel("dateWithTimeIntervalSinceNow:"), 0.5)
+			mode := nsString("kCFRunLoopDefaultMode")
+			ev := msgNextEvent(b.app, sel("nextEventMatchingMask:untilDate:inMode:dequeue:"), ^uint64(0), until, mode, true)
+			if ev == 0 {
+				return
+			}
+			if sendInt(ev, "type") == nsEventTypeApplicationDefined && int16(sendInt(ev, "subtype")) == wakeSubtype {
+				return
+			}
+			send(b.app, "sendEvent:", uintptr(ev))
+		})
 	})
 }
 
@@ -487,10 +493,10 @@ func (a appController) ShowAboutPanel(o platform.AboutPanelOptions) {
 	send(a.b.app, "orderFrontStandardAboutPanelWithOptions:", uintptr(dict))
 }
 
-// Package reads the main bundle as one call on the main thread
-// (mainthread.RunOnMain), from any goroutine: the strings that the bundle
-// returns are autoreleased in a pool of that call, which they outlive
-// until they are copied.
+// Package reads the main bundle in one step (mainthread.RunOnMain), from
+// any goroutine: the strings that the bundle returns are autoreleased on
+// the main thread, which drains no pool until the step returned, and the
+// step copies them.
 func (a appController) Package() (platform.PackageInfo, bool) {
 	var info platform.PackageInfo
 	ok := false

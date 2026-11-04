@@ -29,10 +29,11 @@ import (
 // when a permission of theirs is first checked.
 //
 // Any goroutine calls this package while Go runs on the worker
-// (internal/darwin/mainthread), so what asks the frameworks is one call on
-// the main thread each (mainthread.RunOnMain), in a pool of that call, and
-// passes only Go values on: the objects of two calls forwarded from another
-// thread would live in pools of the main thread that drain between them.
+// (internal/darwin/mainthread), so what asks the frameworks is one step
+// each (mainthread.RunOnMain), whose calls the main thread runs before it
+// drains a pool, and passes only Go values on: the objects of two calls
+// forwarded from another thread would live in pools of the main thread
+// that drain between them.
 
 const (
 	applicationServicesPath = "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"

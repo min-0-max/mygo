@@ -30,7 +30,7 @@ import (
 // runs and the methods of these classes are its steps, whose messages run
 // on the main thread one by one, and the objects that those return live
 // until the step ends. What follows System Settings runs on a goroutine,
-// so it asks in one call on the main thread (mainthread.RunOnMain).
+// so it asks in one step (mainthread.RunOnMain).
 
 type nsPoint struct{ X, Y float64 }
 type nsSize struct{ Width, Height float64 }

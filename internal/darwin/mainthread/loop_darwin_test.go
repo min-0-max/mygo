@@ -22,10 +22,11 @@ const loopEnv = "MYGO_MAINTHREAD_TEST_LOOP"
 
 // loopMain is the helper process of
 // TestOtherThreadsForwardWhileTheMainThreadRunsALoop. On the main thread
-// it starts the worker, and a step runs, through RunOnMain, the main run
-// loop in a mode of its common modes with a timer of its own, as a modal
-// panel does, for up to wait.Guard, while another goroutine forwards a
-// call and then stops the run loop; the step waits for the goroutine. It
+// it starts the worker, and a step forwards a run of the main run loop in
+// a mode of its common modes with a timer of its own, as a modal
+// panel does, for up to wait.Guard, while another goroutine, once a timer
+// of the run loop said that it runs, forwards a call and then stops the
+// run loop; the step waits for the goroutine. It
 // prints where that call ran and whether the run loop ended by that stop,
 // which the goroutine makes only once the call returned.
 func loopMain() int {
@@ -40,7 +41,6 @@ func loopMain() int {
 		return fail(err)
 	}
 	var (
-		runInMode     func(mode uintptr, seconds float64, returnAfterSourceHandled bool) int32
 		addCommonMode func(rl, mode uintptr)
 		getMain       func() uintptr
 		stringCreate  func(alloc uintptr, s string, encoding uint32) uintptr
@@ -49,7 +49,10 @@ func loopMain() int {
 		addTimer      func(rl, timer, mode uintptr)
 		stop          func(rl uintptr)
 	)
-	purego.RegisterLibFunc(&runInMode, cf, "CFRunLoopRunInMode")
+	runInMode, err := purego.Dlsym(cf, "CFRunLoopRunInMode")
+	if err != nil {
+		return fail(err)
+	}
 	purego.RegisterLibFunc(&addCommonMode, cf, "CFRunLoopAddCommonMode")
 	purego.RegisterLibFunc(&getMain, cf, "CFRunLoopGetMain")
 	purego.RegisterLibFunc(&stringCreate, cf, "CFStringCreateWithCString")
@@ -74,6 +77,11 @@ func loopMain() int {
 	// in the mode until its time ends.
 	timer := timerCreate(0, now()+3600, 0, 0, 0, purego.NewCallback(func(timer, info uintptr) {}), 0)
 	addTimer(getMain(), timer, mode)
+	// A timer that fires at once tells the goroutine, from a nested step,
+	// that the run loop runs.
+	looping := make(chan struct{})
+	started := timerCreate(0, now(), 0, 0, 0, Callback(purego.NewCallback(func(timer, info uintptr) { close(looping) })), 0)
+	addTimer(getMain(), started, mode)
 
 	if err := Start(); err != nil {
 		return fail(err)
@@ -85,7 +93,6 @@ func loopMain() int {
 	)
 	forwarded := make(chan struct{})
 	RunOnWorker(func() {
-		looping := make(chan struct{})
 		go func() {
 			defer close(forwarded)
 			runtime.LockOSThread()
@@ -94,10 +101,7 @@ func loopMain() int {
 			ranOn = Forward[uintptr](pthreadSelf)
 			stop(getMain())
 		}()
-		RunOnMain(func() {
-			close(looping)
-			result = runInMode(mode, wait.Guard.Seconds(), false)
-		})
+		result = Forward[int32](runInMode, mode, wait.Guard.Seconds(), false)
 		<-forwarded
 	})
 	Stop()

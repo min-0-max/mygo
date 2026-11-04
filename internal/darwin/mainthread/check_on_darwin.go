@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -316,78 +315,6 @@ func heldType(t string) bool {
 // coreTextType reports whether CFTypes names t as a Core Text object.
 func coreTextType(t string) bool {
 	return strings.HasPrefix(t, "CT") && slices.ContainsFunc(CFTypes, func(c CFType) bool { return c.Name == t })
-}
-
-// offWorkerMains counts the calls of RunOnMain of a thread other than the
-// worker that the main thread runs.
-var offWorkerMains atomic.Int32
-
-// checkedRunOnMain returns the function that RunOnMain runs for fn: off
-// the worker, one that the main thread counts while it runs fn.
-func checkedRunOnMain(fn func()) func() {
-	if atomic.LoadUintptr(&link.running) == 0 || IsMainThread() {
-		return fn
-	}
-	return func() {
-		offWorkerMains.Add(1)
-		defer offWorkerMains.Add(-1)
-		fn()
-	}
-}
-
-// checkedSignal returns a C function in place of semaphore_signal, through
-// which each side wakes the other. Inside a RunOnMain off the worker, the
-// main thread wakes the worker only to hand it a step: a callback of Go
-// that reached the main thread. That step waits for the worker, which may
-// wait for the caller of RunOnMain, so it panics here instead of hanging.
-func checkedSignal(signal uintptr) uintptr {
-	return purego.NewCallback(func(sem uintptr) uintptr {
-		if sem == link.workerSem && offWorkerMains.Load() > 0 && threadPointer() == link.mainThread {
-			panic("mainthread: " + stepName() + " reaches the main thread inside a RunOnMain off the worker, and waits for the worker")
-		}
-		r, _, _ := purego.SyscallN(signal, sem)
-		return r
-	})
-}
-
-// entries names the targets of the trampolines.
-var entries struct {
-	sync.Mutex
-	names   map[uintptr]string
-	methods map[uintptr]bool
-}
-
-// noteEntry names the target of a new trampoline by the call that asked
-// for it, and marks the implementation of a method.
-func noteEntry(target uintptr, method bool) {
-	entries.Lock()
-	defer entries.Unlock()
-	if entries.names == nil {
-		entries.names, entries.methods = map[uintptr]string{}, map[uintptr]bool{}
-	}
-	if method {
-		entries.methods[target] = true
-		return
-	}
-	entries.names[target] = registeringCall()
-}
-
-// stepName names the step that the main thread handed to the worker: the
-// call that made its callback, and the selector of a method.
-func stepName() string {
-	p := atomic.LoadUintptr(&link.toWorker)
-	if p == 0 || p&1 != 0 {
-		return "a callback of Go"
-	}
-	rec := *(**record)(unsafe.Pointer(&p))
-	entries.Lock()
-	name, method := entries.names[rec.fn], entries.methods[rec.fn]
-	entries.Unlock()
-	if method {
-		loadChecks()
-		return "the method " + checks.selName(rec.x[1]) + " made by " + name
-	}
-	return "the callback made by " + name
 }
 
 // onMain is the C function of the records that checkedOnMain returns.

@@ -59,11 +59,14 @@ func makeStepApp(t *testing.T) {
 	})
 }
 
-// The Step of await, which runs on the worker, is one call forwarded to
-// the main thread, which fetches and sends the event there; a callback of
-// mygo that the sent event reaches runs on the worker as a nested step.
-// The application is a fake one, so no window is needed.
-func TestStepIsOneForwardedCall(t *testing.T) {
+// The Step of await runs its Go on the worker, and the main thread runs
+// only the native calls that it forwards, one forwarded call each: the
+// push of an autorelease pool of the main thread, the date, the fetch of
+// the event, its type, its send and the pop of the pool. A forwarded call
+// that the main thread made itself would run at once, uncounted. A
+// callback of mygo that the sent event reaches runs on the worker as a
+// nested step. The application is a fake one, so no window is needed.
+func TestStepRunsItsGoOnTheWorker(t *testing.T) {
 	load()
 	makeStepApp(t)
 	s := &stepApp
@@ -89,8 +92,8 @@ func TestStepIsOneForwardedCall(t *testing.T) {
 		}
 	}()
 	<-done
-	if n != 1 {
-		t.Errorf("one Step on the worker forwarded %d calls, want 1", n)
+	if n != 6 {
+		t.Errorf("one Step on the worker forwarded %d calls, want 6, one for each native call", n)
 	}
 	if s.fetchedOn != main || !s.fetchedCounted || s.sentOn != main {
 		t.Errorf("Step fetched the event on %#x (IsMainThread %v) and sent it on %#x, not on the main thread %#x", s.fetchedOn, s.fetchedCounted, s.sentOn, main)

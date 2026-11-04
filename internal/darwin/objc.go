@@ -446,6 +446,17 @@ func withPool(fn func()) {
 	fn()
 }
 
+// withMainPool runs fn inside an autorelease pool of the main thread,
+// which it pushes and pops through calls forwarded there: what the calls
+// that fn forwards autorelease on the main thread goes in that pool. On
+// the worker during a step the main thread drains no pool of its own
+// until the step returns.
+func withMainPool(fn func()) {
+	pool := mainthread.Forward[uintptr](poolPushFn)
+	defer mainthread.Forward[struct{}](poolPopFn, pool)
+	fn()
+}
+
 const nsUTF8StringEncoding = 4
 
 // nsString returns an autoreleased NSString.

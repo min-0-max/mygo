@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/ebitengine/purego"
@@ -24,11 +23,12 @@ import (
 const offWorkerEnv = "MYGO_DARWIN_TEST_OFFWORKER"
 
 // offWorkerCall is a function that other goroutines call while the worker
-// runs, with the forwarded calls that it makes.
+// runs, with the calls that it hands the main thread (mainthread.Queued):
+// its forwarded calls and its steps of RunOnMain.
 type offWorkerCall struct {
-	name      string
-	forwarded int
-	run       func(b *Backend, dir string) error
+	name   string
+	handed int
+	run    func(b *Backend, dir string) error
 }
 
 var offWorkerCalls = []offWorkerCall{
@@ -123,8 +123,8 @@ var offWorkerCalls = []offWorkerCall{
 	}},
 	// An object that ByReceiver would autorelease on the main thread
 	// from here lives in a pool that this goroutine cannot see: it panics
-	// here, not in the one forwarded call that may do it. That call, the
-	// new and the release are what this case forwards.
+	// here, not in the step of RunOnMain that may do it. That step, the
+	// new and the release are what this case hands the main thread.
 	{"Autorelease", 3, func(*Backend, string) error {
 		obj := send(class("NSObject"), "new")
 		defer release(obj)
@@ -147,9 +147,10 @@ var offWorkerCalls = []offWorkerCall{
 // forwards one by one hold its result in a pool that the main thread
 // drains as the method returns: the pool of the main run loop's pass may
 // drain at any time after a forwarded call returned, and this is the
-// first. A call made on another thread, or in the one forwarded call of a
-// call made in one, keeps its result.
-func drainAfterEachCall(cls, method string, classMethod bool, forwarded *atomic.Uint64) error {
+// first. A call made on another thread, or inside a step, where the main
+// thread drains no pool of its own until the step returned, keeps its
+// result.
+func drainAfterEachCall(cls, method string, classMethod bool) error {
 	getMethod := "class_getInstanceMethod"
 	if classMethod {
 		getMethod = "class_getClassMethod"
@@ -174,7 +175,7 @@ func drainAfterEachCall(cls, method string, classMethod bool, forwarded *atomic.
 	var orig uintptr
 	imp := purego.NewCallback(func(self, cmd, a, b, c uintptr) uintptr {
 		main, _, _ := purego.SyscallN(onMain)
-		if main == 0 || mainthread.Forwarded()-forwarded.Load() < 2 {
+		if main == 0 || mainthread.Stepping() {
 			r, _, _ := purego.SyscallN(orig, self, cmd, a, b, c)
 			return r
 		}
@@ -188,9 +189,9 @@ func drainAfterEachCall(cls, method string, classMethod bool, forwarded *atomic.
 }
 
 // offWorkerMain is the helper process of
-// TestOffWorkerCallsLeaveTheMainThreadAlone. On the main thread it starts
-// the worker, and a step waits for another goroutine that makes each call
-// of offWorkerCalls.
+// TestOffWorkerCallsLeaveTheMainThreadAlone. On the main thread it runs
+// the worker around the main run loop, while another goroutine makes each
+// call of offWorkerCalls and then stops the run loop.
 func offWorkerMain() int {
 	fail := func(err error) int { fmt.Println(err); return 1 }
 	b := New()
@@ -202,7 +203,6 @@ func offWorkerMain() int {
 		return fail(err)
 	}
 	defer os.RemoveAll(dir)
-	var forwarded atomic.Uint64
 	for _, m := range []struct {
 		cls, method string
 		classMethod bool
@@ -212,42 +212,54 @@ func offWorkerMain() int {
 		{"NSBundle", "bundlePath", false},
 		{"NSCalendar", "autoupdatingCurrentCalendar", true},
 	} {
-		if err := drainAfterEachCall(m.cls, m.method, m.classMethod, &forwarded); err != nil {
+		if err := drainAfterEachCall(m.cls, m.method, m.classMethod); err != nil {
 			return fail(err)
 		}
 	}
-	err = mainthread.Run(func() error {
-		for _, c := range offWorkerCalls {
-			done := make(chan error)
-			go func() {
-				forwarded.Store(mainthread.Forwarded())
+	runLoopRun, err := purego.Dlsym(purego.RTLD_DEFAULT, "CFRunLoopRun")
+	if err != nil {
+		return fail(err)
+	}
+	runLoopStop, err := purego.Dlsym(purego.RTLD_DEFAULT, "CFRunLoopStop")
+	if err != nil {
+		return fail(err)
+	}
+	var callErr, stepErr error
+	err = mainthread.Run(func() error { return nil }, func() {
+		go func() {
+			defer mainthread.RunOnMain(func() { mainthread.Forward[struct{}](runLoopStop, cfRunLoopGetMain()) })
+			for _, c := range offWorkerCalls {
+				before := mainthread.Queued()
 				err := c.run(b, dir)
-				fmt.Printf("%s forwarded %d calls\n", c.name, mainthread.Forwarded()-forwarded.Load())
-				done <- err
-			}()
-			if err := <-done; err != nil {
-				return fmt.Errorf("%s: %w", c.name, err)
+				fmt.Printf("%s handed %d calls\n", c.name, mainthread.Queued()-before)
+				if err != nil {
+					callErr = fmt.Errorf("%s: %w", c.name, err)
+					return
+				}
 			}
-		}
+		}()
+		purego.SyscallN(runLoopRun)
+	}, func() {
 		// SaveLocale makes an array that it forwards to autorelease, on
 		// the worker in a step, which may.
 		before := mainthread.Forwarded()
 		b.App().SaveLocale("x-test")
 		b.App().SaveLocale("")
 		if mainthread.Forwarded() == before {
-			return fmt.Errorf("SaveLocale forwarded no call")
+			stepErr = fmt.Errorf("SaveLocale forwarded no call")
 		}
-		return nil
-	}, func() {}, func() {})
-	if err != nil {
-		return fail(err)
+	})
+	for _, e := range []error{err, callErr, stepErr} {
+		if e != nil {
+			return fail(e)
+		}
 	}
 	return 0
 }
 
-// The functions that other goroutines call while the worker runs make the
-// forwarded calls that offWorkerCalls name, and use nothing that they
-// forwarded after the main thread's autorelease pool drained: zombies
+// The functions that other goroutines call while the worker runs hand the
+// main thread the calls that offWorkerCalls name, and use nothing that
+// they forwarded after the main thread's autorelease pool drained: zombies
 // show an object used after that.
 func TestOffWorkerCallsLeaveTheMainThreadAlone(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*wait.Guard)
@@ -259,7 +271,7 @@ func TestOffWorkerCallsLeaveTheMainThreadAlone(t *testing.T) {
 		t.Fatalf("%v:\n%s", err, out)
 	}
 	for _, c := range offWorkerCalls {
-		if w := fmt.Sprintf("%s forwarded %d calls\n", c.name, c.forwarded); !strings.Contains(string(out), w) {
+		if w := fmt.Sprintf("%s handed %d calls\n", c.name, c.handed); !strings.Contains(string(out), w) {
 			t.Errorf("no %q in the output:\n%s", w, out)
 		}
 	}

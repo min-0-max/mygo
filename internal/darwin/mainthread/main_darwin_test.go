@@ -12,8 +12,9 @@ import (
 // the main thread, by the environment variable that makes the test
 // binary one.
 var helpers = map[string]func() int{
-	loopEnv:   loopMain,
-	appKitEnv: appKitMain,
+	loopEnv:        loopMain,
+	appKitEnv:      appKitMain,
+	otherThreadEnv: otherThreadMain,
 }
 
 func init() {

@@ -120,6 +120,8 @@ var native struct {
 	runLoopAddSource    func(rl, src, mode uintptr)
 	runLoopCommonModes  uintptr
 	mainLoop, source    uintptr
+	dispatchAsyncF      func(queue, context, work uintptr)
+	mainQueue           uintptr
 	sourceContext       [10]uintptr
 	semaphores          []uint32
 	semaphoresMu        sync.Mutex
@@ -172,6 +174,8 @@ func resolve() error {
 	purego.RegisterLibFunc(&native.classGetInstanceMethod, libObjC, "class_getInstanceMethod")
 	purego.RegisterLibFunc(&native.methodGetImplementation, libObjC, "method_getImplementation")
 	purego.RegisterLibFunc(&native.methodSetImplementation, libObjC, "method_setImplementation")
+	purego.RegisterLibFunc(&native.dispatchAsyncF, libSystem, "dispatch_async_f")
+	native.mainQueue = sym(libSystem, "_dispatch_main_q")
 	if p := sym(cf, "kCFRunLoopCommonModes"); p != 0 {
 		native.runLoopCommonModes = *word(p)
 	}
@@ -179,7 +183,7 @@ func resolve() error {
 	link.poolPop = sym(libObjC, "objc_autoreleasePoolPop")
 	link.retain = sym(libObjC, "objc_retain")
 	link.autorelease = sym(libObjC, "objc_autorelease")
-	link.semaphoreSignal = checkedSignal(sym(libSystem, "semaphore_signal"))
+	link.semaphoreSignal = sym(libSystem, "semaphore_signal")
 	link.semaphoreWait = sym(libSystem, "semaphore_wait")
 	link.violation = purego.NewCallback(violation)
 	if err != nil {
@@ -320,45 +324,67 @@ func Run(start func() error, loop func(), finish func()) error {
 	return nil
 }
 
-// mainFuncs holds the functions that RunOnMain runs on the main thread,
-// by the number that its C function takes.
+// mainFuncs holds the functions that RunOnMain runs for threads other than
+// the worker and the main thread, by the number that the trampoline of
+// their callback takes.
 var mainFuncs struct {
 	sync.Mutex
-	next     uintptr
-	m        map[uintptr]func()
-	callback uintptr
+	next  uintptr
+	m     map[uintptr]func()
+	entry uintptr
 }
 
-// RunOnMain runs fn on the main thread and returns when it returned: on
-// the worker during a step as one forwarded call of a C function that
-// runs fn, so that the calls that fn makes run on the main thread at once
-// and a callback that reaches the main thread meanwhile runs on the
-// worker as a nested step; anywhere else through Forward, which runs it
-// at once while the worker does not run. Off the worker, fn reaches no
-// callback of Go on the main thread: that step waits for the worker, which
-// may be waiting for the caller.
+// RunOnMain runs fn on the worker and returns when it returned. The native
+// calls that fn forwards run on the main thread, one forwarded call each,
+// and a callback that reaches the main thread meanwhile runs on the worker
+// as a nested step; no Go code runs on the main thread. On the worker
+// during a step it runs fn at once, as part of that step, and on the main
+// thread as a step of its own (RunOnWorker). On any other thread the main
+// thread starts the step from its run loop, as it runs a callback, and
+// runs the calls of fn inside that one callout, so that what they
+// autorelease there stays until fn returned. A step that waits for that
+// thread without running the main run loop waits for good. While the
+// worker does not run, it runs fn at once.
 func RunOnMain(fn func()) {
-	fn = checkedRunOnMain(fn)
+	tp := threadPointer()
+	switch {
+	case atomic.LoadUintptr(&link.running) == 0 || tp == link.workerThread:
+		fn()
+	case tp == link.mainThread:
+		RunOnWorker(fn)
+	default:
+		runFromOtherThread(fn)
+	}
+}
+
+// runFromOtherThread runs fn as RunOnMain does on a thread other than the
+// worker and the main thread: it hands the main queue of libdispatch, which
+// the main run loop runs, the trampoline of a callback that runs fn, which
+// the main thread hands the worker as a step.
+func runFromOtherThread(fn func()) {
 	mainFuncs.Lock()
-	if mainFuncs.callback == 0 {
+	if mainFuncs.entry == 0 {
 		mainFuncs.m = map[uintptr]func(){}
-		mainFuncs.callback = purego.NewCallback(func(n uintptr) {
+		mainFuncs.entry = entry(purego.NewCallback(func(n uintptr) {
 			mainFuncs.Lock()
 			f := mainFuncs.m[n]
+			delete(mainFuncs.m, n)
 			mainFuncs.Unlock()
 			f()
-		})
+		}), 0)
 	}
 	mainFuncs.next++
 	n := mainFuncs.next
-	mainFuncs.m[n] = fn
+	done := make(chan struct{})
+	mainFuncs.m[n] = func() {
+		defer close(done)
+		fn()
+	}
 	mainFuncs.Unlock()
-	defer func() {
-		mainFuncs.Lock()
-		delete(mainFuncs.m, n)
-		mainFuncs.Unlock()
-	}()
-	Forward[struct{}](mainFuncs.callback, n)
+	forwarded.Add(1)
+	queued.Add(1)
+	native.dispatchAsyncF(native.mainQueue, n, mainFuncs.entry)
+	<-done
 }
 
 // step is the C function of the steps that RunOnWorker starts.
@@ -405,6 +431,13 @@ func IsMainThread() bool {
 	}
 	tp := threadPointer()
 	return tp == link.mainThread || (tp == link.workerThread && link.depth > 0)
+}
+
+// Stepping reports whether the worker runs a step. On the main thread it
+// tells whether the main thread runs inside that step, where it drains no
+// autorelease pool of its own until the step returned.
+func Stepping() bool {
+	return atomic.LoadUintptr(&link.running) != 0 && atomic.LoadUintptr(&link.depth) > 0
 }
 
 // Forward runs the native call of fn with args on the main thread and
@@ -463,6 +496,16 @@ var forwarded atomic.Uint64
 // on the main thread or while the worker does not run, is not counted.
 func Forwarded() uint64 { return forwarded.Load() }
 
+// queued counts what threads other than the worker and the main thread
+// handed the main thread.
+var queued atomic.Uint64
+
+// Queued returns how many of the calls that Forwarded counts threads other
+// than the worker and the main thread handed the main thread: their
+// forwarded calls, and the step of each RunOnMain, whose own calls the
+// worker forwards.
+func Queued() uint64 { return queued.Load() }
+
 // forward runs rec on the main thread.
 func forward(rec *record) {
 	tp := threadPointer()
@@ -475,6 +518,7 @@ func forward(rec *record) {
 		purego.SyscallN(exchangeAddress(), uintptr(unsafe.Pointer(rec)))
 	default:
 		forwarded.Add(1)
+		queued.Add(1)
 		rec = checkedOnMain(rec)
 		s := semaphore()
 		rec.sem = uintptr(s)
@@ -516,7 +560,6 @@ func entry(target, flags uintptr) uintptr {
 	targets[i] = target
 	targetFlags[i] = flags | recordStep
 	tableIndex[key] = i
-	noteEntry(target, false)
 	return trampolineAddress(i)
 }
 
@@ -558,7 +601,6 @@ func Callback(fn uintptr) uintptr { return entry(fn, 0) }
 // method_setImplementation. returnsObject says that the method returns an
 // object, which the step hands to the autorelease pool of the main thread.
 func Method(imp uintptr, returnsObject bool) uintptr {
-	noteEntry(imp, true)
 	if returnsObject {
 		return entry(imp, recordReturnsObject)
 	}

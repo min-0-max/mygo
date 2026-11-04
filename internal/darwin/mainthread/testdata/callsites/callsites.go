@@ -42,7 +42,7 @@ func BindAddr(fn any, addr uintptr, name string) { purego.RegisterFunc(fn, addr)
 func Check(fn any, name string)                  {}
 func CheckSend(recv, sel uintptr)                {}
 
-// RunOnMain runs fn on the main thread as one forwarded call.
+// RunOnMain runs fn on the worker as one step.
 func RunOnMain(fn func()) { fn() }
 
 // ByReceiver runs a native call on the calling thread or the main thread

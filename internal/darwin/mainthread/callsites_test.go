@@ -3393,8 +3393,8 @@ func (a *analysis) offWorkerCalls(entry *fn) []offWorkerCall {
 						seen[at] = true
 						calls = append(calls, offWorkerCall{call: at, main: name == a.r.rules.runOnMain, loop: inLoop})
 					}
-					// The function that RunOnMain runs runs on the main
-					// thread, where its calls run at once.
+					// The function that RunOnMain runs is one step, whose
+					// calls the main thread runs before it drains a pool.
 					return false
 				}
 				// A function that the call passes is reached at the call:

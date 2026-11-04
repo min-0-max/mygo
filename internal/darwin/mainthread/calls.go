@@ -86,9 +86,10 @@ const (
 // the selector.
 var SendFuncs = []string{"Send", "SendRetained"}
 
-// RunOnMainFunc names the function that runs a Go function on the main
-// thread as one forwarded call, inside which the calls that the function
-// makes run at once.
+// RunOnMainFunc names the function that runs a Go function on the worker
+// as one step: from another goroutine one forwarded call, inside which the
+// main thread runs the calls that the function forwards before it drains
+// a pool.
 const RunOnMainFunc = "RunOnMain"
 
 // ForwardingFuncs name the functions of this package whose every call is

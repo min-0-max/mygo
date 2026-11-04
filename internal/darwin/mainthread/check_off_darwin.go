@@ -28,14 +28,3 @@ func checkCalling(fn uintptr, args []uintptr) {}
 
 // checkedOnMain returns the record to forward for rec.
 func checkedOnMain(rec *record) *record { return rec }
-
-// checkedRunOnMain returns the function that RunOnMain runs for fn.
-func checkedRunOnMain(fn func()) func() { return fn }
-
-// checkedSignal returns the function that wakes the other side for the
-// address of semaphore_signal.
-func checkedSignal(signal uintptr) uintptr { return signal }
-
-// noteEntry takes the target of a new trampoline, and whether it is the
-// implementation of a method.
-func noteEntry(target uintptr, method bool) {}

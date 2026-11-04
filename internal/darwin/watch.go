@@ -89,9 +89,7 @@ var (
 	// the first watch and never freed. fseFlush is what dispatch_sync_f
 	// runs to wait for the callbacks already queued: free, which is given
 	// NULL and does nothing, as the purpose of the call is the flush of
-	// the queue. It is native because dispatch_sync_f may run it on the
-	// main thread, where a callback of Go would wait for a worker that may
-	// wait for this watch.
+	// the queue.
 	fseCallback, fseFlush uintptr
 
 	// fseQueue is the one serial queue every stream delivers on, off the
@@ -295,9 +293,9 @@ func (s *fseStream) deliver(n platform.FileWatchNotice) {
 	d.Wake()
 }
 
-// stopStreams stops and releases streams as one call on the main thread
-// (mainthread.RunOnMain), where FSEvents runs: the goroutine of the watch
-// calls it.
+// stopStreams stops and releases streams in one step
+// (mainthread.RunOnMain), whose calls of FSEvents run on the main thread:
+// the goroutine of the watch calls it.
 func stopStreams(streams []*fseStream) {
 	if len(streams) == 0 {
 		return
@@ -309,7 +307,7 @@ func stopStreams(streams []*fseStream) {
 	})
 }
 
-// stop stops and releases the stream, on the main thread. A callback may
+// stop stops and releases the stream, in a step. A callback may
 // be running on the queue: dispatch_sync_f waits for it, after which
 // nothing touches s.
 func (s *fseStream) stop() {
@@ -426,8 +424,9 @@ func (d *fseWatch) Add(t platform.FileWatchTarget) error {
 	}
 	s := &fseStream{id: t.ID, path: streamPath, subtree: t.Subtree, driver: d}
 	s.context.info = uintptr(unsafe.Pointer(s))
-	// The stream is made, scheduled and started as one call on the main
-	// thread (mainthread.RunOnMain), where FSEvents runs.
+	// The stream is made, scheduled and started in one step
+	// (mainthread.RunOnMain), whose calls of FSEvents run on the main
+	// thread.
 	var startErr error
 	mainthread.RunOnMain(func() {
 		// kFSEventStreamEventIdSinceNow: the core's snapshot is taken
