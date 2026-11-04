@@ -226,6 +226,15 @@ var CallingThreadReceivers = []Receivers{
 		Decided: []string{"release", "autorelease"},
 	},
 	{
+		// What they return is one of them or a value object.
+		Name:           "Foundation classes that Apple documents as thread-safe",
+		Classes:        []string{"NSBundle", "NSFileManager"},
+		ClassMessages:  true,
+		AllMessages:    true,
+		ReturnsMembers: true,
+		Selectors:      []string{},
+	},
+	{
 		Name:          "Foundation collections",
 		Classes:       []string{"NSArray", "NSMutableArray", "NSDictionary", "NSMutableDictionary"},
 		ClassMessages: true,

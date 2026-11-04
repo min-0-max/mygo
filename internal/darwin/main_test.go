@@ -12,8 +12,9 @@ import (
 // the main thread, by the environment variable that makes the test
 // binary one.
 var helpers = map[string]func() int{
-	wakeEnv:    wakeMain,
-	resultsEnv: resultsMain,
+	wakeEnv:      wakeMain,
+	resultsEnv:   resultsMain,
+	offWorkerEnv: offWorkerMain,
 }
 
 func init() {
