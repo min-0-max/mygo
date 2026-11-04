@@ -57,10 +57,14 @@ func drainQueue()
 func trampolineTable()
 func trampolineCommon()
 
+// runApp(records *[4]*record) is the C function of Run on the main thread.
+func runApp()
+
 // Their addresses, and the identity of the calling thread: a word of the
 // thread's registers that no other thread shares, which the trampolines
 // read as well.
 func exchangeAddress() uintptr
+func runAppAddress() uintptr
 func drainQueueAddress() uintptr
 func trampolineAddress(i uintptr) uintptr
 func threadPointer() uintptr
@@ -304,24 +308,93 @@ func Stop() {
 	stopped = make(chan struct{})
 }
 
-// Run runs the Go code of an application around its event loop: it
-// starts the worker (Start), runs start on it as a step, runs loop on the
-// calling thread, the main thread, runs finish on the worker as another
-// step and ends the worker (Stop) before it returns. An error of start
-// ends Run before loop and finish.
-func Run(start func() error, loop func(), finish func()) error {
+// Call is a native call: the C function Fn with Args, as Forward takes
+// them. The zero Call is no call.
+type Call struct {
+	Fn   uintptr
+	Args []any
+}
+
+// SendCall returns the Call that sends the message sel with args to recv.
+func SendCall(recv objc.ID, sel objc.SEL, args ...any) Call {
+	return Call{Fn: msgSend(), Args: append([]any{recv, sel}, args...)}
+}
+
+// TestEnding, when set, is called on the worker in the step that ends it
+// in Run, the last Go code of the steps of Run. The tests of internal/e2e
+// set it.
+var TestEnding func()
+
+// The steps of Run, by the argument of the C function of each.
+const (
+	runStart = iota
+	runFinish
+	runEnd
+)
+
+// runSteps holds what the steps of Run run, and the records of runApp.
+var runSteps struct {
+	once     sync.Once
+	callback uintptr
+	start    func() (Call, error)
+	finish   func()
+	err      error
+	recs     *[4]*record
+	keep     []any
+}
+
+// Run runs the Go code of an application around its event loop: it starts
+// the worker (Start) and then makes one native call on the main thread
+// (runApp), which hands the worker start as a step, makes the call that
+// start returned, the event loop, on the main thread, hands the worker
+// finish as another step and then the step that ends the worker. So from
+// the step of start until the worker returned from its last step no Go
+// code runs on the main thread: meanwhile it runs the calls that the steps
+// forward to it, and the callbacks that reach it during the event loop run
+// on the worker as steps. The event loop is what start returns as it
+// initializes what the loop runs on, the zero Call none. An error of start
+// ends Run before the event loop and finish.
+func Run(start func() (Call, error), finish func()) error {
+	runSteps.once.Do(func() {
+		runSteps.callback = purego.NewCallback(func(step uintptr) uintptr {
+			switch step {
+			case runStart:
+				loop, err := runSteps.start()
+				if err != nil {
+					runSteps.err = err
+					return 1
+				}
+				if loop.Fn != 0 {
+					runSteps.recs[1], runSteps.keep, _ = prepare(loop.Fn, reflect.TypeFor[struct{}](), loop.Args)
+				}
+			case runFinish:
+				runSteps.finish()
+			case runEnd:
+				if TestEnding != nil {
+					TestEnding()
+				}
+				link.stop = 1
+			}
+			return 0
+		})
+	})
+	step := func(n uintptr) *record {
+		rec := &record{fn: runSteps.callback, flags: recordStep}
+		rec.x[0] = n
+		return rec
+	}
+	recs := &[4]*record{step(runStart), {}, step(runFinish), step(runEnd)}
 	if err := Start(); err != nil {
 		return err
 	}
-	defer Stop()
-	var err error
-	RunOnWorker(func() { err = start() })
-	if err != nil {
-		return err
-	}
-	loop()
-	RunOnWorker(finish)
-	return nil
+	runSteps.start, runSteps.finish, runSteps.err, runSteps.recs = start, finish, nil, recs
+	purego.SyscallN(runAppAddress(), uintptr(unsafe.Pointer(recs)))
+	runtime.KeepAlive(recs)
+	<-stopped
+	stopped = make(chan struct{})
+	err := runSteps.err
+	runSteps.start, runSteps.finish, runSteps.err, runSteps.recs, runSteps.keep = nil, nil, nil, nil, nil
+	return err
 }
 
 // mainFuncs holds the functions that RunOnMain runs for threads other than

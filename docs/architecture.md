@@ -335,13 +335,17 @@ purego gives three primitives, used everywhere:
 `internal/darwin/mainthread` runs the Go code of a macOS app on a worker:
 a goroutine locked to a thread other than the main thread.
 
-- `Backend.Run` hands `mainthread.Run` the event loop: it starts the
-  worker (`Start`), runs `start` on it as a step (`RunOnWorker`), runs the
-  event loop on the main thread, runs `finish` as another step and ends
-  the worker (`Stop`). `TestTheMainThreadIsTheWorker` runs `App.Run` so
-  on a fake backend and holds listeners, `onMain`, `RunOnMain` and
-  `await` to the worker. The main thread waits for
-  a step on its own stack and meanwhile runs the calls that the worker
+- `Backend.Run` hands `mainthread.Run` its Go code: `start`, which returns
+  the event loop, `run` of the shared application that it made, as a
+  native call (`Call`). `mainthread.Run` starts the worker (`Start`) and
+  makes one native call on the main thread (`runApp`): it hands the
+  worker `start` as a step, makes the call of the event loop, hands the
+  worker `finish` as another step and then the step that ends the worker.
+  So the main thread runs no Go code from the step of `start` until the
+  worker returned from its last step. `TestTheMainThreadIsTheWorker`
+  runs `App.Run` so on a fake backend and holds listeners, `onMain`,
+  `RunOnMain` and `await` to the worker. The main thread waits for a
+  step on its own stack and meanwhile runs the calls that the worker
   forwards to it.
 - Each method of a class that mygo registers (`mainthread.RegisterClass`
   sets each implementation to `mainthread.Method`), each block that it makes

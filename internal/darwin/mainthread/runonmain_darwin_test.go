@@ -33,12 +33,12 @@ func otherThreadMain() int {
 	if err != nil {
 		return fail(err)
 	}
-	var (
-		runLoopRun func()
-		getMain    func() uintptr
-	)
-	purego.RegisterLibFunc(&runLoopRun, cf, "CFRunLoopRun")
+	var getMain func() uintptr
 	purego.RegisterLibFunc(&getMain, cf, "CFRunLoopGetMain")
+	runLoopRun, err := purego.Dlsym(cf, "CFRunLoopRun")
+	if err != nil {
+		return fail(err)
+	}
 	stop, err := purego.Dlsym(cf, "CFRunLoopStop")
 	if err != nil {
 		return fail(err)
@@ -56,10 +56,10 @@ func otherThreadMain() int {
 		return callbackOn
 	}))
 	main = self()
-	err = Run(func() error {
+	err = Run(func() (Call, error) {
 		worker = self()
-		return nil
-	}, func() {
+		// The goroutine's RunOnMain runs once the main thread runs its run
+		// loop.
 		go func() {
 			before := Forwarded()
 			RunOnMain(func() {
@@ -71,7 +71,7 @@ func otherThreadMain() int {
 			n = Forwarded() - before
 			RunOnMain(func() { Forward[struct{}](stop, getMain()) })
 		}()
-		runLoopRun()
+		return Call{Fn: runLoopRun}, nil
 	}, func() {})
 	if err != nil {
 		return fail(err)

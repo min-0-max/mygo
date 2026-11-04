@@ -25,14 +25,16 @@ func init() { workerTestMain = workerMain }
 // as the darwin backend has it: Run runs the Go code of App.Run on the
 // worker around an event loop on the main thread, which hands each
 // dispatch to the worker through a trampoline, and Step, which await
-// calls on the worker, waits for an event on the main thread as one
-// forwarded call (mainthread.RunOnMain), as the darwin backend's does.
+// calls on the worker, runs on the worker (mainthread.RunOnMain) and waits
+// for an event there. The event loop is a C callback of Go, in place of
+// the native event loop of AppKit.
 type workerBackend struct {
 	*fake.Backend
 	h                  platform.AppHandler
 	signal, wake, quit chan struct{}
 	quitOnce           sync.Once
 	ready, dispatch    uintptr
+	loop               uintptr
 	mainThread         uintptr
 }
 
@@ -50,16 +52,7 @@ func newWorkerBackend() *workerBackend {
 	b := &workerBackend{Backend: fake.New(), signal: make(chan struct{}, 1), wake: make(chan struct{}, 1), quit: make(chan struct{})}
 	b.ready = mainthread.Callback(purego.NewCallback(func() { b.h.Ready() }))
 	b.dispatch = mainthread.Callback(purego.NewCallback(func() { b.h.Dispatch() }))
-	return b
-}
-
-func (b *workerBackend) Init(h platform.AppHandler, opts platform.AppOptions) error {
-	b.h = h
-	return b.Backend.Init(h, opts)
-}
-
-func (b *workerBackend) Run(start func() error, finish func()) error {
-	return mainthread.Run(start, func() {
+	b.loop = purego.NewCallback(func() {
 		b.mainThread = thread()
 		purego.SyscallN(b.ready)
 		for {
@@ -71,6 +64,18 @@ func (b *workerBackend) Run(start func() error, finish func()) error {
 			case <-b.wake:
 			}
 		}
+	})
+	return b
+}
+
+func (b *workerBackend) Init(h platform.AppHandler, opts platform.AppOptions) error {
+	b.h = h
+	return b.Backend.Init(h, opts)
+}
+
+func (b *workerBackend) Run(start func() error, finish func()) error {
+	return mainthread.Run(func() (mainthread.Call, error) {
+		return mainthread.Call{Fn: b.loop}, start()
 	}, finish)
 }
 
@@ -90,7 +95,7 @@ func (b *workerBackend) Wake() {
 	}
 }
 
-// Step waits on the main thread for one event.
+// Step waits on the worker for one event.
 func (b *workerBackend) Step() {
 	mainthread.RunOnMain(func() {
 		select {

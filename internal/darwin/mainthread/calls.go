@@ -456,12 +456,12 @@ var CallingThreadFunctions = []FunctionGroup{
 		},
 	},
 	{
-		Name:    "the worker: the Mach semaphores with which the main thread and the worker wake each other, the run loop source through which other threads wake the main thread, the description of a type ID, by which ByReceiver finds a type in CFTypes, and the assembly of this package that runs a record and hands a record to the other side",
+		Name:    "the worker: the Mach semaphores with which the main thread and the worker wake each other, the run loop source through which other threads wake the main thread, the description of a type ID, by which ByReceiver finds a type in CFTypes, and the assembly of this package that runs a record, hands a record to the other side and runs the steps of an application around its event loop",
 		Package: "internal/darwin/mainthread",
 		Names: []string{
 			"semaphore_create", "semaphore_signal", "semaphore_wait",
 			"CFRunLoopSourceCreate", "CFCopyTypeIDDescription",
-			"callRecord", "exchange",
+			"callRecord", "exchange", "runApp",
 		},
 	},
 	{Name: "libdispatch", Prefixes: []string{"dispatch_"}},

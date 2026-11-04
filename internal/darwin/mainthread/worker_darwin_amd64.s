@@ -313,6 +313,45 @@ direct:
 	MOVQ	R10, AX
 	JMP	R11
 
+// runApp(records *[4]*record) is a C function, which the main thread calls
+// to run an application with no Go code of its own in between: it hands
+// the worker the first record, a step, and unless that step returned
+// other than 0, makes the call of the second, the event loop, which it
+// reads once that step returned, when it has a function, and hands the
+// worker the third, a step; then it hands the worker the fourth, the step
+// that ends it.
+TEXT ·runApp(SB), NOSPLIT|NOFRAME, $0-0
+	PUSHQ	BP
+	MOVQ	SP, BP
+	PUSHQ	BX
+	SUBQ	$8, SP
+	MOVQ	DI, BX
+	MOVQ	0(BX), DI
+	CALL	·exchange(SB)
+	MOVQ	0(BX), AX
+	CMPQ	(record_r+0)(AX), $0
+	JNE	end
+	MOVQ	8(BX), DI
+	CMPQ	record_fn(DI), $0
+	JEQ	finish
+	CALL	·callRecord(SB)
+finish:
+	MOVQ	16(BX), DI
+	CALL	·exchange(SB)
+end:
+	MOVQ	24(BX), DI
+	CALL	·exchange(SB)
+	ADDQ	$8, SP
+	POPQ	BX
+	POPQ	BP
+	RET
+
+// func runAppAddress() uintptr
+TEXT ·runAppAddress(SB), NOSPLIT, $0-8
+	MOVQ	$·runApp(SB), AX
+	MOVQ	AX, ret+0(FP)
+	RET
+
 // func exchangeAddress() uintptr
 TEXT ·exchangeAddress(SB), NOSPLIT, $0-8
 	MOVQ	$·exchange(SB), AX

@@ -26,3 +26,7 @@ func forwarded() uint64 { return mainthread.Forwarded() }
 // of each frame before it requests its presentation, until it is called
 // with nil. In a step.
 func onPresent(fn func(layer, drawable uintptr)) { metal.TestPresenting = fn }
+
+// onEnding has the worker call fn in the step that ends it, the last Go
+// code of the steps of App.Run.
+func onEnding(fn func()) { mainthread.TestEnding = fn }

@@ -333,6 +333,10 @@ func stackChild() int {
 	mygo.App.OnWindowAllClosed(func() {})
 	mygo.App.OnQuit(r.quitListener)
 	mygo.App.WhenReady(func() { go r.drive() })
+	// The last phase ends in the step that ends the worker, the last Go
+	// code of the steps of App.Run: the main thread runs Go again only
+	// once the worker ended, as App.Run returns.
+	onEnding(func() { setPhase(-1) })
 	if err := startSampler(); err != nil {
 		return fail(err)
 	}
@@ -386,13 +390,12 @@ func funcAt(pc uintptr) string {
 
 // quitListener messages a method of a class that mygo registers, its app
 // delegate's applicationSupportsSecureRestorableState:, while App.Quit
-// runs, and ends the last phase.
+// runs.
 func (r *stackRun) quitListener() {
 	app := mainSend[objc.ID](class("NSApplication"), sel("sharedApplication"))
 	delegate := mainSend[objc.ID](app, sel("delegate"))
 	r.quitSecure.Store(mainSend[bool](delegate, sel("applicationSupportsSecureRestorableState:"), app))
 	r.quitListened.Store(true)
-	setPhase(-1)
 }
 
 // frameOf returns the count of frames that a window's content built.

@@ -67,7 +67,8 @@ func askMain() int {
 		return p
 	}
 	runLoopRun, runLoopStop, getMain := sym("CFRunLoopRun"), sym("CFRunLoopStop"), sym("CFRunLoopGetMain")
-	err := mainthread.Run(func() error { return nil }, func() {
+	err := mainthread.Run(func() (mainthread.Call, error) {
+		// The goroutine asks once the main thread runs its run loop.
 		go func() {
 			defer mainthread.RunOnMain(func() {
 				main, _, _ := purego.SyscallN(getMain)
@@ -79,7 +80,7 @@ func askMain() int {
 				fmt.Printf("%s handed %d calls\n", u.name, mainthread.Queued()-before)
 			}
 		}()
-		purego.SyscallN(runLoopRun)
+		return mainthread.Call{Fn: runLoopRun}, nil
 	}, func() {})
 	if err != nil {
 		return fail(err)

@@ -279,15 +279,18 @@ func TestABrokenProtocolPanicsWithTheState(t *testing.T) {
 }
 
 // Run starts the worker, runs start and finish on it as steps around the
-// loop, which runs on the calling thread, and ends the worker; an error
-// of start ends it before the loop.
+// loop, a native call that runs on the calling thread, and ends the worker
+// before it returns; an error of start ends it before the loop.
 func TestRunStartsAndStopsTheWorkerAroundTheLoop(t *testing.T) {
 	self := pthreadSelf(t)
+	threadID := dlsym(t, libSystem, "pthread_threadid_np")
 	type ran struct {
 		thread uintptr
 		main   bool
+		looped bool
 	}
-	where := func() ran { return ran{direct[uintptr](self), IsMainThread()} }
+	var loopID uint64
+	where := func() ran { return ran{direct[uintptr](self), IsMainThread(), loopID != 0} }
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -295,11 +298,12 @@ func TestRunStartsAndStopsTheWorkerAroundTheLoop(t *testing.T) {
 		defer runtime.UnlockOSThread()
 		defer func() { link.mainThread = 0 }()
 		main := direct[uintptr](self)
-		var start, loop, finish ran
-		var runningInLoop bool
-		err := Run(func() error { start = where(); return nil }, func() {
-			loop = where()
-			runningInLoop = link.running != 0
+		var mainID uint64
+		direct[int32](threadID, uintptr(0), &mainID)
+		var start, finish ran
+		err := Run(func() (Call, error) {
+			start = where()
+			return Call{Fn: threadID, Args: []any{uintptr(0), &loopID}}, nil
 		}, func() { finish = where() })
 		if err != nil {
 			t.Error(err)
@@ -307,18 +311,25 @@ func TestRunStartsAndStopsTheWorkerAroundTheLoop(t *testing.T) {
 		if start.thread == main || !start.main || finish.thread != start.thread || !finish.main {
 			t.Errorf("start ran on %+v and finish on %+v, not as steps on the worker; the main thread is %#x", start, finish, main)
 		}
-		if loop.thread != main || !runningInLoop {
-			t.Errorf("the loop ran on %#x (worker running %v), not on the main thread %#x with the worker", loop.thread, runningInLoop, main)
+		if loopID != mainID || start.looped || !finish.looped {
+			t.Errorf("the loop ran on thread %d (before start %v, before finish %v), not on the main thread %d between the steps", loopID, start.looped, finish.looped, mainID)
 		}
 		if link.running != 0 {
 			t.Error("the worker runs on after Run returned")
 		}
 
 		failed := errors.New("start failed")
-		var looped, finished bool
-		err = Run(func() error { return failed }, func() { looped = true }, func() { finished = true })
-		if err != failed || looped || finished || link.running != 0 {
-			t.Errorf("after a failed start Run returned %v, ran the loop %v and finish %v, and left the worker running %v", err, looped, finished, link.running != 0)
+		loopID = 0
+		var finished bool
+		err = Run(func() (Call, error) { return Call{Fn: threadID, Args: []any{uintptr(0), &loopID}}, failed }, func() { finished = true })
+		if err != failed || loopID != 0 || finished || link.running != 0 {
+			t.Errorf("after a failed start Run returned %v, ran the loop %v and finish %v, and left the worker running %v", err, loopID != 0, finished, link.running != 0)
+		}
+
+		var ended bool
+		err = Run(func() (Call, error) { return Call{}, nil }, func() { ended = true })
+		if err != nil || !ended || link.running != 0 {
+			t.Errorf("without a loop Run returned %v, ran finish %v and left the worker running %v", err, ended, link.running != 0)
 		}
 	}()
 	<-done

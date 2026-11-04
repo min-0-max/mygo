@@ -104,7 +104,7 @@ func wakeMain() int {
 	}), 0)
 	addObserver(getMain(), observer, **(**uintptr)(unsafe.Pointer(&defaultMode))) // a CFStringRef constant
 
-	err = mainthread.Run(func() error {
+	err = mainthread.Run(func() (mainthread.Call, error) {
 		woke := make(chan struct{})
 		go func() {
 			defer close(woke)
@@ -113,8 +113,8 @@ func wakeMain() int {
 		}()
 		b.Step()
 		<-woke
-		return nil
-	}, func() {}, func() {})
+		return mainthread.Call{}, nil
+	}, func() {})
 	if err != nil {
 		return fail(err)
 	}

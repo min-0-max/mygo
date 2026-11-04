@@ -225,7 +225,8 @@ func offWorkerMain() int {
 		return fail(err)
 	}
 	var callErr, stepErr error
-	err = mainthread.Run(func() error { return nil }, func() {
+	err = mainthread.Run(func() (mainthread.Call, error) {
+		// The goroutine's calls run once the main thread runs its run loop.
 		go func() {
 			defer mainthread.RunOnMain(func() { mainthread.Forward[struct{}](runLoopStop, cfRunLoopGetMain()) })
 			for _, c := range offWorkerCalls {
@@ -238,7 +239,7 @@ func offWorkerMain() int {
 				}
 			}
 		}()
-		purego.SyscallN(runLoopRun)
+		return mainthread.Call{Fn: runLoopRun}, nil
 	}, func() {
 		// SaveLocale makes an array that it forwards to autorelease, on
 		// the worker in a step, which may.

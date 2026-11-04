@@ -89,7 +89,7 @@ func TestPACScriptCallbackRunsOnItsGoroutine(t *testing.T) {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
 		main = self()
-		err := mainthread.Run(func() error {
+		err := mainthread.Run(func() (mainthread.Call, error) {
 			worker = self()
 			finished := make(chan struct{})
 			go func() {
@@ -112,8 +112,8 @@ func TestPACScriptCallbackRunsOnItsGoroutine(t *testing.T) {
 			case <-time.After(wait.Guard):
 				t.Errorf("the setup script on the goroutine never finished (waited %v)", wait.Guard)
 			}
-			return nil
-		}, func() {}, func() {})
+			return mainthread.Call{}, nil
+		}, func() {})
 		if err != nil {
 			t.Error(err)
 		}

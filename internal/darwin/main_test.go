@@ -15,6 +15,7 @@ var helpers = map[string]func() int{
 	wakeEnv:      wakeMain,
 	resultsEnv:   resultsMain,
 	offWorkerEnv: offWorkerMain,
+	runEnv:       runMain,
 }
 
 func init() {

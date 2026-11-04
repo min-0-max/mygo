@@ -268,6 +268,45 @@ returned:
 	ADD	$TFRAME, RSP
 	RET
 
+// runApp(records *[4]*record) is a C function, which the main thread calls
+// to run an application with no Go code of its own in between: it hands
+// the worker the first record, a step, and unless that step returned
+// other than 0, makes the call of the second, the event loop, which it
+// reads once that step returned, when it has a function, and hands the
+// worker the third, a step; then it hands the worker the fourth, the step
+// that ends it.
+TEXT ·runApp(SB), NOSPLIT|NOFRAME, $0-0
+	SUB	$32, RSP
+	STP	(R29, R30), 0(RSP)
+	STP	(R19, R20), 16(RSP)
+	MOVD	RSP, R29
+	MOVD	R0, R19
+	MOVD	0(R19), R0
+	CALL	·exchange(SB)
+	MOVD	0(R19), R0
+	MOVD	record_r(R0), R1
+	CBNZ	R1, end
+	MOVD	8(R19), R0
+	MOVD	record_fn(R0), R1
+	CBZ	R1, finish
+	CALL	·callRecord(SB)
+finish:
+	MOVD	16(R19), R0
+	CALL	·exchange(SB)
+end:
+	MOVD	24(R19), R0
+	CALL	·exchange(SB)
+	LDP	16(RSP), (R19, R20)
+	LDP	0(RSP), (R29, R30)
+	ADD	$32, RSP
+	RET
+
+// func runAppAddress() uintptr
+TEXT ·runAppAddress(SB), NOSPLIT, $0-8
+	MOVD	$·runApp(SB), R0
+	MOVD	R0, ret+0(FP)
+	RET
+
 // func exchangeAddress() uintptr
 TEXT ·exchangeAddress(SB), NOSPLIT, $0-8
 	MOVD	$·exchange(SB), R0
