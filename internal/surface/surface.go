@@ -90,6 +90,9 @@ type Conn struct {
 	// application where the frame about to present shows its native view
 	// elements (NativeViewSurface.PlaceNativeViews).
 	PlaceNativeViews func(views []platform.NativeViewPlacement)
+	// TabIntoNativeView, set with it, gives key the keyboard
+	// (NativeViewSurface.TabIntoNativeView).
+	TabIntoNativeView func(key uintptr, back bool)
 	// ContentSize, set by a window that takes its content's size
 	// (mygo.FlyoutOptions.FitContent), nil in others, hears the size
 	// the content takes, in DIPs, as a frame laid out at the window's

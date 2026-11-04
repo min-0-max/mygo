@@ -1130,8 +1130,8 @@ func (h *windowHost) platformWebView(v NativeWebView) platform.WebView {
 
 func (h *windowHost) tabIntoWebView(v NativeWebView, back bool) {
 	if e, ok := v.(nativeElement); ok {
-		if s, ok := h.conn.Surface.(platform.NativeViewSurface); ok {
-			s.TabIntoNativeView(e.key, back)
+		if h.conn.TabIntoNativeView != nil {
+			h.conn.TabIntoNativeView(e.key, back)
 		}
 		return
 	}

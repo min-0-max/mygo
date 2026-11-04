@@ -3679,7 +3679,9 @@ either.
   with the first native view and only for mouse-down events, as AppKit
   gives the view the press itself and nothing of mygo's sees it; the
   window's `selectKeyViewFollowingView:` and `...PrecedingView:` see Tab
-  leave a key view (`tabOutOfNativeView`). An element adopts the views
+  leave a key view (`nativeHost.tabOut`). What every app reaches goes
+  through `surface.native`, an interface, and `conn`'s functions, which
+  `NewNativeView` sets, so an app without a native view links none of it. An element adopts the views
   with `setAccessibilityParent:`, retained until the frame that stops
   showing them, as the views are the application's and a class of its
   own is not on them. `HoldFrames` lives in `windowHost` (`holding`,

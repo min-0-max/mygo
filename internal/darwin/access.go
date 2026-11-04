@@ -414,10 +414,13 @@ func (s *surface) UpdateAccessibility(tree *platform.AccessTree) {
 				web, grafted[v] = v, true
 				v.accessParent = el.obj
 			}
-			adopted := s.nativeAccess(&tree.Nodes[i])
+			var adopted []id
+			if s.native != nil {
+				adopted = s.native.access(&tree.Nodes[i])
+			}
 			if !slices.Equal(el.children, children[i]) || el.webView != web || !slices.Equal(el.adopted, adopted) {
 				el.children, el.webView = children[i], web
-				el.adopt(adopted)
+				s.adopt(el, adopted)
 				kids := childObjs[i]
 				if web != nil {
 					kids = append([]id{web.web}, kids...)
@@ -486,7 +489,7 @@ func (s *surface) UpdateAccessibility(tree *platform.AccessTree) {
 		}
 		for nid, el := range s.elements {
 			if !live[nid] {
-				el.adopt(nil)
+				s.adopt(el, nil)
 				postNote(el.obj, "AXUIElementDestroyed")
 				delete(s.w.b.byAccess, el.obj)
 				release(el.obj)
@@ -520,12 +523,19 @@ func (s *surface) UpdateAccessibility(tree *platform.AccessTree) {
 }
 
 // destroyAccess releases the elements of a surface.
+// adopt has el take kids from the application's views.
+func (s *surface) adopt(el *accessElement, kids []id) {
+	if s.native != nil {
+		s.native.adopt(el, kids)
+	}
+}
+
 func (s *surface) destroyAccess() {
 	for _, v := range s.w.webViews {
 		v.accessParent = 0
 	}
 	for nid, el := range s.elements {
-		el.adopt(nil)
+		s.adopt(el, nil)
 		postNote(el.obj, "AXUIElementDestroyed")
 		delete(s.w.b.byAccess, el.obj)
 		release(el.obj)
