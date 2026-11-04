@@ -7,6 +7,7 @@ import (
 	"image/png"
 	"math"
 	"slices"
+	"strconv"
 
 	"github.com/egoist/mygo/i18n"
 	"github.com/egoist/mygo/internal/platform"
@@ -76,9 +77,10 @@ func (w *Window) attachContent() {
 				}
 			}()
 		},
-		DevTools:   w.devTools,
-		Invalidate: w.Invalidate,
-		Ready:      w.readyToShow,
+		DevTools:          w.devTools,
+		DrawWhileOccluded: w.drawWhileOccluded,
+		Invalidate:        w.Invalidate,
+		Ready:             w.readyToShow,
 		Post: func(fn func()) {
 			postMain(func() {
 				if w.native != nil {
@@ -189,6 +191,87 @@ func (w *Window) Update(fn func()) {
 		fn()
 		w.contentChanged()
 	})
+}
+
+// Presentation is what came of the frame that was to show a window's
+// Content (Window.AfterPresent): it presented, or why it presented
+// nothing.
+type Presentation uint8
+
+const (
+	// Presented tells that the present of the frame ran.
+	Presented = Presentation(platform.Presented)
+	// PresentNoDamage tells that the Content changed nothing of the frame
+	// before, and no frame presented.
+	PresentNoDamage = Presentation(platform.PresentNoDamage)
+	// PresentNoDrawable tells that the frame found nothing to draw into,
+	// as when the display held all the window's drawables past the wait
+	// for one.
+	PresentNoDrawable = Presentation(platform.PresentNoDrawable)
+	// PresentHeld tells that the window holds its frames, as while nothing
+	// of it shows.
+	PresentHeld = Presentation(platform.PresentHeld)
+	// PresentClosed tells that the window closed before the frame
+	// presented.
+	PresentClosed = Presentation(platform.PresentClosed)
+	// PresentFailed tells that drawing the frame failed, with the error
+	// that says why.
+	PresentFailed = Presentation(platform.PresentFailed)
+)
+
+func (p Presentation) String() string {
+	switch p {
+	case Presented:
+		return "presented"
+	case PresentNoDamage:
+		return "no damage"
+	case PresentNoDrawable:
+		return "no drawable"
+	case PresentHeld:
+		return "held"
+	case PresentClosed:
+		return "closed"
+	case PresentFailed:
+		return "failed"
+	}
+	return "Presentation(" + strconv.Itoa(int(p)) + ")"
+}
+
+// errNotContent is returned by the methods of windows showing Content
+// called on a window showing a web page.
+var errNotContent = errors.New("mygo: the window shows a web page, not Content")
+
+// AfterPresent has fn run once, on the main thread, with what came of the
+// frame showing the window's Content as it stands when AfterPresent is
+// called, which it asks for: Presented after the frame's present ran, or
+// why it presented nothing, and, for PresentFailed alone, the error that
+// says why drawing it failed. On macOS, a frame that changes the GPU
+// renderer's layer, as a resize's, or that shows web views, presents with
+// Core Animation's transaction, and fn runs inside it, before it commits:
+// what fn changes in other layers, as the place of a native view, shows
+// with the frame. A frame whose scene changed nothing presents nothing
+// (PresentNoDamage), and one that found nothing to draw into, as the
+// display held all the window's drawables, says so (PresentNoDrawable).
+// While the window holds its frames, as while nothing of it shows, fn runs
+// at once with PresentHeld, as the frame would come only once the window
+// shows, and a window closing before the frame answers PresentClosed. A
+// frame dropped for one drawn after it, which shows what it would have,
+// leaves fn to that one. AfterPresent reports an error for a window
+// showing a web page, which takes no notice, and for one destroyed.
+func (w *Window) AfterPresent(fn func(Presentation, error)) error {
+	if w.content == nil {
+		return errNotContent
+	}
+	err := errLoopStopped
+	onMain(func() {
+		if w.conn == nil || w.native == nil {
+			err = errDestroyed
+			return
+		}
+		err = nil
+		w.conn.AfterPresent(func(p platform.Presentation, failed error) { fn(Presentation(p), failed) })
+	})
+	return err
 }
 
 // contentChanged asks the Content for a frame built anew, on the main

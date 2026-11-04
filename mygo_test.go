@@ -39,6 +39,10 @@ var fb *fake.Backend
 // the helper process of the test of the worker.
 var workerTestMain func()
 
+// signalTestMain is the helper process of the signal tests, on the
+// systems with signals: signalApp.
+var signalTestMain func()
+
 // TestMain runs the application on the main goroutine with the fake
 // backend, like a real program, and the tests on another goroutine.
 func TestMain(m *testing.M) {
@@ -75,6 +79,12 @@ func TestMain(m *testing.M) {
 	stopGrace = 0
 	if os.Getenv("MYGO_TEST_BEFORE_RUN") == "1" {
 		beforeRun()
+	}
+	if os.Getenv("MYGO_TEST_OWNED_APP") == "1" {
+		ownedApp()
+	}
+	if os.Getenv("MYGO_TEST_SIGNAL") != "" && signalTestMain != nil {
+		signalTestMain()
 	}
 	App.SetName("MyGoTest")
 	// Keep running when tests close their windows.

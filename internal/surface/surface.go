@@ -63,6 +63,10 @@ type Conn struct {
 	// DevTools tells that the window's developer tools are on
 	// (PageOptions.DevTools): the content then opens its inspector.
 	DevTools bool
+	// DrawWhileOccluded tells that the content draws the frames it asks
+	// for while nothing of the window shows, holding none
+	// (WindowOptions.DrawWhileOccluded).
+	DrawWhileOccluded bool
 	// Invalidate asks for a frame; it is safe from any goroutine.
 	Invalidate func()
 	// Changed asks for a frame built anew after the app changed the state
@@ -98,6 +102,12 @@ type Conn struct {
 	// changed, and reports whether it did build one. The window calls
 	// it before it shows, to show at that size.
 	Fit func() bool
+	// AfterPresent has fn run once on the main thread with what came of
+	// the next frame the surface asks for, built anew: after its present
+	// ran, inside Core Animation's transaction for a frame presenting with
+	// it, or with why it presented nothing, and the error of a frame that
+	// failed (platform.PresentFailed). The content sets it.
+	AfterPresent func(fn func(platform.Presentation, error))
 
 	// Event receives the surface's events, and Focus and Blur of the
 	// window. It reports whether the content takes dragged files, as

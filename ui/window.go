@@ -19,6 +19,8 @@ import (
 // mygo.WindowOptions.Content. Create it with View.
 type Content struct {
 	view func(*context)
+	// hosts are the windows the content shows in, as they attached.
+	hosts []*windowHost
 }
 
 // View returns the content of a window whose user interface view builds,
@@ -74,9 +76,10 @@ func FontFamilies() []FontFamily {
 
 // AttachContent connects the content to a window; package mygo calls it.
 func (v *Content) AttachContent(conn *surface.Conn) {
-	h := &windowHost{conn: conn}
+	h := &windowHost{conn: conn, content: v}
 	rt := newRuntime(v.view, h)
 	h.rt = rt
+	v.hosts = append(v.hosts, h)
 	conn.Event = h.event
 	conn.ThemeChanged = func() {
 		// The interface font is part of the appearance.
@@ -92,6 +95,7 @@ func (v *Content) AttachContent(conn *surface.Conn) {
 	}
 	conn.Capture = h.capture
 	conn.Detach = h.detach
+	conn.AfterPresent = h.afterPresent
 	if conn.ContentSize != nil && conn.FitWidth != nil {
 		rt.fit = newFitter(conn.FitWidth, conn.ContentSize)
 		conn.Fit = h.fit
@@ -115,7 +119,10 @@ func (v *Content) AttachContent(conn *surface.Conn) {
 type windowHost struct {
 	conn *surface.Conn
 	rt   *engine
-	gpu  gpuRenderer
+	// content is the Content the window shows, nil in tests that make
+	// the host themselves.
+	content *Content
+	gpu     gpuRenderer
 	// gpuTried tells that the first frame tried the GPU, onGPU that its
 	// renderer drew on a GPU, degraded that one drawing in software took
 	// its place, and gpuSince when the renderer was made. After a failure,
@@ -173,6 +180,17 @@ type windowHost struct {
 	// refresh paces the frames drawn in memory on a surface that shows
 	// them at once (platform.RefreshSurface); nil until one is.
 	refresh *refreshWaiter
+	// notices wait for what comes of the next frame the surface asks for
+	// (afterPresent).
+	notices []func(platform.Presentation, error)
+}
+
+// presentNotifier is a GPU renderer that tells what came of a frame
+// (Metal's): RenderNotice draws s as Render does, then gives done what
+// came of it once, on the main thread, or, for a frame it dropped for the
+// one drawn after it, calls again, unless it returns an error.
+type presentNotifier interface {
+	RenderNotice(s *scene.Scene, done func(platform.Presentation, error), again func()) error
 }
 
 // displayWaiter is a GPU renderer that waits for the display off the main
@@ -420,11 +438,13 @@ const frameIdle = 2 * time.Second
 
 func (h *windowHost) refreshRate() float32 { return float32(h.conn.Surface.RefreshRate()) }
 
-// occluded reports whether nothing of the window shows: never before its
-// first frame reached the surface, which a window made hidden waits for
-// to become ready to show (OnReadyToShow), though it shows nothing yet.
+// occluded reports whether nothing of the window shows, which holds its
+// frames: never before its first frame reached the surface, which a window
+// made hidden waits for to become ready to show (OnReadyToShow), though it
+// shows nothing yet, nor for a window drawing its frames out of sight
+// (surface.Conn.DrawWhileOccluded).
 func (h *windowHost) occluded() bool {
-	if !h.shown {
+	if !h.shown || h.conn.DrawWhileOccluded {
 		return false
 	}
 	s, ok := h.conn.Surface.(platform.OccludableSurface)
@@ -472,7 +492,8 @@ func (h *windowHost) present(s *scene.Scene) {
 	h.armIdle(frameIdle)
 	h.useWide(s, now)
 	defer h.ready()
-	if h.render(s) {
+	done, again := h.takeNotices()
+	if h.render(s, done, again) {
 		h.path = "drawn on the GPU"
 		if h.degraded {
 			h.path = "drawn by the GPU renderer in software"
@@ -482,12 +503,64 @@ func (h *windowHost) present(s *scene.Scene) {
 	h.path = "drawn in memory"
 	damage := h.soft.Render(s)
 	m := &h.soft.Image
+	presented := platform.Presented
 	if d, ok := h.conn.Surface.(platform.DamageSurface); ok {
 		d.PresentDamage(m.Pix, m.Stride, m.W, m.H, damage)
+		if len(damage) == 0 {
+			presented = platform.PresentNoDamage
+		}
 	} else {
 		h.conn.Surface.PresentPixels(m.Pix, m.Stride, m.W, m.H)
 	}
 	h.refreshPresented()
+	done(presented, nil)
+}
+
+// afterPresent has fn run once with what comes of the next frame the
+// surface asks for, which it asks for, built anew (surface.Conn.AfterPresent):
+// at once while the window holds its frames, as while nothing of it shows,
+// or once it closed, as no frame comes then.
+func (h *windowHost) afterPresent(fn func(platform.Presentation, error)) {
+	switch {
+	case h.detached:
+		fn(platform.PresentClosed, nil)
+	case h.occluded():
+		fn(platform.PresentHeld, nil)
+	default:
+		h.notices = append(h.notices, fn)
+		h.rt.changed()
+	}
+}
+
+// takeNotices takes the notices waiting for what comes of the frame being
+// presented: done answers them, and again has them wait for the next
+// frame, which it asks for, as the frame was dropped for that one, which
+// shows what it would have; once the window closed, again answers them so.
+func (h *windowHost) takeNotices() (done func(platform.Presentation, error), again func()) {
+	notices := h.notices
+	h.notices = nil
+	done = func(p platform.Presentation, err error) {
+		for _, fn := range notices {
+			fn(p, err)
+		}
+	}
+	again = func() {
+		if h.detached {
+			done(platform.PresentClosed, nil)
+			return
+		}
+		h.notices = append(h.notices, notices...)
+		h.rt.changed()
+	}
+	return done, again
+}
+
+// framesHeld tells the notices waiting that the window holds its frames:
+// the frame they wait for draws nothing, or waits until some of the window
+// shows.
+func (h *windowHost) framesHeld() {
+	done, _ := h.takeNotices()
+	done(platform.PresentHeld, nil)
 }
 
 // ready tells the surface, after the first frame, that the frame reached
@@ -564,13 +637,20 @@ func (h *windowHost) screenWide() bool {
 	return ok && w.WideGamut()
 }
 
-// render draws s with the GPU renderer and reports whether it did. One
-// that fails gives way to another made at once, in case the GPU is back
-// already, or another, or Windows' software rasterizer, can draw; when
-// that fails too, frames are drawn in memory until a later try.
-func (h *windowHost) render(s *scene.Scene) bool {
+// render draws s with the GPU renderer and reports whether it did, then
+// gives done what came of the frame. One that fails gives way to another
+// made at once, in case the GPU is back already, or another, or Windows'
+// software rasterizer, can draw; when that fails too, frames are drawn in
+// memory until a later try. done and again go with the frame drawn in
+// place of one that failed (presentNotifier).
+func (h *windowHost) render(s *scene.Scene, done func(platform.Presentation, error), again func()) bool {
 	for try := 0; h.gpu != nil; try++ {
-		err := h.gpu.Render(s)
+		var err error
+		if n, ok := h.gpu.(presentNotifier); ok {
+			err = n.RenderNotice(s, done, again)
+		} else if err = h.gpu.Render(s); err == nil {
+			done(platform.Presented, nil)
+		}
 		if err == nil {
 			return true
 		}
@@ -702,15 +782,23 @@ func (h *windowHost) fit() bool {
 
 func (h *windowHost) detach() {
 	h.detached = true
+	if h.content != nil {
+		h.content.hosts = slices.DeleteFunc(h.content.hosts, func(o *windowHost) bool { return o == h })
+	}
 	if h.idleTimer != nil {
 		h.idleTimer.Stop()
 	}
 	h.rt.close()
 	h.soft.Release()
 	if h.gpu != nil {
+		// A frame the renderer drops hands its notices on (again), which
+		// answers them so once the window closed.
 		h.gpu.Release()
 		h.gpu = nil
 	}
+	// No frame comes for the notices waiting.
+	done, _ := h.takeNotices()
+	done(platform.PresentClosed, nil)
 }
 
 func (h *windowHost) requestFrame() {

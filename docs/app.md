@@ -86,7 +86,9 @@ mygo.App.OnActivate(func(hasVisibleWindows bool) {
 - `App.Quit()` closes every window, which `OnClose` listeners can refuse,
   then quits; `OnBeforeQuit` and `OnWillQuit` listeners can cancel it too.
   Cmd+Q, the Quit menu item and Ctrl+C in the terminal (SIGINT and SIGTERM)
-  quit the same way; a second signal exits at once.
+  quit the same way; a second signal exits at once. An app that handles the
+  signals itself calls `App.SetSignalQuit(false)` before `App.Run`, which
+  then handles none (macOS and Linux).
 - `App.Exit(code)` exits right away, without events.
 - `App.Relaunch()` quits, then starts the app again with the same
   arguments, for example after a setting that needs a restart.
@@ -297,6 +299,16 @@ whatever the app is written in.
   on Windows and Linux. On macOS, `App.Hide` and
   `App.Show` hide and show all its windows, and `App.ShowAboutPanel` shows
   the standard about panel.
+- On macOS, MyGo activates a regular app as it finishes launching, so that
+  a plain executable (`go run`) comes to the front, and `Window.Show`
+  activates the app for a window that is not a panel, as does a change to
+  the regular policy with `App.SetActivationPolicy`.
+  `App.SetSelfActivation(false)`, before `App.Run`, leaves the activation
+  at launch to the system, which activates an app it launches unless the
+  launch asked it not to (`open -g`), makes `Window.Show` make the window
+  key and order it front without activating the app, and keeps a change
+  of the policy from activating it. Only what asks for it activates the
+  app then: `Focus`, `App.Focus`, dialogs, the about panel and the user.
 
 ### Jump lists
 

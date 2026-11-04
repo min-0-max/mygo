@@ -169,6 +169,18 @@ type AppOptions struct {
 	// DMABUFRenderer is "off" (or ""), "on" or "auto": whether WebKitGTK
 	// may draw with its DMA-BUF renderer. Only meaningful on Linux.
 	DMABUFRenderer string
+	// NoSelfActivation keeps the application from activating itself as it
+	// finishes launching, as Window.Show shows a window and as the
+	// activation policy changes to regular: the window becomes key and
+	// comes to the front without the application being activated. Only
+	// meaningful on macOS.
+	NoSelfActivation bool
+	// NoNotificationDelegate keeps the backend from setting the delegate of
+	// the notification center, which the application sets: the backend
+	// then neither shows notifications while the application is in front
+	// nor reports their clicks (AppHandler.NotificationClicked). Only
+	// meaningful on macOS.
+	NoNotificationDelegate bool
 }
 
 // AppHandler receives application level events from the backend.
@@ -467,6 +479,10 @@ type WindowOptions struct {
 	// itself fills, instead of a webview: Window.Surface returns it, the
 	// webview methods do nothing and the webview options are ignored.
 	Surface bool
+	// DrawWhileOccluded has the Surface give the frames the content asks
+	// for while nothing of the window shows, rather than wait until some
+	// of it does.
+	DrawWhileOccluded bool
 }
 
 // DataStoreOptions describe a website data store (AppController.NewDataStore).

@@ -93,9 +93,10 @@ func notificationCenter() id {
 // attachNotificationDelegate gives the notification center the delegate
 // that receives clicks, at launch: the system delivers the click that
 // launched the app before the app has finished launching, and drops it
-// when the center has no delegate yet.
+// when the center has no delegate yet. With
+// AppOptions.NoNotificationDelegate the app sets the delegate itself.
 func (b *Backend) attachNotificationDelegate() {
-	if !b.NotificationsSupported() {
+	if b.noNotificationDelegate || !b.NotificationsSupported() {
 		return
 	}
 	b.notifyDelegate = alloc("MyGoNotificationDelegate")

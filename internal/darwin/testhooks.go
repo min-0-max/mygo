@@ -88,6 +88,16 @@ func TestPerformKeyEquivalent(key string, shift bool) bool {
 	return handled
 }
 
+// TestFrameFirings returns how many times the display link of a window's
+// surface ticked and its frame timer fired (mygoTick:, mygoTimer:), 0 for
+// a window without a surface.
+func TestFrameFirings(handle uintptr) int {
+	if w := theBackend.byNSWindow[id(handle)]; w != nil && w.surface != nil {
+		return w.surface.firings
+	}
+	return 0
+}
+
 // TestOnScreen reports whether some of a window shows on screen, as the
 // window server reports once it put the window there.
 func TestOnScreen(handle uintptr) bool {
@@ -707,6 +717,35 @@ func TestIsFrontmost() bool {
 		front = app != 0 && sendInt(app, "processIdentifier") == os.Getpid()
 	})
 	return front
+}
+
+// frontProcess holds the Process Manager's functions that answer the
+// front process, looked up once.
+var frontProcess struct {
+	once     sync.Once
+	get, pid uintptr
+}
+
+// TestFrontProcess returns the process identifier of the front
+// application as the window server answers it at the call, after the
+// calls the application made before it, unlike frontmostApplication,
+// which NSWorkspace updates later from a notification.
+func TestFrontProcess() (int, error) {
+	frontProcess.once.Do(func() {
+		load()
+		// Carbon links the Process Manager (HIServices).
+		frontProcess.get = mustDlsym(libCarbon, "GetFrontProcess")
+		frontProcess.pid = mustDlsym(libCarbon, "GetProcessPID")
+	})
+	var psn [2]uint32
+	if err := mainthread.Forward[int16](frontProcess.get, &psn); err != 0 {
+		return 0, fmt.Errorf("GetFrontProcess: OSErr %d", err)
+	}
+	var pid int32
+	if err := mainthread.Forward[int32](frontProcess.pid, &psn, &pid); err != 0 {
+		return 0, fmt.Errorf("GetProcessPID: OSStatus %d", err)
+	}
+	return int(pid), nil
 }
 
 // TestCollectionBehavior returns a window's NSWindowCollectionBehavior.

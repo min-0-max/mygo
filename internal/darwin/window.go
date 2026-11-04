@@ -874,7 +874,7 @@ func (w *window) Show() {
 	}
 	w.showAboveParent(true)
 	if !w.opts.Panel {
-		send(w.b.app, "activateIgnoringOtherApps:", 1)
+		w.b.selfActivate()
 	}
 }
 
@@ -909,7 +909,7 @@ func (w *window) showOverFlyout(key bool) {
 	p := w.parent
 	p.holdPopover()
 	if key {
-		send(w.b.app, "activateIgnoringOtherApps:", 1)
+		w.b.selfActivate()
 		send(w.win, "makeKeyAndOrderFront:", 0)
 	} else {
 		send(w.win, "orderFrontRegardless")
@@ -2300,8 +2300,13 @@ func registerWindowClasses() {
 				}
 			}),
 			method("windowDidChangeOcclusionState:", func(self id, _ objc.SEL, n id) {
-				if w := b().windowFor(self); w != nil && w.surface != nil && w.surface.visible() {
+				w := b().windowFor(self)
+				switch {
+				case w == nil || w.surface == nil:
+				case w.surface.visible():
 					w.surface.send(platform.SurfaceEvent{Kind: platform.SurfaceShown})
+				default:
+					w.surface.send(platform.SurfaceEvent{Kind: platform.SurfaceHidden})
 				}
 			}),
 			method("windowDidMiniaturize:", func(self id, _ objc.SEL, n id) {

@@ -224,6 +224,16 @@ type WindowOptions struct {
 	// the window and returns while the main thread goes on drawing it:
 	// guard the variable there, or set it with Window.Update.
 	Content Content
+	// DrawWhileOccluded has the Content draw the frames it asks for while
+	// nothing of the window shows, as when it is hidden, minimized or
+	// covered, where they otherwise wait until some of it shows: what
+	// waits for a presented frame, as a capture, a Window.AfterPresent
+	// notice or a native view placed with the frame, gets one. On macOS,
+	// while the window's display link does not tick, each frame asked for
+	// draws one display refresh after the last began, or at once when
+	// that passed. Frames the system asks for, as a resize's, draw at
+	// once either way.
+	DrawWhileOccluded bool
 }
 
 // WindowState is what WindowOptions.StateKey remembers of a window: its
@@ -307,11 +317,13 @@ type Window struct {
 	// content is WindowOptions.Content; conn connects it to the native
 	// surface (main thread only). devTools tells that PageOptions.DevTools
 	// turned the developer tools on: the web inspector, or the inspector
-	// of the Content.
-	content      Content
-	conn         *surface.Conn
-	devTools     bool
-	invalidating atomic.Bool
+	// of the Content, and drawWhileOccluded that the Content draws its
+	// frames out of sight (WindowOptions.DrawWhileOccluded).
+	content           Content
+	conn              *surface.Conn
+	devTools          bool
+	drawWhileOccluded bool
+	invalidating      atomic.Bool
 	// userScripts are the scripts the window's pages run at document
 	// start: the bridge, the preferences and the preload script. Main
 	// thread only.
@@ -568,6 +580,7 @@ func newWindow(opts WindowOptions, bg *background, native uintptr, flyout *flyou
 	popts := w.platformOptions(&opts)
 	popts.BackgroundColor = w.backgroundColor()
 	popts.Surface = opts.Content != nil
+	popts.DrawWhileOccluded = opts.DrawWhileOccluded
 	if opts.Transparent {
 		// Backends keep transparent windows clear; so do theme changes.
 		w.background = nil
@@ -587,6 +600,7 @@ func newWindow(opts WindowOptions, bg *background, native uintptr, flyout *flyou
 		popts.Center = false
 	}
 	w.devTools = popts.DevTools
+	w.drawWhileOccluded = popts.DrawWhileOccluded
 	if w.stateKey != "" {
 		restoreWindowState(w.stateKey, popts)
 	}

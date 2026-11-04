@@ -95,6 +95,7 @@ func (h *headless) refreshRate() float32              { return h.hz }
 func (h *headless) setFrameRate(fps float32)          { h.frameRate = fps }
 func (h *headless) framesAtOnce() bool                { return h.atOnce }
 func (h *headless) occluded() bool                    { return h.hidden }
+func (h *headless) framesHeld()                       {}
 func (h *headless) present(s *scene.Scene) {
 	h.last = s
 	h.img.Render(s)

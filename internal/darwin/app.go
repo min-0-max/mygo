@@ -21,6 +21,14 @@ type Backend struct {
 	source   uintptr
 	mainLoop uintptr
 
+	// noSelfActivation is AppOptions.NoSelfActivation: neither the launch
+	// nor Show activates the app (selfActivate).
+	noSelfActivation bool
+	// noNotificationDelegate is AppOptions.NoNotificationDelegate: the app
+	// sets the delegate of the notification center
+	// (attachNotificationDelegate).
+	noNotificationDelegate bool
+
 	// Lookup tables for Objective-C callbacks. Main thread only.
 	byDelegate map[id]*window
 	byWebView  map[id]*window
@@ -101,6 +109,8 @@ func activationPolicy(p string) uintptr {
 
 func (b *Backend) Init(h platform.AppHandler, opts platform.AppOptions) error {
 	b.h = h
+	b.noSelfActivation = opts.NoSelfActivation
+	b.noNotificationDelegate = opts.NoNotificationDelegate
 	theBackend = b
 	registerClasses()
 
@@ -326,7 +336,7 @@ func registerAppDelegate() {
 			if send(b.app, "activationPolicy") == nsApplicationActivationPolicyRegular {
 				// Plain executables (go run) do not come to the front on
 				// their own.
-				send(b.app, "activateIgnoringOtherApps:", 1)
+				b.selfActivate()
 			}
 			b.h.Ready()
 		}),
@@ -411,12 +421,22 @@ func registerAppDelegate() {
 	})
 }
 
+// selfActivate activates the app as it finishes launching, as Show shows
+// a window and as the activation policy changes to regular, unless
+// AppOptions.NoSelfActivation leaves activation to the system. What the user asks for (Focus, App.Focus, a dialog, a press
+// in a flyout under a modal window) activates the app in any case.
+func (b *Backend) selfActivate() {
+	if !b.noSelfActivation {
+		send(b.app, "activateIgnoringOtherApps:", 1)
+	}
+}
+
 type appController struct{ b *Backend }
 
 func (a appController) SetActivationPolicy(p string) {
 	send(a.b.app, "setActivationPolicy:", activationPolicy(p))
 	if p == "regular" {
-		send(a.b.app, "activateIgnoringOtherApps:", 1)
+		a.b.selfActivate()
 	}
 }
 

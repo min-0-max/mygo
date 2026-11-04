@@ -126,10 +126,12 @@ func (s *surface) listen() {
 		}
 	})
 	s.on(js.Global().Get("document"), "visibilitychange", true, func(js.Value) {
-		if !s.Occluded() {
-			s.send(platform.SurfaceEvent{Kind: platform.SurfaceShown})
-			s.RequestFrame()
+		if s.Occluded() {
+			s.send(platform.SurfaceEvent{Kind: platform.SurfaceHidden})
+			return
 		}
+		s.send(platform.SurfaceEvent{Kind: platform.SurfaceShown})
+		s.RequestFrame()
 	})
 	if s.gl != nil {
 		s.on(c, "webglcontextlost", false, func(e js.Value) { e.Call("preventDefault") })

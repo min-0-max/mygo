@@ -215,6 +215,35 @@ for n := range counts {
 }
 ```
 
+## Know when a frame shows
+
+`Window.AfterPresent` runs a function once, on the main thread, with what
+came of the frame showing the view as it stands now, which it asks for:
+`mygo.Presented` after the frame's present ran, or why nothing presented.
+`mygo.PresentNoDamage` means that the view changed nothing on screen,
+`mygo.PresentNoDrawable` that the frame found nothing to draw into,
+`mygo.PresentHeld` that the window holds its frames, as while nothing of it
+shows, and `mygo.PresentClosed` that the window closed first.
+`mygo.PresentFailed` comes with the error that says why drawing the frame
+failed:
+
+```go
+win.AfterPresent(func(p mygo.Presentation, err error) {
+	switch p {
+	case mygo.Presented:
+		placeNativeView()
+	case mygo.PresentFailed:
+		log.Print(err)
+	}
+})
+```
+
+On macOS, a frame that resizes the window or shows web views presents with
+Core Animation's transaction, and the function runs inside it, before it
+commits, so that what it changes shows with the frame. A frame dropped for a
+later one, which shows what it would have, leaves the function to that one. A
+window showing a web page takes no notice: `AfterPresent` reports an error.
+
 ## State of an element
 
 An element keeps state of its own from frame to frame with `ui.Local`, for

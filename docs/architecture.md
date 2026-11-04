@@ -1739,7 +1739,8 @@ as in Tauri:
   every window (any `OnClose` can cancel) → `OnWillQuit` → stop the loop →
   `App.Run` returns → `OnQuit`. It is used for `App.Quit`, Cmd+Q, quit
   Apple Events, and SIGINT/SIGTERM alike (`signal_unix.go`; a second signal
-  exits immediately).
+  exits immediately), unless `App.SetSignalQuit(false)` leaves the signals
+  to the app.
 - Taskbar state on Windows (`taskbar.go`) lives on the window and is
   applied when Explorer sends `TaskbarButtonCreated` (first show, Explorer
   restarts), so progress and a hidden button set before showing stick.
