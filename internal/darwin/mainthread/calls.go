@@ -253,6 +253,7 @@ var CFTypes = []CFType{
 	{Name: "CFArray", Retain: true, Release: true},
 	{Name: "CFDictionary", Retain: true, Release: true},
 	{Name: "CFSet", Retain: true, Release: true},
+	{Name: "CFURL", Retain: true, Release: true},
 	{Name: "CTFont", Retain: true, Release: true},
 	{Name: "CTFontDescriptor", Retain: true, Release: true},
 	{Name: "CTLine", Retain: true, Release: true},
@@ -262,6 +263,9 @@ var CFTypes = []CFType{
 	// mygo releases a run loop observer only after it added the observer
 	// to the main run loop, which then holds it.
 	{Name: "CFRunLoopObserver", Release: true},
+	// netproxy releases a run loop source only after it invalidated the
+	// source and removed it from the run loop of its own thread.
+	{Name: "CFRunLoopSource", Release: true},
 }
 
 // CFType is a Core Foundation type by its name, which is the description
@@ -322,6 +326,7 @@ var CallingThreadFunctions = []FunctionGroup{
 			"CFNetworkExecuteProxyAutoConfigurationURL", "CFNetworkExecuteProxyAutoConfigurationScript",
 			"CFRunLoopGetCurrent", "CFRunLoopAddSource", "CFRunLoopRunInMode",
 			"CFRunLoopStop", "CFRunLoopRemoveSource", "CFRunLoopSourceInvalidate",
+			"CFURLCreateWithString",
 		},
 	},
 	{

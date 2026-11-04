@@ -41,7 +41,7 @@ func TestPACScript(t *testing.T) {
 	defer a.releaseCF(script)
 	s := a.stringCreate(0, "https://example.com/", cfStringEncodingUTF8)
 	defer a.releaseCF(s)
-	target := mainthread.Forward[uintptr](a.cfURLCreate, uintptr(0), s, uintptr(0))
+	target := a.urlCreate(0, s, 0)
 	defer a.releaseCF(target)
 	got := a.runPAC(script, target, true)
 	want := []string{"http://p.example:8080", "socks5://s.example:1080", "direct://"}
@@ -54,8 +54,8 @@ func TestPACScript(t *testing.T) {
 // does, on a goroutine of an application whose Go code runs on the
 // worker: the goroutine's thread runs the script on its run loop, the
 // callback of the script runs on that thread, neither on the worker nor
-// on the main thread, and the calls that the goroutine forwards meanwhile
-// run on the main thread.
+// on the main thread, and the goroutine forwards no call: what it reads
+// lives in the pool of its own thread.
 func TestPACScriptCallbackRunsOnItsGoroutine(t *testing.T) {
 	a := cf()
 	if a == nil {
@@ -102,7 +102,7 @@ func TestPACScriptCallbackRunsOnItsGoroutine(t *testing.T) {
 				defer a.releaseCF(script)
 				s := a.stringCreate(0, "https://example.com/", cfStringEncodingUTF8)
 				defer a.releaseCF(s)
-				target := mainthread.Forward[uintptr](a.cfURLCreate, uintptr(0), s, uintptr(0))
+				target := a.urlCreate(0, s, 0)
 				defer a.releaseCF(target)
 				got = a.runPAC(script, target, true)
 				forwarded = mainthread.Forwarded() - before
@@ -126,7 +126,7 @@ func TestPACScriptCallbackRunsOnItsGoroutine(t *testing.T) {
 	if callbackOn != goroutine || callbackMain {
 		t.Errorf("the callback ran on %#x (IsMainThread %v), not on the goroutine's thread %#x (main %#x, worker %#x)", callbackOn, callbackMain, goroutine, main, worker)
 	}
-	if forwarded == 0 {
-		t.Error("the goroutine forwarded no call to the main thread")
+	if forwarded != 0 {
+		t.Errorf("the goroutine forwarded %d calls to the main thread", forwarded)
 	}
 }

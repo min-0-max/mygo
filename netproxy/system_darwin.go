@@ -40,14 +40,14 @@ type streamClientContext struct {
 }
 
 type cfAPI struct {
-	// cfRelease is decided by its receiver (mainthread.ByReceiver), and
-	// cfURLCreate runs on the main thread (mainthread.Forward); the other
-	// functions run on the calling thread.
-	cfRelease, cfURLCreate uintptr
+	// cfRelease is decided by its receiver (mainthread.ByReceiver); the
+	// other functions run on the calling thread.
+	cfRelease uintptr
 
 	typeID         func(cf uintptr) uint
 	equal          func(a, b uintptr) bool
 	stringTypeID   func() uint
+	urlCreate      func(allocator, s, base uintptr) uintptr
 	numberTypeID   func() uint
 	dictTypeID     func() uint
 	stringCreate   func(alloc uintptr, s string, encoding uint32) uintptr
@@ -122,6 +122,7 @@ func loadCF() *cfAPI {
 		{core, &a.runInMode, "CFRunLoopRunInMode"},
 		{core, &a.stop, "CFRunLoopStop"},
 		{network, &a.copySettings, "CFNetworkCopySystemProxySettings"},
+		{core, &a.urlCreate, "CFURLCreateWithString"},
 		{network, &a.copyProxies, "CFNetworkCopyProxiesForURL"},
 		{network, &a.runPACURL, "CFNetworkExecuteProxyAutoConfigurationURL"},
 		{network, &a.runPACScript, "CFNetworkExecuteProxyAutoConfigurationScript"},
@@ -134,9 +135,6 @@ func loadCF() *cfAPI {
 	}
 	var err error
 	if a.cfRelease, err = purego.Dlsym(core, "CFRelease"); err != nil {
-		return nil
-	}
-	if a.cfURLCreate, err = purego.Dlsym(core, "CFURLCreateWithString"); err != nil {
 		return nil
 	}
 	if a.poolPush, err = purego.Dlsym(objc, "objc_autoreleasePoolPush"); err != nil {
@@ -189,7 +187,7 @@ func system(target *url.URL) *url.URL {
 	if s == 0 {
 		return nil
 	}
-	u := mainthread.Forward[uintptr](a.cfURLCreate, uintptr(0), s, uintptr(0))
+	u := a.urlCreate(0, s, 0)
 	a.releaseCF(s)
 	if u == 0 {
 		return nil
