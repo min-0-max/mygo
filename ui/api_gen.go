@@ -536,6 +536,26 @@ func (_handle *Context) Shortcut(mods Modifiers, key Key) bool {
 	return _ctx.Shortcut(mods, key)
 }
 
+// ShortcutRepeated reports whether the key that the last Shortcut to
+// report one took came as the auto-repeat of a key held down, as the web's
+// KeyboardEvent.repeat: Context's, an Element's, a list's or an overlay's,
+// and those that run OnShortcut's actions, which can ask it as they run.
+// An action that steps while the key is held takes every key; a toggle
+// takes the press alone, and lets the repeats go by:
+//
+//	if c.Shortcut(0, ui.KeyT) && !c.ShortcutRepeated() {
+//		app.panel = !app.panel
+//	}
+//
+// It is false in a frame no shortcut took a key in yet.
+func (_handle *Context) ShortcutRepeated() bool {
+	_ctx := _handle.build()
+	if _ctx == nil {
+		return false
+	}
+	return _ctx.ShortcutRepeated()
+}
+
 // Size returns the size of the window's content in DIPs.
 func (_handle *Context) Size() (float32, float32) {
 	_ctx := _handle.build()
@@ -1526,7 +1546,7 @@ func Local[T any](e Element, key any, init func() T) *T {
 
 // MenuBase creates a menu button without a look, whose menu shows while
 // *open is true: a button that takes the focus and opens the menu as the
-// pointer goes down on it, or for Enter, Space or Down while it has the
+// pointer goes down on it, or for Enter, Space, Up or Down while it has the
 // focus, and closes it when pressed again. Give the trigger children, and
 // build the menu in Popup with Item, CheckItem, RadioItem and
 // SubmenuItem, and the submenus with Submenu; an item's Clicked reports
@@ -5969,7 +5989,7 @@ func (_handle Element) PopoverMenu(build func(m *Menu)) Element {
 // menu MyGo draws in the window with the theme's look, as PopoverMenu
 // draws a context menu, rather than the system showing one of its own. It
 // opens below the element, or above it where the window has no room, as
-// the pointer goes down on it, and for Enter, Space or Down while it has
+// the pointer goes down on it, and for Enter, Space, Up or Down while it has
 // the focus, which it takes. build fills it with the items Menu's
 // function takes, and the item chosen reports Chosen as there:
 //
@@ -6680,6 +6700,48 @@ func (_handle Element) Step(step float64) Element {
 	_ctx := _node.c
 	_ = _ctx
 	return wrapElement(_node.Step(step))
+}
+
+// Sticky keeps the element in its parent's flow, where it takes its room,
+// and holds it inside the scroll container around it while its parent is
+// in view, as CSS's position: sticky does: Top, Right, Bottom and Left (or
+// Start and End, and their percentages of the container's size) say how far
+// in from the container's edges, inside its border, it stays. It moves no
+// further than its parent's content box, so the parent leaving the view
+// takes it along, and the next one's comes up in its place: a day's heading
+// at the top of a timeline until the next day pushes it out, or the check
+// box choosing all the rows at the left of a table scrolling sideways.
+//
+//	ui.Scroll(c).Fill().Children(func() {
+//		for _, day := range app.days {
+//			ui.Column(c).Children(func() {
+//				ui.Text(c, day.Title).Bold().Background(t.Surface).Sticky().Top(0)
+//				for _, ev := range day.Events {
+//					eventRow(c, ev)
+//				}
+//			})
+//		}
+//	})
+//
+// Each axis follows the nearest container scrolling that way, or one
+// following another sideways (ScrollWith), or else the window: a heading
+// in a table scrolling sideways in a page scrolling down sticks to the
+// page's top and to the table's start. Where both insets of an axis are
+// set and the container is too small for both, Top wins, and Left, or
+// Right right to left. Without insets, the element stays where the flow
+// puts it. It paints above its siblings, as Absolute elements do, and the
+// pointer, assistive technology and the focus ring find it where it shows;
+// the focus and assistive technology still take it in its place among
+// them. Sticky does nothing to an Absolute element, nor to one inside a
+// text.
+func (_handle Element) Sticky() Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.Sticky())
 }
 
 // Strikethrough strikes text through.
