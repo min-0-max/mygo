@@ -7,6 +7,9 @@ import (
 	"runtime"
 	"slices"
 	"testing"
+	"time"
+
+	"github.com/ebitengine/purego"
 
 	"github.com/egoist/mygo/internal/darwin/mainthread"
 )
@@ -43,5 +46,92 @@ func TestPACScript(t *testing.T) {
 	want := []string{"http://p.example:8080", "socks5://s.example:1080", "direct://"}
 	if !slices.Equal(got, want) {
 		t.Errorf("runPAC = %q, want %q", got, want)
+	}
+}
+
+// TestPACScriptCallbackRunsOnItsGoroutine runs a setup script as system
+// does, on a goroutine of an application whose Go code runs on the
+// worker: the goroutine's thread runs the script on its run loop, the
+// callback of the script runs on that thread, neither on the worker nor
+// on the main thread, and stops that run loop, and the calls that the
+// goroutine forwards meanwhile run on the main thread.
+func TestPACScriptCallbackRunsOnItsGoroutine(t *testing.T) {
+	a := cf()
+	if a == nil {
+		t.Fatal("CFNetwork did not load")
+	}
+	lib, err := purego.Dlopen("/usr/lib/libSystem.B.dylib", purego.RTLD_NOW|purego.RTLD_GLOBAL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pthreadSelf, err := purego.Dlsym(lib, "pthread_self")
+	if err != nil {
+		t.Fatal(err)
+	}
+	self := func() uintptr { r, _, _ := purego.SyscallN(pthreadSelf); return r }
+
+	var callbackOn uintptr
+	var callbackMain bool
+	saved := a.callback
+	a.callback = mainthread.Callback(purego.NewCallback(func(info, list, cfErr uintptr) {
+		callbackOn, callbackMain = self(), mainthread.IsMainThread()
+		pacDone(info, list, cfErr)
+	}))
+	defer func() { a.callback = saved }()
+
+	var main, worker, goroutine uintptr
+	var got []string
+	var took time.Duration
+	var forwarded uint64
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		main = self()
+		err := mainthread.Run(func() error {
+			worker = self()
+			finished := make(chan struct{})
+			go func() {
+				defer close(finished)
+				runtime.LockOSThread()
+				defer runtime.UnlockOSThread()
+				goroutine = self()
+				before := mainthread.Forwarded()
+				script := a.stringCreate(0, `function FindProxyForURL(url, host) { return "PROXY p.example:8080; DIRECT"; }`, cfStringEncodingUTF8)
+				defer a.releaseCF(script)
+				s := a.stringCreate(0, "https://example.com/", cfStringEncodingUTF8)
+				defer a.releaseCF(s)
+				target := mainthread.Forward[uintptr](a.cfURLCreate, uintptr(0), s, uintptr(0))
+				defer a.releaseCF(target)
+				start := time.Now()
+				got = a.runPAC(script, target, true)
+				took = time.Since(start)
+				forwarded = mainthread.Forwarded() - before
+			}()
+			select {
+			case <-finished:
+			case <-time.After(2 * pacTimeout):
+				t.Errorf("the setup script did not finish in %v", 2*pacTimeout)
+			}
+			return nil
+		}, func() {}, func() {})
+		if err != nil {
+			t.Error(err)
+		}
+	}()
+	<-done
+
+	if want := []string{"http://p.example:8080", "direct://"}; !slices.Equal(got, want) {
+		t.Errorf("runPAC = %q, want %q", got, want)
+	}
+	if callbackOn != goroutine || callbackMain {
+		t.Errorf("the callback ran on %#x (IsMainThread %v), not on the goroutine's thread %#x (main %#x, worker %#x)", callbackOn, callbackMain, goroutine, main, worker)
+	}
+	if took >= pacTimeout {
+		t.Errorf("runPAC took %v, as long as pacTimeout: the callback did not stop the run loop of the goroutine's thread", took)
+	}
+	if forwarded == 0 {
+		t.Error("the goroutine forwarded no call to the main thread")
 	}
 }
