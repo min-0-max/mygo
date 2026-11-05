@@ -684,7 +684,10 @@ func (appHandler) Activated(visible bool) {
 	fire1(&App.onActivate, visible)
 }
 func (appHandler) DidBecomeActive() { fire(&App.onDidBecomeActive) }
-func (appHandler) DidResignActive() { fire(&App.onDidResignActive) }
+func (appHandler) DidResignActive() {
+	contentAppResigned()
+	fire(&App.onDidResignActive)
+}
 func (appHandler) OpenURLs(urls []string) {
 	for _, u := range urls {
 		fire1(&App.onOpenURL, u)
