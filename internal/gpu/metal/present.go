@@ -51,6 +51,10 @@ type presenter struct {
 // frame a frame counts as following it. Only tests change it.
 var followRefreshes = 2.0
 
+// framesForThird is how many frames in a row must follow the last before
+// the layer may have a third drawable.
+const framesForThird = 6
+
 // qosUserInteractive is QOS_CLASS_USER_INTERACTIVE, the main thread's.
 const qosUserInteractive = 0x21
 
