@@ -467,9 +467,11 @@ type Renderer struct {
 	// synced tells that the layer presents with the Core Animation
 	// transaction. pre fetches the drawables of frames following each
 	// other, and pending is a frame waiting for its drawable (present.go).
-	synced  bool
-	pre     presenter
-	pending pendingFrame
+	synced bool
+	// refreshRate returns the display's refresh rate (SetRefreshRate).
+	refreshRate func() float64
+	pre         presenter
+	pending     pendingFrame
 	// post runs a function on the main thread (SetPost), fetched has the
 	// presenter's thread draw pending through it, and wake is what Ready
 	// was given while a frame was pending.
@@ -552,7 +554,7 @@ func New(layer uintptr) (r *Renderer, err error) {
 		// Animation makes while a window animates, also let both instance
 		// slots have a frame in flight while the display shows a third.
 		// The system makes the third only when one is asked for with two in
-		// use, which frames following each other do (framesFollow); it
+		// use, which frames following each other do (follows); it
 		// costs a frame of memory until the window idles (trim).
 		if respondsTo(ml, "setMaximumDrawableCount:") {
 			sendMain(ml, "setMaximumDrawableCount:", 3)
@@ -1792,7 +1794,7 @@ func (r *Renderer) render(s *scene.Scene, done func(platform.Presentation, error
 		// last and the GPU has this one, so the system would make a third
 		// drawable, whose memory stays until the window idles (trim). The
 		// next frame takes one itself; with two in use, one is free for it.
-		if time.Since(r.lastRender) < framesFollow {
+		if r.follows(time.Since(r.lastRender)) {
 			r.pre.start(r.layer)
 		}
 	}

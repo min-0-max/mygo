@@ -66,6 +66,28 @@ type softGPU struct{ testGPU }
 
 func (g *softGPU) Software() bool { return true }
 
+// rateGPU is a renderer told the display's refresh rate.
+type rateGPU struct {
+	testGPU
+	rate func() float64
+}
+
+func (g *rateGPU) SetRefreshRate(rate func() float64) { g.rate = rate }
+
+// TestGPUKnowsTheRefreshRate checks that a renderer that asks for the
+// display's refresh rate reads the surface's.
+func TestGPUKnowsTheRefreshRate(t *testing.T) {
+	g := &rateGPU{}
+	_, _, frame := gpuHost(t, func() (gpuRenderer, error) { return g, nil })
+	frame()
+	if g.rate == nil {
+		t.Fatal("the renderer was not given the refresh rate")
+	}
+	if got := g.rate(); got != 60 {
+		t.Errorf("refresh rate %v, want the surface's 60", got)
+	}
+}
+
 func TestGPUComesBack(t *testing.T) {
 	var made []*testGPU
 	gone := false

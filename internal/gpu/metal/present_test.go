@@ -469,6 +469,12 @@ func TestAFrameAloneFetchesNoDrawable(t *testing.T) {
 		unavailable(t, err)
 	}
 	defer r.Release()
+	refreshes := followRefreshes
+	followRefreshes = 2
+	defer func() { followRefreshes = refreshes }()
+	// A refresh a second: however long a frame takes here, the next follows
+	// it.
+	r.SetRefreshRate(func() float64 { return 1 })
 	var fetched int
 	next := nextDrawable
 	nextDrawable = func(l id) id { fetched++; return next(l) }
@@ -487,7 +493,7 @@ func TestAFrameAloneFetchesNoDrawable(t *testing.T) {
 	if !r.synced {
 		t.Fatal("the first frame did not present with the transaction")
 	}
-	r.lastRender = time.Now().Add(-2 * framesFollow)
+	r.lastRender = time.Now().Add(-time.Minute)
 	frame(1)
 	if r.synced {
 		t.Fatal("the frame alone presented with the transaction")
@@ -498,5 +504,36 @@ func TestAFrameAloneFetchesNoDrawable(t *testing.T) {
 	frame(2)
 	if fetched != 1 || r.pre.drawable == 0 {
 		t.Errorf("the frame following it fetched %d drawables, holding %#x", fetched, r.pre.drawable)
+	}
+}
+
+// TestFramesFollowByTheRefresh checks that a frame follows the last by the
+// display's refreshes, so that it means the same at any rate, and that a
+// display of no known rate counts as a 60 Hz one.
+func TestFramesFollowByTheRefresh(t *testing.T) {
+	refreshes := followRefreshes
+	followRefreshes = 2
+	defer func() { followRefreshes = refreshes }()
+	for _, c := range []struct {
+		hz      float64
+		since   time.Duration
+		follows bool
+	}{
+		{60, 30 * time.Millisecond, true},
+		{60, 40 * time.Millisecond, false},
+		{120, 15 * time.Millisecond, true},
+		{120, 20 * time.Millisecond, false},
+		{0, 30 * time.Millisecond, true},
+		{0, 40 * time.Millisecond, false},
+	} {
+		r := &Renderer{}
+		r.SetRefreshRate(func() float64 { return c.hz })
+		if got := r.follows(c.since); got != c.follows {
+			t.Errorf("%v Hz, %v after the last frame: follows %v, want %v", c.hz, c.since, got, c.follows)
+		}
+	}
+	r := &Renderer{}
+	if !r.follows(30*time.Millisecond) || r.follows(40*time.Millisecond) {
+		t.Error("a renderer without a rate does not count the display as a 60 Hz one")
 	}
 }

@@ -18,7 +18,7 @@ import (
 
 // A presenter fetches the layer's next drawable on a thread of its own,
 // after a frame presented as soon as drawn that followed another
-// (framesFollow), so that the main thread never waits for the display.
+// (follows), so that the main thread never waits for the display.
 // nextDrawable blocks while the layer's
 // drawables are all in use, as the display holds them until its next
 // refreshes: a frame following another would wait most of a refresh,
@@ -47,10 +47,9 @@ type presenter struct {
 	started  bool
 }
 
-// framesFollow is how soon after the last frame a frame counts as following
-// it, so that another is likely to follow in turn: three refreshes of the
-// slowest display. Only tests change it.
-var framesFollow = 50 * time.Millisecond
+// followRefreshes is how many of the display's refreshes after the last
+// frame a frame counts as following it. Only tests change it.
+var followRefreshes = 2.0
 
 // qosUserInteractive is QOS_CLASS_USER_INTERACTIVE, the main thread's.
 const qosUserInteractive = 0x21
@@ -208,6 +207,29 @@ func (r *Renderer) SetPost(post func(func())) {
 		})
 	}
 	r.fetched = func() { post(finish) }
+}
+
+// SetRefreshRate gives the renderer rate, which returns the display's
+// refresh rate, 0 when it is not known. Without it, the display counts as a
+// 60 Hz one.
+func (r *Renderer) SetRefreshRate(rate func() float64) { r.refreshRate = rate }
+
+// follows reports whether a frame since after the last one follows it, so
+// that the next may find no drawable free and the presenter fetches one
+// ahead. A drawable the display holds goes free once it shows the next
+// frame, which a frame presented reaches within a refresh. So two refreshes
+// after a frame, the frame before has let go of its drawable, and a frame
+// coming at that pace finds it free at once: a fetch would only have the
+// system make a third. Frames coming sooner can find both in use, and would
+// wait most of a refresh.
+func (r *Renderer) follows(since time.Duration) bool {
+	hz := 60.0
+	if r.refreshRate != nil {
+		if rate := r.refreshRate(); rate > 0 {
+			hz = rate
+		}
+	}
+	return since.Seconds() < followRefreshes/hz
 }
 
 // layerChanges reports whether drawing s at scale changes the layer, its

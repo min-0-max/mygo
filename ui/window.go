@@ -788,6 +788,9 @@ func (h *windowHost) makeGPU() {
 		// Frames waiting for the display draw through the main thread.
 		p.SetPost(h.conn.Post)
 	}
+	if p, ok := r.(interface{ SetRefreshRate(func() float64) }); ok {
+		p.SetRefreshRate(func() float64 { return h.conn.Surface.RefreshRate() })
+	}
 	h.reportFrames()
 }
 
