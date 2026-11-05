@@ -68,6 +68,7 @@ type Application struct {
 	// SetSignalQuit(false) and noNotificationDelegate
 	// SetNotificationDelegate(false).
 	noSelfActivation       bool
+	windowShow             func(window uintptr)
 	noSignalQuit           bool
 	noNotificationDelegate bool
 
@@ -139,6 +140,7 @@ func (a *Application) start() error {
 		ActivationPolicy:       string(a.ActivationPolicy()),
 		DMABUFRenderer:         string(a.dmabuf),
 		NoSelfActivation:       a.noSelfActivation,
+		WindowShow:             a.windowShow,
 		NoNotificationDelegate: a.noNotificationDelegate,
 	}); err != nil {
 		return err
@@ -479,6 +481,25 @@ func (a *Application) SetSelfActivation(on bool) {
 	a.mu.Lock()
 	a.noSelfActivation = !on
 	a.mu.Unlock()
+}
+
+// SetWindowShow sets what Window.Show does to a window that shows as any
+// window, in place of making it key and ordering it front: the application
+// decides where the window goes. It receives the NSWindow on the main
+// goroutine. A child window over its parent, a flyout, a sheet and
+// ShowInactive keep their own order. Call it before Run; other systems
+// ignore it.
+func (a *Application) SetWindowShow(show func(window uintptr)) {
+	a.mu.Lock()
+	a.windowShow = show
+	a.mu.Unlock()
+}
+
+// WindowShow returns what SetWindowShow set.
+func (a *Application) WindowShow() func(window uintptr) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.windowShow
 }
 
 // SetSignalQuit sets whether Run quits the application on SIGINT and
