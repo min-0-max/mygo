@@ -436,6 +436,9 @@ type node struct {
 	// hitFn tells where in its box the element takes the pointer
 	// (HitTest).
 	hitFn func(x, y float32, r Rect) bool
+	// hitOutset is how far beyond each side of its box the element takes
+	// the pointer (HitOutset).
+	hitOutset float32
 	// objectFn draws the inline objects of a text (DrawObjects).
 	objectFn func(p *Painter, at int, r Rect)
 	// styleFn sets the colors and opacity the element paints with, as it
@@ -1976,6 +1979,13 @@ func (e *node) PassThrough() *node { e.flags |= flagPassThrough; return e }
 //		HitTest(func(x, y float32, r ui.Rect) bool { return ring(r).Contains(x, y) }).
 //		OnClick(func() { … })
 func (e *node) HitTest(fn func(x, y float32, r Rect) bool) *node { e.hitFn = fn; return e }
+
+// HitOutset makes the element take the pointer up to d beyond each side of
+// its box, as a slider takes it around its thin track: the press, the
+// hover and the cursor reach it there, over what lies under it, while its
+// box, its place in the layout and its rectangle for accessibility stay as
+// they are. The clips of the elements around it still cut it.
+func (e *node) HitOutset(d float32) *node { e.hitOutset = d; return e }
 
 // FocusRing sets whether MyGo rings the element when it has the keyboard
 // focus from the keyboard, as it does by default. Widgets that ring a part

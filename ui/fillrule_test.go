@@ -163,3 +163,51 @@ func TestHitTest(t *testing.T) {
 		t.Errorf("a click on a child: %d of its clicks, %d under it", innerClicks, underClicks)
 	}
 }
+
+// TestHitOutset makes a thin track take the pointer around its box, over
+// the element under it, while its rectangle stays the box; past the outset
+// the pointer reaches the element under it again.
+func TestHitOutset(t *testing.T) {
+	var trackClicks, underClicks int
+	var trackHovered bool
+	view := func(c *context) {
+		coreBox(c).Size(300, 200).Children(func() {
+			if coreBox(c).Absolute().Left(0).Top(0).Size(300, 200).Clicked() {
+				underClicks++
+			}
+			e := coreBox(c).Absolute().Left(50).Top(100).Size(200, 4).Role(RoleSlider).Label("track").HitOutset(5)
+			trackHovered = e.Hovered()
+			if e.Clicked() {
+				trackClicks++
+			}
+		})
+	}
+	tt := coreNewTester(view, 300, 200)
+	tt.Move(150, 96) // 4 above the box, inside the outset
+	tt.settle()
+	if !trackHovered {
+		t.Error("the track does not hover with the pointer in its outset")
+	}
+	tt.ClickAt(150, 96)
+	tt.ClickAt(150, 108) // 4 below the box
+	tt.ClickAt(46, 102)  // 4 left of the box
+	if trackClicks != 3 || underClicks != 0 {
+		t.Errorf("clicks in the outset: %d on the track, %d under it", trackClicks, underClicks)
+	}
+	tt.ClickAt(150, 94) // 6 above the box, past the outset
+	if trackClicks != 3 || underClicks != 1 {
+		t.Errorf("a click past the outset: %d on the track, %d under it", trackClicks, underClicks)
+	}
+	for _, node := range tt.ElementTree() {
+		var find func(n ElementNode)
+		find = func(n ElementNode) {
+			if n.Label == "track" && (n.Bounds != Rect{X: 50, Y: 100, W: 200, H: 4}) {
+				t.Errorf("the rectangle of the track is %+v, not its box", n.Bounds)
+			}
+			for _, child := range n.Children {
+				find(child)
+			}
+		}
+		find(node)
+	}
+}

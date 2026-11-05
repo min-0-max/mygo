@@ -5315,6 +5315,21 @@ func (_handle Element) Highlighted() bool {
 	return _node.Highlighted()
 }
 
+// HitOutset makes the element take the pointer up to d beyond each side of
+// its box, as a slider takes it around its thin track: the press, the
+// hover and the cursor reach it there, over what lies under it, while its
+// box, its place in the layout and its rectangle for accessibility stay as
+// they are. The clips of the elements around it still cut it.
+func (_handle Element) HitOutset(d float32) Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.HitOutset(d))
+}
+
 // HitTest sets where in its box the element takes the pointer: where fn
 // reports true for the pointer at (x, y), in the coordinates Draw paints
 // in, r being its box as Draw gets it. Elsewhere the pointer reaches what
