@@ -1457,6 +1457,42 @@ func TestWideCharacterKeepsItsFont(t *testing.T) {
 	}
 }
 
+// TestCJKPunctuationStaysWhole checks what turning kerning off is for:
+// Core Text trims the CJK punctuation of the system's monospaced font's
+// fallback, to half width where a run ends, where the text is Chinese or
+// Japanese. A terminal's text has no language, so the language here
+// stands for a system whose fallback for these is such a font. Without
+// one or in Korean, on macOS 27, the advances are the same with kerning
+// on or off, and the other tests here pass either way.
+func TestCJKPunctuationStaysWhole(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Core Text's kerning")
+	}
+	loadLib(t)
+	term, err := New(Options{Conn: newPipe(), Font: Font{Size: 12}, NoBlink: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer term.Close()
+	tt := ui.NewTester(func(c *ui.Context) { View(c, term).Fill() }, 400, 120)
+	tt.Frame()
+	term.mu.Lock()
+	f := term.v.fonts[0]
+	term.mu.Unlock()
+	for _, lang := range []string{"zh-Hans", "zh-Hant", "ja"} {
+		f.Lang = lang
+		for _, in := range []string{"。", "清理。", "清理。地方", "清理。。地", "日本語。", "「地方」"} {
+			g := ui.Shape(in, f)
+			for _, o := range g {
+				if math.Abs(float64(o.Advance-g[0].Advance)) > 0.01 {
+					t.Errorf("%s, %q: advances %+v", lang, in, g)
+					break
+				}
+			}
+		}
+	}
+}
+
 func TestWindowsShell(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("cmd.exe")
