@@ -24,6 +24,35 @@ func TestShapedLineHeight(t *testing.T) {
 	}
 }
 
+// TestALineHeightBelowTheFontSetsTheLine gives a line the height that
+// LineHeight sets, also below the height of its font, as CSS does: the
+// half-leading is negative and the glyphs, centered on the line, overflow
+// it. A glyph from a fallback font of the same size does not make the line
+// taller either.
+func TestALineHeightBelowTheFontSetsTheLine(t *testing.T) {
+	plain := Font{Size: 20}
+	tight := Font{Size: 20, LineHeight: 1}
+	if _, h := ShapeText("a", plain, 0).Size(); h <= 20 {
+		t.Fatalf("the font's own line is %v, not taller than its size", h)
+	}
+	for _, text := range []string{"a\nb", "\u2715\n\u2715"} {
+		l := ShapeText(text, tight, 0)
+		if _, h := l.Size(); h < 39.99 || h > 40.01 {
+			t.Errorf("two lines of %q at 1x of 20 DIPs are %v tall, want 40", text, h)
+		}
+		for i, line := range l.Lines() {
+			if line.Rect.H < 19.99 || line.Rect.H > 20.01 {
+				t.Errorf("line %d of %q is %v tall, want 20", i, text, line.Rect.H)
+			}
+			m := tight.Metrics()
+			want := line.Rect.Y + m.Ascent + (20-m.Ascent-m.Descent)/2
+			if d := line.Baseline - want; d < -0.01 || d > 0.01 {
+				t.Errorf("the baseline of line %d of %q is %v, want %v", i, text, line.Baseline, want)
+			}
+		}
+	}
+}
+
 // TestTextLayoutLines gives the lines of a layout in UTF-16 offsets, as
 // a paginating reader asks where a page ends.
 func TestTextLayoutLines(t *testing.T) {
