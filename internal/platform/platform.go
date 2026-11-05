@@ -904,6 +904,9 @@ type WindowHandler interface {
 	// moved to a display of another scale, or the scale of its display
 	// changed (macOS).
 	ScaleChanged(scale float64)
+	// OcclusionChanged reports that none of the window shows any more, or
+	// that some of it shows again (macOS).
+	OcclusionChanged(occluded bool)
 	Moved()
 	Minimized()
 	Restored()

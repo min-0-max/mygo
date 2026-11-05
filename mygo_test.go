@@ -385,6 +385,22 @@ func TestWindowStateAndEvents(t *testing.T) {
 	}
 }
 
+// The occlusion that the backend reports reaches the listeners of the window.
+func TestOnOcclusionChange(t *testing.T) {
+	w, fw := testWindow(t, WindowOptions{})
+	var got []bool
+	off := w.OnOcclusionChange(func(occluded bool) { got = append(got, occluded) })
+	onMain(func() {
+		fw.H.OcclusionChanged(true)
+		fw.H.OcclusionChanged(false)
+	})
+	off()
+	onMain(func() { fw.H.OcclusionChanged(true) })
+	if !slices.Equal(got, []bool{true, false}) {
+		t.Errorf("the listener heard %v, want [true false] and nothing after it was removed", got)
+	}
+}
+
 // The scale that the backend reports reaches the listeners of the window.
 func TestOnScaleChange(t *testing.T) {
 	w, fw := testWindow(t, WindowOptions{})
