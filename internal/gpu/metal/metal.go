@@ -606,16 +606,17 @@ func (r *Renderer) init() (err error) {
 
 // initGPU makes what only drawing on the GPU needs. A window presenting
 // CPU frames needs the device and layer alone: neither a command queue
-// nor shaders, samplers and textures.
+// nor shaders, samplers and textures. The command queue goes with a trim,
+// so the first frame after one makes that alone.
 func (r *Renderer) initGPU() error {
-	if r.queue != 0 {
+	if r.queue == 0 {
+		if r.queue = send(r.device, "newCommandQueue"); r.queue == 0 {
+			return errors.New("metal: no command queue")
+		}
+	}
+	if r.sampler != 0 {
 		return nil
 	}
-	queue := send(r.device, "newCommandQueue")
-	if queue == 0 {
-		return errors.New("metal: no command queue")
-	}
-	defer release(&queue)
 	sd := send(send(class("MTLSamplerDescriptor"), "alloc"), "init")
 	defer release(&sd)
 	send(sd, "setMinFilter:", filterLinear)
@@ -627,8 +628,8 @@ func (r *Renderer) initGPU() error {
 	if empty == 0 || sampler == 0 {
 		return errors.New("metal: cannot create a texture")
 	}
-	r.queue, r.sampler, r.empty = queue, sampler, empty
-	queue, sampler, empty = 0, 0, 0
+	r.sampler, r.empty = sampler, empty
+	sampler, empty = 0, 0
 	return nil
 }
 
@@ -2037,6 +2038,8 @@ func (r *Renderer) trim() {
 	pool(func() {
 		r.waitLast()
 		r.releaseTextures()
+		// The driver keeps its memory of frames as long as their queue lives.
+		release(&r.queue)
 		r.ages.Reset()
 		r.diff.Release()
 		tx := class("CATransaction")

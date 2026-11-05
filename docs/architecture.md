@@ -4670,8 +4670,10 @@ either.
     Two seconds after the last frame, as the
     driver frees its own memory of frames, a timer shrinks the drawables,
     which frees all but the one shown, until the next frame makes them
-    again, and releases GPU instance buffers, atlas/image textures and
-    backdrop textures: an idle window keeps one frame of memory. Its
+    again, and releases GPU instance buffers, atlas/image textures,
+    backdrop textures and the command queue, whose memory of frames the
+    driver keeps as long as it lives: an idle window keeps one frame of
+    memory. Its
     drawables are not `framebufferOnly`, as effects sample the drawable
     for their backdrops.
     A frame draws only what changed since its drawable was drawn. Core
