@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/internal/fake"
+	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/internal/surface"
+	"github.com/egoist/mygo/ui"
 )
 
 // activeContent is a Content that records what its window tells of its
@@ -151,5 +154,55 @@ func TestWindowActiveKept(t *testing.T) {
 	kept.SetActiveAppearance(false)
 	if active(kept) {
 		t.Error("active after SetActiveAppearance(false)")
+	}
+}
+
+// TestAppThatResignsClearsTheHover checks that an application that stops
+// being active leaves no hover and no tip of the pointer: the system tells
+// its tracking areas nothing more, so nothing else ends them, as the
+// system's own tooltip goes when its application does. The next move
+// brings them back.
+func TestAppThatResignsClearsTheHover(t *testing.T) {
+	var hovered, tipped bool
+	_, _, s := contentWindow(t, func(c *ui.Context) {
+		box := ui.Box(c).Size(100, 50).Label("box")
+		hovered = box.Hovered()
+		tipped = false
+		ui.TooltipBase(c, box, func(tip ui.Element) {
+			tipped = true
+			tip.Children(func() { ui.Text(c, "A tip") })
+		})
+	})
+	frame := func() { onMain(func() { s.Frame() }) }
+	move := func() {
+		onMain(func() { s.Send(platform.SurfaceEvent{Kind: platform.PointerMove, X: 10, Y: 10}) })
+		frame()
+		frame()
+	}
+	shown := func() bool {
+		for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			if frame(); tipped {
+				return true
+			}
+		}
+		return false
+	}
+	was := fb.Active
+	t.Cleanup(func() { onMain(func() { fb.SetActive(was) }) })
+	onMain(func() { fb.SetActive(true) })
+	move()
+	if !hovered || !shown() {
+		t.Fatalf("before: hovered %v, tip %v", hovered, tipped)
+	}
+	onMain(func() { fb.SetActive(false) })
+	frame()
+	frame()
+	if hovered || tipped {
+		t.Errorf("after the application resigned: hovered %v, tip %v", hovered, tipped)
+	}
+	onMain(func() { fb.SetActive(true) })
+	move()
+	if !hovered || !shown() {
+		t.Errorf("after the next move: hovered %v, tip %v", hovered, tipped)
 	}
 }
