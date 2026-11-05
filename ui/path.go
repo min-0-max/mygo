@@ -616,15 +616,18 @@ func (p *Painter) drawPathPaint(f *flatPath, width float32, c Color, g *LinearGr
 				ps.large = append(ps.large, sum)
 			}
 		} else {
-			// The atlas is full: the runtime makes room and paints the
-			// frame again, in which paths larger than a tile draw as
-			// tiles. Try them now too, in what room is left, rather than
-			// show nothing if room is not made in time. The masks of
-			// those this paint drew before go as room is made: kept, as
-			// the frame drew them, they could leave the tiles no room,
-			// and the frame would show none of them.
-			ps.crowded = p.rt.paints + pathCrowdedPaints
-			p.rt.text.Unkeep(ps.large)
+			// The runtime makes room and paints the frame again. An atlas
+			// that can grow will hold the mask then. The largest is full:
+			// in that paint, paths larger than a tile draw as tiles. Try
+			// them now too, in what room is left, rather than show nothing
+			// if room is not made in time. The masks of those this paint
+			// drew before go as room is made: kept, as the frame drew them,
+			// they could leave the tiles no room, and the frame would show
+			// none of them.
+			if p.rt.text.MaskAtlas.W >= scene.MaxAtlasSize {
+				ps.crowded = p.rt.paints + pathCrowdedPaints
+				p.rt.text.Unkeep(ps.large)
+			}
 			tiled = large
 		}
 	}
