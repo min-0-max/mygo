@@ -5,6 +5,7 @@ package linux
 import (
 	"fmt"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -472,7 +473,9 @@ func clickSurface(handle uintptr, x, y float64, button uint32) bool {
 }
 
 // TestClickPage clicks (x, y), in DIPs, in the page of a window's web
-// view, through XTEST, as a user clicks it.
+// view, with events made inside the process, as TestRightClickPage does.
+// The pointer of the person stays where it is, and the click works on X11
+// and on Wayland alike.
 func TestClickPage(handle uintptr, x, y float64) bool {
 	return clickPage(handle, x, y, 1)
 }
@@ -483,19 +486,74 @@ func TestRightClickPage(handle uintptr, x, y float64) bool {
 	return clickPage(handle, x, y, 3)
 }
 
+// The types of the GdkEvents that clickPage makes.
+const (
+	gdkMotionNotify  = 3
+	gdkButtonPress   = 4
+	gdkButtonRelease = 7
+)
+
+// clickPage gives the web view of a window a motion, a press and a release
+// at (x, y) through gtk_main_do_event, the path of the events of the
+// system, which handles each before it returns. WebKit reads the source
+// device of a mouse event, so each event has one.
 func clickPage(handle uintptr, x, y float64, button uint32) bool {
 	w := windowByHandle(handle)
 	if w == nil || w.surface != nil || w.web == 0 {
 		return false
 	}
-	loadFlyouts() // contentOrigin's
-	loadSurface() // gtk_widget_get_scale_factor
-	ox, oy := w.contentOrigin()
-	scale := float64(max(gtkWidgetGetScaleFactor(w.web), 1))
-	if !TestMovePointer(int((float64(ox)+x)*scale), int((float64(oy)+y)*scale)) {
+	var eventNew func(typ int32) ptr
+	var doEvent func(event ptr)
+	var setDevice, setSourceDevice func(event, device ptr)
+	if !bind(libGDK, &eventNew, "gdk_event_new") || !bind(libGTK, &doEvent, "gtk_main_do_event") ||
+		!bind(libGDK, &setDevice, "gdk_event_set_device") ||
+		!bind(libGDK, &setSourceDevice, "gdk_event_set_source_device") {
 		return false
 	}
-	return pressButton(button, true) && pressButton(button, false)
+	loadFlyouts() // gdk_window_get_origin
+	win := gtkWidgetGetWindow(w.web)
+	if win == 0 {
+		return false
+	}
+	var ox, oy int32
+	gdkWindowGetOrigin(win, &ox, &oy)
+	device := gdkSeatGetPointer(gdkDisplayGetDefaultSeat(gdkDisplayGetDefault()))
+	send := func(typ int32, state uint32) {
+		// GdkEventButton and GdkEventMotion agree on these: window 8,
+		// send_event 16, time 20, x 24, y 32, state 48, x_root 64, y_root
+		// 72. Only GdkEventButton reads button 52.
+		ev := eventNew(typ)
+		base := *(*unsafe.Pointer)(unsafe.Pointer(&ev))
+		*(*ptr)(unsafe.Add(base, 8)) = gObjectRef(win)
+		*(*int8)(unsafe.Add(base, 16)) = 1
+		*(*uint32)(unsafe.Add(base, 20)) = uint32(time.Now().UnixMilli())
+		*(*float64)(unsafe.Add(base, 24)) = x
+		*(*float64)(unsafe.Add(base, 32)) = y
+		*(*uint32)(unsafe.Add(base, 48)) = state
+		if typ != gdkMotionNotify {
+			*(*uint32)(unsafe.Add(base, 52)) = button
+		}
+		*(*float64)(unsafe.Add(base, 64)) = float64(ox) + x
+		*(*float64)(unsafe.Add(base, 72)) = float64(oy) + y
+		setDevice(ev, device)
+		setSourceDevice(ev, device)
+		doEvent(ev)
+		gdkEventFree(ev)
+	}
+	send(gdkMotionNotify, 0)
+	send(gdkButtonPress, 0)
+	send(gdkButtonRelease, 1<<(7+button)) // GDK_BUTTON1_MASK is 1 << 8
+	return true
+}
+
+// TestPointerPosition returns where the seat's pointer is on its screen,
+// in DIPs.
+func TestPointerPosition() (x, y int32) {
+	var position func(device, screen ptr, x, y *int32)
+	if bind(libGDK, &position, "gdk_device_get_position") {
+		position(gdkSeatGetPointer(gdkDisplayGetDefaultSeat(gdkDisplayGetDefault())), 0, &x, &y)
+	}
+	return x, y
 }
 
 // TestSideButton clicks a mouse's back or forward button (buttons 8 and
