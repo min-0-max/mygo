@@ -309,6 +309,10 @@ whatever the app is written in.
   key and order it front without activating the app, and keeps a change
   of the policy from activating it. Only what asks for it activates the
   app then: `Focus`, `App.Focus`, dialogs, the about panel and the user.
+  `App.SetWindowShow` gives the step of `Window.Show` that makes a window
+  key and orders it front to the application, which receives the NSWindow
+  and decides where the window goes, such as behind the front window of
+  another app.
 
 ### Jump lists
 
