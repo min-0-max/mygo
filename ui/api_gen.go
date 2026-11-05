@@ -4611,6 +4611,21 @@ func (_handle Element) DragEnded() (float32, float32, bool) {
 	return _node.DragEnded()
 }
 
+// DragMissed reports, in the frame after, that the value the element
+// drags (Drag) was let go over no element taking it, and where, in the
+// window's coordinates: outside the window when it was let go past its
+// edge, as to tear a tab out into a window of its own. A drag given up,
+// with Escape, is not missed.
+func (_handle Element) DragMissed() (Point, bool) {
+	_node := _handle.node()
+	if _node == nil {
+		return *new(Point), false
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return _node.DragMissed()
+}
+
 // DragOffset returns where Draggable shows the element in this frame,
 // from its place in the layout: following the pointer, or on its way to
 // rest. Reading it builds the view in every frame the element moves in,
@@ -6637,6 +6652,20 @@ func (_handle Element) PressedButton() (int, bool) {
 	_ctx := _node.c
 	_ = _ctx
 	return _node.PressedButton()
+}
+
+// PressedInside reports whether the pointer went down since the last
+// frame on the element, inside it, or in a popover attached to it, as
+// PressedOutside reports one outside. Unlike Pressed and Clicked, the
+// element does not take the pointer.
+func (_handle Element) PressedInside() bool {
+	_node := _handle.node()
+	if _node == nil {
+		return false
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return _node.PressedInside()
 }
 
 // PressedOutside reports whether the pointer went down since the last
