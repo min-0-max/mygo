@@ -236,6 +236,8 @@ type textStyle struct {
 	strokeColor Color
 	// tabSize puts tab stops every tabSize spaces (TabSize).
 	tabSize float32
+	// keepAll breaks no line between letters (KeepAll).
+	keepAll bool
 }
 
 const (
@@ -258,9 +260,10 @@ const (
 	setDecoOffset
 	setStroke
 	setTabSize
+	setKeepAll
 
 	// setAll has every bit of textStyle.set.
-	setAll = setTabSize<<1 - 1
+	setAll = setKeepAll<<1 - 1
 )
 
 // layoutStyle is what lays an element out, of what the view sets on it:
@@ -1659,6 +1662,18 @@ func (e *node) TabSize(n float32) *node {
 	}
 	e.ts.tabSize = max(n, 0)
 	e.ts.set |= setTabSize
+	return e
+}
+
+// KeepAll breaks no line of the element's text between two letters or
+// digits, Hangul, Han and kana among them, as CSS's word-break: keep-all:
+// without it these lines may break between any two of their characters,
+// and with it, as lines of Latin words do, only where a space or
+// punctuation allows it. The elements inside the element inherit it. A word
+// wider than the line still breaks, as any word does.
+func (e *node) KeepAll() *node {
+	e.ts.keepAll = true
+	e.ts.set |= setKeepAll
 	return e
 }
 

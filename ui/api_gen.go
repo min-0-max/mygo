@@ -5334,6 +5334,22 @@ func (_handle Element) JustifySelf(a Align) Element {
 	return wrapElement(_node.JustifySelf(a))
 }
 
+// KeepAll breaks no line of the element's text between two letters or
+// digits, Hangul, Han and kana among them, as CSS's word-break: keep-all:
+// without it these lines may break between any two of their characters,
+// and with it, as lines of Latin words do, only where a space or
+// punctuation allows it. The elements inside the element inherit it. A word
+// wider than the line still breaks, as any word does.
+func (_handle Element) KeepAll() Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.KeepAll())
+}
+
 // KeepFocus leaves the keyboard focus where it is while the element, or
 // what is inside it, is pressed: the popups and bars of a control that
 // keeps typing while the user picks in them, as a combobox's options or a

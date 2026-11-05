@@ -106,6 +106,11 @@ type Params struct {
 	// NoBreakWords only breaks lines between words, letting a long word
 	// overflow the width instead of breaking it.
 	NoBreakWords bool
+	// KeepAll breaks no line between two letters or digits, Hangul, Han
+	// and kana among them, as CSS's word-break: keep-all: a line of them
+	// breaks where a space or punctuation allows it. A word wider than
+	// the line still breaks, or overflows with NoBreakWords.
+	KeepAll bool
 	// Indent moves the first line of the text this many DIPs from the
 	// start of its paragraph's direction, the left or the right, and
 	// wraps it that much narrower, as CSS's text-indent; 0 or less is
@@ -1246,9 +1251,13 @@ func (s *System) paragraph(out []Line, p Params, spans []Span, runes []rune, sta
 		if p.NoWrap {
 			width = 0
 		}
-		shaped = s.breakLines(text, p.Style, spans, width, indent, rtl, p.NoBreakWords, hy)
+		var keep []bool
+		if p.KeepAll && width > 0 {
+			keep = keepAllBreaks(text)
+		}
+		shaped = s.breakLines(text, p.Style, spans, width, indent, rtl, p.NoBreakWords, keep, hy)
 		if p.Balance && width > 0 && len(shaped) > 1 && !(maxLines > 0 && len(shaped) > maxLines) {
-			shaped = s.balance(text, p, spans, width, indent, rtl, hy, shaped)
+			shaped = s.balance(text, p, spans, width, indent, rtl, keep, hy, shaped)
 		}
 	}
 	if len(shaped) == 0 {
@@ -1310,7 +1319,7 @@ const balanceStep = 0.25
 // wrapped at the narrowest width that keeps them as many, found by
 // bisection: about ten layouts of the paragraph, once, as its layout is
 // kept (Params.Balance).
-func (s *System) balance(text []rune, p Params, spans []Span, width, indent float32, rtl bool, hy *hyphens, shaped []shapedLine) []shapedLine {
+func (s *System) balance(text []rune, p Params, spans []Span, width, indent float32, rtl bool, keep []bool, hy *hyphens, shaped []shapedLine) []shapedLine {
 	n := len(shaped)
 	// The lines hold all the glyphs, whose advances, but for those of
 	// the whitespace ending lines, take no more room than n lines do.
@@ -1325,7 +1334,7 @@ func (s *System) balance(text []rune, p Params, spans []Span, width, indent floa
 	lo, hi := min(total/float32(n)/2, width), width
 	for hi-lo > balanceStep {
 		mid := (lo + hi) / 2
-		lines := s.breakLines(text, p.Style, spans, mid, indent, rtl, p.NoBreakWords, hy)
+		lines := s.breakLines(text, p.Style, spans, mid, indent, rtl, p.NoBreakWords, keep, hy)
 		if len(lines) <= n {
 			hi, shaped = mid, lines
 		} else {

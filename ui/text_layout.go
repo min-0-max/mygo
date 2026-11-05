@@ -122,6 +122,9 @@ type TextShape struct {
 	// NoBreakWords breaks lines only between words: a word wider than
 	// Width overflows it instead of breaking.
 	NoBreakWords bool
+	// KeepAll breaks no line between two letters or digits, as Text's
+	// KeepAll does.
+	KeepAll bool
 	// Balance wraps each paragraph in lines of about the same length, at
 	// the narrowest width that keeps them as many as Width wraps, as
 	// Text's Balance does.
@@ -144,7 +147,7 @@ func shapeText(s string, font Font, width float32, spans []Span) *TextLayout {
 
 func shapeTextAligned(s string, font Font, shape TextShape, spans []Span) *TextLayout {
 	params := text.Params{Text: s, Style: font.style(), Width: shape.Width, KeepSpaces: true, Spans: encodeSpans(spans), RTL: shape.Direction == RightToLeft,
-		Justify: shape.Justify, Indent: shape.Indent, NoBreakWords: shape.NoBreakWords, Balance: shape.Balance}
+		Justify: shape.Justify, Indent: shape.Indent, NoBreakWords: shape.NoBreakWords, KeepAll: shape.KeepAll, Balance: shape.Balance}
 	if shape.Justify {
 		text.Shared().UseJustify()
 	}

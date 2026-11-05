@@ -4274,6 +4274,12 @@ either.
     repeats, and the canvas engine's own lines, which otherwise measure a
     tab as the canvas does, as a space. The first `TabSize` links it
     (`System.UseTabSize`), as `Justify` does `UseJustify`.
+  - *Keeping words.* `Params.KeepAll` takes the breaks of Unicode's line
+    breaking algorithm, without those between two letters, digits or
+    marks, where the engines know nothing of them: each line an engine
+    ends elsewhere ends at the last of these breaks and what follows
+    breaks anew (`breakLines`). It shapes no more of the text ahead than
+    it takes for a line to end, so that a long text costs as its lines do.
   Paths drawn with
   `Painter` are masks in the coverage atlas, rasterized by `internal/vec`,
   cached by their shape relative to the pixel grid in quarters of a pixel,
