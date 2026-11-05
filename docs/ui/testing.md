@@ -55,7 +55,12 @@ panics where the second key was given, as apps only log it.
   of `Find`, `ClickAt`, `Move` and `TextCaret`, stay the window's), `tt.SetDark`,
   `tt.SetPreferences` and `tt.SetDirection` (lay it out
   [right to left](right-to-left.md)) change the window and the desktop's
-  settings;
+  settings; `ui.NewTesterWith(view, w, h, ui.TesterOptions{Preferences: p,
+  Dark: true})` starts with the desktop's, which the first frame follows,
+  as Media Queries 5 has the user's preferences apply from the first time
+  styles resolve: a view mounted under reduced motion starts no animation
+  in its first frames, which `NewTester` settles before a `SetPreferences`
+  can come;
   `tt.SetFocused` takes the keyboard from the window and gives it back,
   and `tt.SetWindowActive` draws it as inactive and active again, as
   another window taking the user's input does
@@ -144,7 +149,8 @@ name, the value, the description and the `RoleDescription`, and the
 states, as [accessibility](accessibility.md#states) lists them:
 `Checked` and `Mixed` (`aria-checked`, `aria-pressed`), `Selected`
 (`aria-selected`, the tab, tree item, row or grid cell chosen),
-`Expanded`, `HasPopup`, `Busy`, `Current`, `Sort` (a column header's
+`Expanded`, `HasPopup`, `Busy`, `Current`,
+`AutoComplete` (`aria-autocomplete`), `Sort` (a column header's
 `ui.SortDirection`), `Disabled`, `Invalid`, `Focused` (the element or
 option the focus is on, `ActiveDescendant` included), `Controls` (the
 names of the elements it controls, which `Access` finds), `Level`,

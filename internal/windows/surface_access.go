@@ -721,12 +721,14 @@ func (e *uiaElement) runtimeID() []int32 {
 	return []int32{3, int32(uint32(e.n.ID)), int32(uint32(e.n.ID >> 32))}
 }
 
-// act performs an action of assistive technology on the element.
+// act performs an action of assistive technology on the element. One
+// disabled takes none, but the focus where it keeps it, as one that is
+// only unavailable does (aria-disabled), as Chromium's.
 func (e *uiaElement) act(action platform.AccessActionKind, text string) uintptr {
 	switch {
 	case e.dead:
 		return uiaElementNotAvailable
-	case e.n.States&platform.AccessDisabled != 0:
+	case e.n.States&platform.AccessDisabled != 0 && (action != platform.AccessFocus || e.n.Actions&platform.ActionFocus == 0):
 		return uiaElementNotEnabled
 	}
 	e.tree.s.send(platform.SurfaceEvent{Kind: platform.AccessAction, ID: e.n.ID, Action: action, Text: text})
@@ -1299,7 +1301,9 @@ func (e *uiaElement) property(id int, v *variant) {
 // no property of, as Chromium gives them in AriaProperties: busy=true for
 // content about to change, current=page for the current item, the kind of
 // popup the element opens (haspopup=menu), and the order a column sorts
-// its table in (sort=ascending).
+// its table in (sort=ascending); and autocomplete=list for a field whose
+// suggestions show in a popup, which Chromium gives IAccessible2 alone,
+// as an object attribute.
 func ariaProperties(n platform.AccessNode) string {
 	var props []string
 	if n.States&platform.AccessBusy != 0 {
@@ -1307,6 +1311,9 @@ func ariaProperties(n platform.AccessNode) string {
 	}
 	if c := n.Current; c != platform.CurrentNone {
 		props = append(props, "current="+c.String())
+	}
+	if a := n.AutoComplete; a != platform.AutoCompleteNone {
+		props = append(props, "autocomplete="+a.String())
 	}
 	if p := n.HasPopup; p != platform.PopupNone {
 		props = append(props, "haspopup="+p.String())

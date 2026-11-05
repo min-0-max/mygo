@@ -129,6 +129,9 @@ type TextShape struct {
 	// the narrowest width that keeps them as many as Width wraps, as
 	// Text's Balance does.
 	Balance bool
+	// Pretty keeps the last line of each paragraph from holding a single
+	// word, as Text's Pretty does.
+	Pretty bool
 }
 
 // ShapeRichTextWith shapes spans as ShapeRichText does, laid out as shape
@@ -147,9 +150,12 @@ func shapeText(s string, font Font, width float32, spans []Span) *TextLayout {
 
 func shapeTextAligned(s string, font Font, shape TextShape, spans []Span) *TextLayout {
 	params := text.Params{Text: s, Style: font.style(), Width: shape.Width, KeepSpaces: true, Spans: encodeSpans(spans), RTL: shape.Direction == RightToLeft,
-		Justify: shape.Justify, Indent: shape.Indent, NoBreakWords: shape.NoBreakWords, KeepAll: shape.KeepAll, Balance: shape.Balance}
+		Justify: shape.Justify, Indent: shape.Indent, NoBreakWords: shape.NoBreakWords, KeepAll: shape.KeepAll, Balance: shape.Balance, Pretty: shape.Pretty}
 	if shape.Justify {
 		text.Shared().UseJustify()
+	}
+	if shape.Pretty {
+		linkPretty.Do(text.Shared().UsePretty)
 	}
 	switch {
 	case shape.Align == Center:
