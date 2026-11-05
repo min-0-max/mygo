@@ -325,8 +325,9 @@ func (s *state) vector(x, y, dx, dy float32) (float32, float32) {
 	return m.VectorAt(x, y, dx, dy)
 }
 
-// contains tests the actual transformed box, where it takes the pointer
-// (HitTest) and every ancestor's clip, rather than the conservative
+// contains tests the actual transformed box with the room around it that
+// takes the pointer (HitOutset), where it takes the pointer (HitTest) and
+// every ancestor's clip, rather than the conservative
 // rectangles used for accessibility and culling.
 func (rt *engine) contains(s *state, r Rect, x, y float32) bool {
 	m, ok := s.world.Inverse()
@@ -334,6 +335,9 @@ func (rt *engine) contains(s *state, r Rect, x, y float32) bool {
 		return false
 	}
 	lx, ly := m.Point(x, y)
+	if d := s.hitOutset; d != 0 {
+		r = Rect{r.X - d, r.Y - d, r.W + 2*d, r.H + 2*d}
+	}
 	if !r.Contains(lx, ly) || s.selfClips && !roundedContains(s.selfClip, uniformRadii(s.selfRadius), lx, ly) ||
 		s.hitFn != nil && !s.hitFn(lx, ly, Rect{s.x, s.y, s.w, s.h}) {
 		return false
