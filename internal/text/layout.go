@@ -555,6 +555,14 @@ type fontForgetter interface {
 	releaseFonts()
 }
 
+// shapingKeeper is an engine that keeps what shaping a text took across
+// frames: endFrame runs after each frame, and releaseShaping as windows go
+// idle.
+type shapingKeeper interface {
+	endFrame()
+	releaseShaping()
+}
+
 // uiFamilySetter is an engine that takes the family of the desktop's
 // interface font from the app.
 type uiFamilySetter interface{ setUIFamily(family string) }
@@ -754,6 +762,9 @@ func (s *System) EndFrame() {
 	}
 	s.frame++
 	s.drawn = [2]int{}
+	if k, ok := s.eng.(shapingKeeper); ok {
+		k.endFrame()
+	}
 	f, ok := s.eng.(fontForgetter)
 	if ok {
 		f.releaseFonts()
@@ -780,6 +791,16 @@ func (s *System) EndFrame() {
 	}
 	for s.oldest != nil && s.frame-s.oldest.used > 240 {
 		s.removeLayout(s.oldest)
+	}
+}
+
+// ReleaseShaping lets go of what the engine keeps of text shaped lately, for
+// when a window goes idle: the next frames shape it again.
+func (s *System) ReleaseShaping() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if k, ok := s.eng.(shapingKeeper); ok {
+		k.releaseShaping()
 	}
 }
 

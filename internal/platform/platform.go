@@ -161,6 +161,14 @@ type StyleBackend interface {
 	SetStyleSheet(css string) error
 }
 
+// WindowButtonsBackend reports the window buttons the desktop puts at the
+// start and at the end of title bars (Linux): "minimize", "maximize" and
+// "close", in their order, none where the desktop wants none. Main thread
+// only.
+type WindowButtonsBackend interface {
+	WindowButtons() (start, end []string)
+}
+
 // AppOptions configures Backend.Init.
 type AppOptions struct {
 	Name string
@@ -1069,6 +1077,7 @@ type MenuItem struct {
 	ID          int
 	Type        MenuItemType
 	Label       string
+	Subtitle    string
 	Role        string
 	Accelerator string
 	Enabled     bool
@@ -1174,6 +1183,14 @@ type Clipboard interface {
 	WriteImage(png []byte) error
 	Clear()
 	AvailableFormats() []string
+}
+
+// LaterClipboard is a clipboard whose writes finish later, as a
+// browser's, whose clipboard answers with a promise: WriteTextThen puts
+// text there as WriteText does, and gives done what came of it, on the
+// main thread. Desktops' clipboards answer at once (WriteData).
+type LaterClipboard interface {
+	WriteTextThen(text string, done func(error))
 }
 
 // Shell integrates with the desktop environment.

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"image"
 	"log"
 	"os"
@@ -694,6 +695,7 @@ func (h *windowHost) idle() {
 		return
 	}
 	h.soft.Release()
+	h.rt.text.ReleaseShaping()
 	if s, ok := h.conn.Surface.(platform.IdleSurface); ok {
 		s.Idle()
 	}
@@ -990,6 +992,23 @@ func (h *windowHost) writeClipboard(s string) {
 		h.conn.Clipboard.WriteText(s)
 	}
 }
+
+func (h *windowHost) writeClipboardThen(s string, done func(error)) {
+	c := h.conn.Clipboard
+	if later, ok := c.(platform.LaterClipboard); ok {
+		later.WriteTextThen(s, done)
+		return
+	}
+	err := errNoClipboard
+	if c != nil {
+		err = c.WriteData(transfer.TextData(s), nil)
+	}
+	h.post(func() { done(err) })
+}
+
+// errNoClipboard is what writing the clipboard of a window without one
+// comes to.
+var errNoClipboard = errors.New("ui: the window has no clipboard")
 
 func (h *windowHost) readClipboardData(formats []transfer.Format) transfer.Data {
 	if h.conn.Clipboard == nil {

@@ -185,6 +185,9 @@ func (b *Backend) servicesMenu(sub id) id {
 }
 
 func applyItemState(item id, it *platform.MenuItem) {
+	if it.Type != platform.MenuItemSeparator {
+		applyItemSubtitle(item, it)
+	}
 	if it.Type != platform.MenuItemSeparator && menuImage != nil {
 		var img id
 		if it.Icon != nil {
@@ -213,6 +216,22 @@ func applyItemState(item id, it *platform.MenuItem) {
 	send(item, "setState:", state)
 	if it.ToolTip != "" {
 		send(item, "setToolTip:", uintptr(nsString(it.ToolTip)))
+	}
+}
+
+// applyItemSubtitle gives the item its subtitle, which NSMenuItem shows from
+// macOS 14, and after the title before.
+func applyItemSubtitle(item id, it *platform.MenuItem) {
+	if !respondsTo(item, "setSubtitle:") {
+		if it.Subtitle != "" {
+			send(item, "setTitle:", uintptr(nsString(it.LabelWithSubtitle())))
+		}
+		return
+	}
+	if it.Subtitle != "" {
+		send(item, "setSubtitle:", uintptr(nsString(it.Subtitle)))
+	} else if send(item, "subtitle") != 0 {
+		send(item, "setSubtitle:", 0)
 	}
 }
 
