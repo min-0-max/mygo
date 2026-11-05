@@ -2,7 +2,6 @@ package ui
 
 import (
 	"math"
-	"slices"
 
 	"github.com/egoist/mygo/internal/text"
 )
@@ -74,10 +73,8 @@ func layoutTree(root *node, w, h float32) {
 	rt.beginLayout(root)
 	layoutBox(root, w, h)
 	// Lists build rows as they lay out, which may ask to come into view.
-	for _, e := range root.c.reveal {
-		if !slices.Contains(rt.revealIDs, e.id) {
-			rt.revealIDs = append(rt.revealIDs, e.id)
-		}
+	for _, r := range root.c.reveal {
+		rt.askReveal(r.e.id, r.o)
 	}
 	if len(rt.revealIDs) > 0 {
 		revealAll(root, rt.revealIDs)
@@ -207,7 +204,7 @@ func (e *node) textParams(width float32) text.Params {
 	ts := e.resolvedText()
 	style := text.Style{
 		Family: ts.family, Size: ts.size, Weight: ts.weight, Italic: ts.italic, LineHeight: ts.lineHeight,
-		LetterSpacing: ts.spacing, Features: ts.features, Lang: ts.lang,
+		LetterSpacing: ts.spacing, Features: ts.features, Lang: ts.lang, TabSize: ts.tabSize,
 	}
 	if ts.fixedLine && ts.lineHeight > 0 {
 		style.LineHeight = ts.lineHeight / style.FontSize()
@@ -290,6 +287,12 @@ func (e *node) resolvedText() textStyle {
 		}
 		if take&setSelection != 0 {
 			out.selection = t.selection
+		}
+		if take&setStroke != 0 {
+			out.strokeWidth, out.strokeColor = t.strokeWidth, t.strokeColor
+		}
+		if take&setTabSize != 0 {
+			out.tabSize = t.tabSize
 		}
 		out.set |= take
 	}

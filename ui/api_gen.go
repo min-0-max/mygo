@@ -5198,6 +5198,24 @@ func (_handle Element) InView() bool {
 	return _node.InView()
 }
 
+// InViewMargin reports whether some of the element showed in the frame
+// before, as InView does, with the window and the scroll containers
+// around it grown by margin, in DIPs, CSS style as Padding: all sides,
+// vertical and horizontal, or top, right, bottom and left. As
+// IntersectionObserver's rootMargin and scrollMargin, a margin of 200
+// has the element in view once it is within 200 DIPs of showing, to load
+// what it shows before it scrolls in, and a negative one only once it is
+// that far inside; other clips around it clip it as they do.
+func (_handle Element) InViewMargin(margin ...float32) bool {
+	_node := _handle.node()
+	if _node == nil {
+		return false
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return _node.InViewMargin(margin...)
+}
+
 // InputMethod sets whether the system's input methods compose text for the
 // element while it has the keyboard focus, as they do by default for one
 // that takes text (HandleTextInput, TextCaret). Turned off, keys type the
@@ -5711,6 +5729,22 @@ func (_handle Element) MaxHeightPercent(p float32) Element {
 	return wrapElement(_node.MaxHeightPercent(p))
 }
 
+// MaxLength keeps the user from making a text input's value longer than n,
+// counted as HTML's maxlength counts it, in UTF-16 code units, a newline
+// as one: text typed, pasted or committed by an input method is cut to
+// what fits at the caret, and replacing a selection takes what fits in its
+// place. A value the app sets is not cut. n <= 0 means no limit.
+// Like ReadOnly, it holds for the input that comes until the next frame.
+func (_handle Element) MaxLength(n int) Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.MaxLength(n))
+}
+
 // MaxLines shows at most n lines of the element's text, ending it with an
 // ellipsis.
 func (_handle Element) MaxLines(n int) Element {
@@ -5859,6 +5893,19 @@ func (_handle Element) Modal() Element {
 	_ctx := _node.c
 	_ = _ctx
 	return wrapElement(_node.Modal())
+}
+
+// NoShadow takes off the outer and inner shadows added so far, as CSS's
+// box-shadow: none, so that the Shadow and InsetShadow calls after it
+// start afresh.
+func (_handle Element) NoShadow() Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.NoShadow())
 }
 
 // NoWrap keeps each line of the element's text whole, breaking it only at
@@ -6557,14 +6604,22 @@ func (_handle Element) Scale(x float32, y float32) Element {
 // comes into view with it. Call it in the frame it should come into view,
 // as when it is added or chosen: in every frame, it would keep the user
 // from scrolling it away.
-func (_handle Element) ScrollIntoView() Element {
+//
+// Its options line the element up elsewhere in the containers, or glide
+// there, as the web's scrollIntoView options do: the current match of a
+// search, centered smoothly.
+//
+//	if app.matchMoved {
+//		hit.ScrollIntoView(ui.ScrollIntoViewOptions{Block: ui.ScrollCenter, Animation: &ui.Smooth})
+//	}
+func (_handle Element) ScrollIntoView(options ...ScrollIntoViewOptions) Element {
 	_node := _handle.node()
 	if _node == nil {
 		return Element{}
 	}
 	_ctx := _node.c
 	_ = _ctx
-	return wrapElement(_node.ScrollIntoView())
+	return wrapElement(_node.ScrollIntoView(options...))
 }
 
 // ScrollSnap makes the scroll container (Scroll, ScrollHorizontal,
@@ -6993,6 +7048,22 @@ func (_handle Element) Submitted() bool {
 	return _node.Submitted()
 }
 
+// TabSize puts the tab stops of the element's text every n spaces of its
+// font from the start of each line, as CSS's tab-size: a tab advances
+// to the next of them, as a code block indents with tabs of 2 or 4
+// columns. A space is as wide as the font's, letter spacing included.
+// Without it, or with n at 0, tabs advance as the system's text stack
+// sets them, which differs between systems.
+func (_handle Element) TabSize(n float32) Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.TabSize(n))
+}
+
 // TextAlign aligns the lines of text: Start, Center or End.
 func (_handle Element) TextAlign(a Align) Element {
 	_node := _handle.node()
@@ -7082,6 +7153,25 @@ func (_handle Element) TextSelection() (int, int) {
 	_ctx := _node.c
 	_ = _ctx
 	return _node.TextSelection()
+}
+
+// TextStroke strokes the outlines of the glyphs of text width DIPs wide
+// in c, under their fill, as CSS's -webkit-text-stroke with paint-order:
+// stroke fill: the half of the stroke outside the glyphs shows around
+// them, a halo of c, as a chart's labels over its bars take one of the
+// background's color to stand out. A text's strokes all go under all
+// its glyphs, so that one glyph's stroke never covers its neighbor; the
+// stroke goes around the edge of the pixels of color glyphs, as emoji.
+// Underlines and strikethroughs are not stroked. A width of 0 strokes
+// nothing, where the elements around it stroke their text.
+func (_handle Element) TextStroke(width float32, c Color) Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.TextStroke(width, c))
 }
 
 // Timeline returns the timeline the element keeps under key, playing it
@@ -7436,7 +7526,9 @@ func (_handle Element) WrapReverse() Element {
 // without one: those in the flow in the order they were built, then the
 // absolute and sticky ones in theirs. The default is 0; a negative value
 // paints the element under its siblings, still above its parent's
-// background.
+// background. The copy of an element leaving with its Exit
+// (ElementTransition) keeps the z-index the element had, under its
+// siblings of the same one: a dialog fading out stays above the page.
 //
 // It moves the element with all that is inside it, as one, among its
 // siblings alone: it does not reach past its parent, which still clips it

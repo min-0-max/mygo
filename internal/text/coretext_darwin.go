@@ -64,6 +64,8 @@ const (
 	ctFontColorGlyphsTrait     = 1 << 13
 	ctFontOrientationDefault   = 0
 	ctRunStatusRightToLeft     = 1 << 0
+	ctTabStopsSpec             = 4
+	ctDefaultTabIntervalSpec   = 5
 	ctBaseWritingDirectionSpec = 13
 
 	cgImageAlphaOnly             = 7
@@ -412,6 +414,9 @@ type coreText struct {
 	// bands caches where glyphs' outlines cross underlines (inkInBand),
 	// by Font: a CTFont's address may be another's once it is released.
 	bands map[bandKey][2]float32
+	// tabStyles are paragraph styles with tab stops every so many points
+	// (Style.TabSize), owned.
+	tabStyles map[tabStyleKey]uintptr
 
 	primary map[Style]uintptr // the CTFont of each style
 	fonts   map[uint][]*Font  // by CFHash of their CTFont
@@ -474,6 +479,7 @@ func newCoreText() (*coreText, error) {
 		native:     map[uintptr]*Font{},
 		oblique:    map[*Font]*Font{},
 		attrs:      map[attrsKey]uintptr{},
+		tabStyles:  map[tabStyleKey]uintptr{},
 		registered: map[string][]registeredFace{},
 		bands:      map[bandKey][2]float32{},
 		italic:     cfString("MyGoItalic"),
@@ -950,6 +956,10 @@ func (e *coreText) shape(text []rune, style Style, spans []Span, width float32, 
 	if rtl {
 		paragraph = e.styles[1]
 	}
+	tabbed := style.tabStop > 0
+	if tabbed {
+		paragraph = e.tabStyle(rtl, style.tabStop)
+	}
 	lang := style.Lang
 	if ct.languageName == 0 {
 		lang = ""
@@ -980,7 +990,7 @@ func (e *coreText) shape(text []rune, style Style, spans []Span, width float32, 
 	}
 	e.keys, e.values = keys, values
 	switch {
-	case len(keys) > base:
+	case len(keys) > base || tabbed:
 		attrs = cfDictionary(keys, values)
 		defer ct.release(attrs)
 	case !cached:
@@ -1033,6 +1043,44 @@ func (e *coreText) shape(text []rune, style Style, spans []Span, width float32, 
 		start += count
 	}
 	return lines
+}
+
+type tabStyleKey struct {
+	rtl      bool
+	interval float32
+}
+
+// tabStyle returns the paragraph style of a direction with tab stops
+// every interval points from the start of each line, and none before.
+func (e *coreText) tabStyle(rtl bool, interval float32) uintptr {
+	key := tabStyleKey{rtl, interval}
+	if p, ok := e.tabStyles[key]; ok {
+		return p
+	}
+	if len(e.tabStyles) >= 64 {
+		for _, p := range e.tabStyles {
+			ct.release(p)
+		}
+		clear(e.tabStyles)
+	}
+	var dir int8 // kCTWritingDirectionLeftToRight
+	if rtl {
+		dir = 1
+	}
+	stops := ct.arrayCreate(0, nil, 0, ct.arrayCallbacks)
+	defer ct.release(stops)
+	every := float64(interval) // a CGFloat
+	settings := [3]ctParagraphStyleSetting{
+		{spec: ctBaseWritingDirectionSpec, size: 1, value: unsafe.Pointer(&dir)},
+		{spec: ctTabStopsSpec, size: unsafe.Sizeof(stops), value: unsafe.Pointer(&stops)},
+		{spec: ctDefaultTabIntervalSpec, size: unsafe.Sizeof(every), value: unsafe.Pointer(&every)},
+	}
+	p := ct.paragraphStyleCreate(&settings[0], len(settings))
+	runtime.KeepAlive(&dir)
+	runtime.KeepAlive(&stops)
+	runtime.KeepAlive(&every)
+	e.tabStyles[key] = p
+	return p
 }
 
 // line reads the runs of a line of a text that italic says is italic, or

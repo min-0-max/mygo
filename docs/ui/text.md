@@ -30,6 +30,27 @@ descenders, as `underline-offset-4` does on the web:
 ui.Link(c, "Read the docs", url).Underline().DecorationThickness(1).UnderlineOffset(4)
 ```
 
+`TextStroke(width, color)` strokes the outlines of the glyphs under their
+fill, as CSS's `-webkit-text-stroke` with `paint-order: stroke fill`: half
+the stroke shows around each glyph, a halo that keeps a label readable
+over whatever is behind it. All the strokes of a text paint under all its
+glyphs, so a stroke never covers the glyph beside it; the text of an
+inline element strokes with its own. A chart's labels over its bars,
+outlined in the background's color:
+
+```go
+ui.Text(c, "42%").TextColor(t.Text).TextStroke(3, t.Background)
+```
+
+`TabSize(n)` puts tab stops every `n` spaces of the font from the start of
+each line, as CSS's `tab-size`, so a code block's tabs indent 2 or 4
+columns; without it, tabs stop where the system's text stack puts them,
+which differs between systems:
+
+```go
+ui.Text(c, source).Font("monospace").TabSize(4)
+```
+
 Text in Arabic, Hebrew and the other scripts written so reads right to
 left, mixed with text reading left to right as Unicode's bidirectional
 algorithm says: a paragraph reads in the direction of its first strongly
@@ -212,6 +233,20 @@ ui.RichText(c).Children(func() {
 Only text elements (`Text`, `Link`, `RichText`) go inside a text; their
 sizes, padding, borders and corners do not apply, and a `Background`
 highlights their text.
+
+`Opacity` fades an element's words within the sentence, with the colors
+of the elements inside it, a transparent `TextColor` paints none of them,
+and `Invisible` hides them as CSS's `visibility: hidden` does: their room
+in the line stays, so a word streamed into a reply can fade in, or a
+placeholder hide, without moving the text around it:
+
+```go
+ui.Text(c, "").Children(func() {
+	for i, word := range reply.words {
+		ui.Text(c, word).Opacity(reply.fadeIn(i)) // 0 to 1 as each arrives
+	}
+})
+```
 
 ## Fonts
 

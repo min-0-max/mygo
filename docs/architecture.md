@@ -2715,11 +2715,13 @@ either.
   focus and shortcuts without retaining an element in app state. Scroll
   offsets move in the layout too
   (`ui/scroll.go`): elements that asked to `ScrollIntoView`, and the focus,
-  come into view before the boxes are placed, and placing keeps each offset
-  within its content; a `ScrollState` mirrors an offset both ways, and a
-  frame that moved one builds another for what read the old one. A
-  container that snaps (`ScrollSnap`, `ui/snap.go`) finds the places its
-  elements mark as it is placed, from their boxes relative to it, and
+  come into view before the boxes are placed, lined up as its options say
+  (or glide there as a wheel's notches do, by what they went each frame,
+  `glideScroll`), and placing keeps each offset within its content; a
+  `ScrollState` mirrors an offset both ways, and a frame that moved one
+  builds another for what read the old one. A container that snaps
+  (`ScrollSnap`, `ui/snap.go`) finds the places its elements mark as it
+  is placed, from their boxes relative to it, and
   keeps the offset at the one it rests at; a notch or a key heads for the
   next place at once, a touchpad's scrolling once it has been still for a
   moment (not every platform tells when the fingers lift or a fling's
@@ -2751,7 +2753,8 @@ either.
   more to hash than to compare, and one laid out at another width asks
   for it from the last (`text.System.LayoutFrom`). A grid measures the
   widths of only the items its columns read (`contributes`): none for Fr
-  columns with room known, as CSS's minmax(0, 1fr). Transforms and scroll
+  columns with room known, as CSS's minmax(0, 1fr), unless they are
+  `MinContent`; a minimum (`Track.Min`) measures nothing. Transforms and scroll
   offsets of other containers apply after layout and change nothing
   there. Elements that lay
   out by more than they are built with are never reused, nor anything
@@ -3008,7 +3011,7 @@ either.
   its `Enter` only in a parent the frame before had; the overlay layer,
   built only while it holds something, counts as the root there. One no longer built,
   whose parent still is, goes with its `Exit` as an inert copy, laid out
-  and painted under its siblings without taking room; the frames after
+  and painted under its siblings of its z-index without taking room; the frames after
   one in the overlay layer, or its copy, build the layer, empty but for
   the copies, which lets the pointer and the focus through
   (`engine.overlayExits`). Frames that built
@@ -3174,7 +3177,8 @@ either.
   paints and commits them through `zPaint` and `zCommit`, which `ZIndex`
   sets, so that an app never calling it links none of this. It paints
   them in `paintOrder`: the two passes' order sorted stably by
-  z-index, so that equal values keep it, the copies leaving still first,
+  z-index, so that equal values keep it, the copies leaving, which keep
+  the z-index their elements had, first among those of theirs,
   and, of the root, the overlay layer and what follows it last
   (`zPinned`), so that overlays stay above the content and keep their
   order (the overlay layer's own children are never sorted). Commit
@@ -4252,6 +4256,24 @@ either.
     a pixel. There, on Linux, package ui has the text system join them
     (`System.GlyphRun`): their coverage added and clamped, cached as one
     bitmap.
+  - *Strokes.* `TextStroke` draws each glyph's stroke as a mask of its
+    own (`System.StrokeGlyph`), made in Go from the glyph's coverage for
+    every engine: the coverage dilated by half the width less the
+    coverage eroded by it, each edge pixel's coverage placing the edge
+    within it, so the stroke is centered on the outline, round at its
+    corners and as smooth as the glyph; color glyphs stroke their alpha.
+    Cached with the glyphs, under a key with the width, and drawn by
+    every renderer as any mask glyph, all of a text's before its glyphs
+    (`paint-order: stroke fill`). `TextStroke` links it, so that apps that
+    stroke no text do not.
+  - *Tabs.* `Style.TabSize` sets tab stops every that many spaces of the
+    style's font, letter spacing included, from the start of each line,
+    which each engine takes natively: Core Text's paragraph style (no
+    tab stops but a `DefaultTabInterval`), DirectWrite's
+    `SetIncrementalTabStop`, a Pango tab array of one stop, which it
+    repeats, and the canvas engine's own lines, which otherwise measure a
+    tab as the canvas does, as a space. The first `TabSize` links it
+    (`System.UseTabSize`), as `Justify` does `UseJustify`.
   Paths drawn with
   `Painter` are masks in the coverage atlas, rasterized by `internal/vec`,
   cached by their shape relative to the pixel grid in quarters of a pixel,
@@ -4367,7 +4389,10 @@ either.
   styles as spans over its own when it lays out. At commit, each gets the
   boxes of its runes in the paragraph's layout (`Selection`), one hit
   each, so the pointer, the focus order, tooltips and menus work as for
-  any element; they paint only their focus ring, and assistive
+  any element; they paint only their focus ring (their `Opacity`,
+  `Invisible` and dimming fade the colors of their spans, `Span.faded`,
+  and a color faded to nothing stays the span's own, `colorSet`, so the
+  paragraph skips their glyphs but keeps their advance), and assistive
   technology sees those that are more than text, such as links, as nodes
   inside the paragraph's.
   Fontconfig knows no desktop's interface font, so on Linux `system-ui`

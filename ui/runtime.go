@@ -456,8 +456,8 @@ type engine struct {
 	// late is set when lists built elements while laying out.
 	late bool
 	// revealIDs are the elements to scroll into view once the frame is
-	// laid out.
-	revealIDs []uint64
+	// laid out, and how.
+	revealIDs []revealAsk
 	wakeMu    sync.Mutex
 	wakeAt    time.Time
 	cursor    Cursor
@@ -1070,10 +1070,8 @@ func (rt *engine) endPass() {
 	rt.downs = rt.downs[:0]
 	rt.passFocus()
 	// The next pass may not ask again, as when the view cleared what asked.
-	for _, e := range rt.c.reveal {
-		if !slices.Contains(rt.revealIDs, e.id) {
-			rt.revealIDs = append(rt.revealIDs, e.id)
-		}
+	for _, r := range rt.c.reveal {
+		rt.askReveal(r.e.id, r.o)
 	}
 }
 
@@ -1407,6 +1405,7 @@ func (rt *engine) commitElement(e *node, clip Rect, hidden bool) {
 	// the focus, and has no text to find; so does what is inert, which
 	// shows, and what is Hidden, which has no box.
 	invisible := e.flags&(flagInvisible|flagInert) != 0 || hidden || e.hidden || e.backface && e.transform.facesAway()
+	s.invisible = invisible
 	if invisible {
 		s.vw, s.vh = 0, 0
 	}
