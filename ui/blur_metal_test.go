@@ -62,6 +62,55 @@ func metalFrames(t *testing.T, view func(c *context), w, h int) *metal.Offscreen
 	return o
 }
 
+// logHeld logs the textures o holds, each by name, size and bytes, and
+// their sum.
+func logHeld(t *testing.T, name string, o *metal.Offscreen) int {
+	t.Helper()
+	sum := 0
+	for _, h := range o.HeldTextures() {
+		t.Logf("%s: %s %dx%d %d bytes", name, h.Name, h.W, h.H, h.Bytes)
+		sum += h.Bytes
+	}
+	t.Logf("%s: %d bytes held; target %d bytes", name, sum, o.TargetBytes())
+	buffers := 0
+	for _, b := range o.HeldBuffers() {
+		t.Logf("%s: %s buffer of %d bytes, %d allocated", name, b.Name, b.W, b.Bytes)
+		buffers += b.Bytes
+	}
+	t.Logf("%s: %d bytes of buffers", name, buffers)
+	return sum
+}
+
+// A window blurred whole and kept, as the workbench behind a dialog,
+// holds on the GPU, beyond what it holds unblurred, less than half of what
+// its own pixels take: the blur of what does not change, without what it
+// was computed from. A window blurred anew every frame needs what it blurs
+// every frame; its bytes are logged.
+func TestABlurredWindowHoldsLittleOnTheGPU(t *testing.T) {
+	probe, err := metal.NewOffscreen(1, 1)
+	if err != nil {
+		t.Skip("no Metal:", err)
+	}
+	defer probe.Release()
+	start := probe.DeviceAllocatedBytes()
+	plain := metalFrames(t, blurredWindow(false, false), 600, 380)
+	defer plain.Release()
+	before := plain.DeviceAllocatedBytes()
+	t.Logf("the device grew by %d bytes with the unblurred window's renderer", before-start)
+	blurred := metalFrames(t, blurredWindow(true, true), 600, 380)
+	defer blurred.Release()
+	grown := blurred.DeviceAllocatedBytes() - before
+	anew := metalFrames(t, blurredWindow(true, false), 600, 380)
+	defer anew.Release()
+	logHeld(t, "blurred anew every frame", anew)
+	window := 1200 * 760 * 4
+	p, b := logHeld(t, "unblurred", plain), logHeld(t, "blurred and kept", blurred)
+	t.Logf("the device grew by %d bytes with the blurred window's renderer: %d of its textures held, %d its target, %d else", grown, b, blurred.TargetBytes(), grown-b-blurred.TargetBytes())
+	if extra := b - p; extra*2 >= window {
+		t.Errorf("blurring the window holds %d bytes more on the GPU, %.2f of its pixels; want under half (%d)", extra, float64(extra)/float64(window), window/2)
+	}
+}
+
 // A window blurred whole and kept looks, drawn in memory and with Metal,
 // the same as the window blurred anew every frame: the frames after the
 // first show the blur kept, computed once.
