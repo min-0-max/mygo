@@ -385,6 +385,19 @@ func TestWindowStateAndEvents(t *testing.T) {
 	}
 }
 
+// The scale that the backend reports reaches the listeners of the window.
+func TestOnScaleChange(t *testing.T) {
+	w, fw := testWindow(t, WindowOptions{})
+	var got []float64
+	off := w.OnScaleChange(func(scale float64) { got = append(got, scale) })
+	onMain(func() { fw.H.ScaleChanged(2) })
+	off()
+	onMain(func() { fw.H.ScaleChanged(1) })
+	if !slices.Equal(got, []float64{2}) {
+		t.Errorf("the listener heard %v, want [2] and nothing after it was removed", got)
+	}
+}
+
 func TestPageTitleUpdatesWindowTitle(t *testing.T) {
 	w, fw := testWindow(t, WindowOptions{Title: "Initial"})
 	onMain(func() { fw.H.TitleChanged("From Page") })

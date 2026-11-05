@@ -899,6 +899,10 @@ type WindowHandler interface {
 	// or context menu, even while the menu has focus instead of the window.
 	MenuItemClicked(id int)
 	Resized()
+	// ScaleChanged reports the new scale of the window's backing store: it
+	// moved to a display of another scale, or the scale of its display
+	// changed (macOS).
+	ScaleChanged(scale float64)
 	Moved()
 	Minimized()
 	Restored()

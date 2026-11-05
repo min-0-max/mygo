@@ -664,6 +664,7 @@ slow work. Each `On…` method returns a function that removes the listener.
 | `OnFocus`, `OnBlur` | it gained or lost the keyboard focus |
 | `OnShow`, `OnHide` | it was shown or hidden |
 | `OnResize`, `OnMove` | it was resized or moved |
+| `OnScaleChange(func(scale float64))` | the scale of its backing store changed, as it moved to a display of another scale or the scale of its display changed (macOS) |
 | `OnMaximize`, `OnUnmaximize`, `OnMinimize`, `OnRestore` | its state changed |
 | `OnEnterFullScreen`, `OnLeaveFullScreen` | it entered or left full screen |
 | `OnReadyToShow` | its first page is ready to be displayed, or its native UI drew its first frame |

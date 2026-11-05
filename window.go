@@ -411,6 +411,7 @@ type Window struct {
 	onHide             listeners[func()]
 	onReadyToShow      listeners[func()]
 	onResize           listeners[func()]
+	onScaleChange      listeners[func(float64)]
 	onFileDrop         listeners[func(*FileDropEvent)]
 	onWillDownload     listeners[func(*DownloadEvent)]
 	onDownloadDone     listeners[func(*Download)]
@@ -1877,6 +1878,13 @@ func (w *Window) OnReadyToShow(fn func()) (off func()) { return w.onReadyToShow.
 // OnResize is called after the window was resized.
 func (w *Window) OnResize(fn func()) (off func()) { return w.onResize.add(fn, false) }
 
+// OnScaleChange is called with the new scale of the window's backing store,
+// in device pixels per DIP, after the window moved to a display of another
+// scale or the scale of its display changed. It is called on macOS only.
+func (w *Window) OnScaleChange(fn func(scale float64)) (off func()) {
+	return w.onScaleChange.add(fn, false)
+}
+
 // OnFileDrop is called when files, for example from Finder or Explorer, are
 // dropped on the page, with their paths. The app's own pages also get them,
 // through onFileDrop of mygo-runtime. In a window showing native UI, it
@@ -2051,14 +2059,15 @@ func (h *windowHandler) MenuItemClicked(id int) {
 	}
 }
 
-func (h *windowHandler) Resized()           { h.w.stateChanged(); h.w.placeFlyouts(); fire(&h.w.onResize) }
-func (h *windowHandler) Moved()             { h.w.stateChanged(); h.w.placeFlyouts(); fire(&h.w.onMove) }
-func (h *windowHandler) Minimized()         { h.w.stateChanged(); fire(&h.w.onMinimize) }
-func (h *windowHandler) Restored()          { h.w.stateChanged(); fire(&h.w.onRestore) }
-func (h *windowHandler) Maximized()         { h.w.stateChanged(); fire(&h.w.onMaximize) }
-func (h *windowHandler) Unmaximized()       { h.w.stateChanged(); fire(&h.w.onUnmaximize) }
-func (h *windowHandler) EnteredFullScreen() { h.w.stateChanged(); fire(&h.w.onEnterFullScreen) }
-func (h *windowHandler) LeftFullScreen()    { h.w.stateChanged(); fire(&h.w.onLeaveFullScreen) }
+func (h *windowHandler) Resized()                   { h.w.stateChanged(); h.w.placeFlyouts(); fire(&h.w.onResize) }
+func (h *windowHandler) ScaleChanged(scale float64) { fire1(&h.w.onScaleChange, scale) }
+func (h *windowHandler) Moved()                     { h.w.stateChanged(); h.w.placeFlyouts(); fire(&h.w.onMove) }
+func (h *windowHandler) Minimized()                 { h.w.stateChanged(); fire(&h.w.onMinimize) }
+func (h *windowHandler) Restored()                  { h.w.stateChanged(); fire(&h.w.onRestore) }
+func (h *windowHandler) Maximized()                 { h.w.stateChanged(); fire(&h.w.onMaximize) }
+func (h *windowHandler) Unmaximized()               { h.w.stateChanged(); fire(&h.w.onUnmaximize) }
+func (h *windowHandler) EnteredFullScreen()         { h.w.stateChanged(); fire(&h.w.onEnterFullScreen) }
+func (h *windowHandler) LeftFullScreen()            { h.w.stateChanged(); fire(&h.w.onLeaveFullScreen) }
 func (h *windowHandler) TitleBarChanged() {
 	h.w.sendTitleBar()
 	if c := h.w.conn; c != nil && c.TitleBarChanged != nil {

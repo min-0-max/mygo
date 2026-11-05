@@ -18,6 +18,7 @@ var helpers = map[string]func() int{
 	offWorkerEnv:      offWorkerMain,
 	runEnv:            runMain,
 	notifyDelegateEnv: notifyDelegateMain,
+	windowScaleEnv:    windowScaleMain,
 }
 
 func init() {
