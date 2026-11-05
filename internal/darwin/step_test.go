@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
@@ -23,6 +24,7 @@ var stepApp struct {
 	fetchedOn, sentOn    uintptr
 	callbackOn           uintptr
 	fetchedCounted       bool
+	untilFromNow         float64
 }
 
 func makeStepApp(t *testing.T) {
@@ -41,7 +43,8 @@ func makeStepApp(t *testing.T) {
 			t.Fatal(err)
 		}
 		app, err := objc.RegisterClass("MyGoTestStepApp", objc.GetClass("NSObject"), nil, nil, []objc.MethodDef{
-			{Cmd: objc.RegisterName("nextEventMatchingMask:untilDate:inMode:dequeue:"), Fn: func(_ objc.ID, _ objc.SEL, _ uint64, _, _ objc.ID, _ bool) objc.ID {
+			{Cmd: objc.RegisterName("nextEventMatchingMask:untilDate:inMode:dequeue:"), Fn: func(_ objc.ID, _ objc.SEL, _ uint64, until, _ objc.ID, _ bool) objc.ID {
+				s.untilFromNow = objc.Send[float64](until, objc.RegisterName("timeIntervalSinceNow"))
 				s.fetchedOn = self()
 				s.fetchedCounted = mainthread.IsMainThread()
 				return objc.ID(s.event)
@@ -100,5 +103,8 @@ func TestStepRunsItsGoOnTheWorker(t *testing.T) {
 	}
 	if s.callbackOn != worker {
 		t.Errorf("the callback of the sent event ran on %#x, not on the worker %#x as a nested step", s.callbackOn, worker)
+	}
+	if year := 365 * 24 * time.Hour; s.untilFromNow < year.Seconds() {
+		t.Errorf("Step fetched its event with a date %v s from now, want no date within a year: only an event or Wake ends it", s.untilFromNow)
 	}
 }

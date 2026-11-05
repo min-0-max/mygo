@@ -13,6 +13,7 @@ import (
 // binary one.
 var helpers = map[string]func() int{
 	wakeEnv:           wakeMain,
+	stepWaitEnv:       stepWaitMain,
 	resultsEnv:        resultsMain,
 	offWorkerEnv:      offWorkerMain,
 	runEnv:            runMain,

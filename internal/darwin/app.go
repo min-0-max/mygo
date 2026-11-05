@@ -252,7 +252,8 @@ func (b *Backend) step() {
 	defer func() { b.stepping-- }()
 	withPool(func() {
 		withMainPool(func() {
-			until := msgDateSince(class("NSDate"), sel("dateWithTimeIntervalSinceNow:"), 0.5)
+			// No date: an event or Wake ends the fetch, and the queue of the main thread and the timers run in it.
+			until := send(class("NSDate"), "distantFuture")
 			mode := nsString("kCFRunLoopDefaultMode")
 			ev := msgNextEvent(b.app, sel("nextEventMatchingMask:untilDate:inMode:dequeue:"), ^uint64(0), until, mode, true)
 			if ev == 0 {
