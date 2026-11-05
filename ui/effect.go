@@ -77,9 +77,12 @@ func (p *Painter) paintEffect(e *node) bool {
 	m.X, m.Y = max(m.X, 0), max(m.Y, 0)
 	box := Rect{e.x, e.y, e.w, e.h}
 	from := Rect{box.X - m.X, box.Y - m.Y, box.W + 2*m.X, box.H + 2*m.Y}
-	if e.cache != nil && e.effect == nil {
-		// What the element paints, blurred as far as the blur shows.
-		from = e.cache.area(e)
+	if e.effect == nil {
+		// What the element paints, its shadows and focus ring beyond its
+		// box and the children it does not clip, blurred as far as the
+		// blur shows: the same layer whether it is kept (Cache) or drawn
+		// anew, so that both show the same pixels.
+		from = keptLayer{}.area(e)
 		from = Rect{from.X - m.X, from.Y - m.Y, from.W + 2*m.X, from.H + 2*m.Y}
 	}
 	if box.W <= 0 || box.H <= 0 || !p.visible(from, 4) {
