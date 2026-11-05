@@ -10,6 +10,7 @@ package platform
 import (
 	"context"
 	"errors"
+	"image"
 	"io"
 	"time"
 
@@ -1229,6 +1230,13 @@ type Theme interface {
 	// Preferences returns the settings of the desktop that the system's
 	// controls follow. A change of any of them calls Handler.ThemeChanged.
 	Preferences() Preferences
+}
+
+// SymbolTheme is a Theme of a system with a library of symbols.
+type SymbolTheme interface {
+	// SystemSymbol returns the mask of the symbol name, at pointSize for a
+	// window of scale, and false when the system has no such symbol.
+	SystemSymbol(name string, pointSize, scale float64) (image.Image, bool)
 }
 
 // Preferences are settings of the desktop that the system's own controls

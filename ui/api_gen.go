@@ -587,6 +587,18 @@ func (_handle *Context) Size() (float32, float32) {
 	return _ctx.Size()
 }
 
+// SystemSymbol returns the symbol name of the system at pointSize, for the
+// scale of the window, and a Symbol without a Bitmap when the system has no
+// such symbol, as only macOS has a library of them. Draw it with
+// Painter.Symbol. The window asks the system once for each size and scale.
+func (_handle *Context) SystemSymbol(name string, pointSize float32) Symbol {
+	_ctx := _handle.build()
+	if _ctx == nil {
+		return *new(Symbol)
+	}
+	return _ctx.SystemSymbol(name, pointSize)
+}
+
 // Theme returns the theme of the frame: the light or dark theme following
 // the system's appearance, unless SetTheme replaced it. While the children
 // of a Themed build, it is the Themed's theme.

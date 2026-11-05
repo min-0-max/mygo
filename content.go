@@ -48,9 +48,15 @@ func (w *Window) attachContent(content Content) {
 				w.native.TitleBarDoubleClicked()
 			}
 		},
-		Escape:        w.escape,
-		IsDark:        func() bool { return backend().Theme().IsDark() },
-		Preferences:   func() platform.Preferences { return backend().Theme().Preferences() },
+		Escape:      w.escape,
+		IsDark:      func() bool { return backend().Theme().IsDark() },
+		Preferences: func() platform.Preferences { return backend().Theme().Preferences() },
+		SystemSymbol: func(name string, pointSize, scale float64) (image.Image, bool) {
+			if symbols, ok := backend().Theme().(platform.SymbolTheme); ok {
+				return symbols.SystemSymbol(name, pointSize, scale)
+			}
+			return nil, false
+		},
 		Locale:        func() string { return App.Locale() },
 		RightToLeft:   appRightToLeft,
 		Region:        func() i18n.Region { return App.Region() },

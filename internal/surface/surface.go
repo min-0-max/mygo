@@ -7,6 +7,7 @@ import (
 	"github.com/egoist/mygo/i18n"
 	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/transfer"
+	"image"
 )
 
 // Conn is a window's side of the connection. Package mygo fills it before
@@ -34,6 +35,9 @@ type Conn struct {
 	// tells changes of as well.
 	IsDark      func() bool
 	Preferences func() platform.Preferences
+	// SystemSymbol returns the mask of a symbol of the system
+	// (platform.SymbolTheme), and false when it has none.
+	SystemSymbol func(name string, pointSize, scale float64) (image.Image, bool)
 	// Locale returns the language the app shows (App.Locale), and Region
 	// the user's regional formats, which LocaleChanged tells changes of.
 	// They cost nothing: the content may read them every frame.

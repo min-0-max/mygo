@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"image"
 	"slices"
 	"sync"
 	"time"
@@ -68,6 +69,9 @@ type host interface {
 	escape()
 	isDark() bool
 	preferences() platform.Preferences
+	// systemSymbol returns the mask of a symbol of the system, and false
+	// when it has none.
+	systemSymbol(name string, pointSize, scale float64) (image.Image, bool)
 	// locale returns the language the app shows, and region the user's
 	// regional formats; they cost nothing.
 	locale() string
@@ -507,7 +511,9 @@ type engine struct {
 	dark        bool
 	darkKnown   bool
 	// prefs are the desktop's preferences, read once until they change.
-	prefs      Preferences
+	prefs Preferences
+	// symbols holds what the system answered for each symbol asked of it.
+	symbols    map[symbolKey]Symbol
 	prefsKnown bool
 	// lang is the language the app shows, read as each frame starts.
 	lang string

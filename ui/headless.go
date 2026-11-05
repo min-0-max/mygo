@@ -27,6 +27,8 @@ type headless struct {
 	requested atomic.Bool
 	dark      bool
 	prefs     platform.Preferences
+	// symbols is the library of symbols that SetSystemSymbols sets.
+	symbols func(name string, pointSize, scale float64) (image.Image, bool)
 	// lang and reg are what SetLocale and SetRegion set.
 	lang string
 	reg  i18n.Region
@@ -177,11 +179,18 @@ func (h *headless) escape()                           { h.escapes++ }
 func (h *headless) isDark() bool                      { return h.dark }
 func (h *headless) rightToLeft() bool                 { return h.rtl }
 func (h *headless) preferences() platform.Preferences { return h.prefs }
-func (h *headless) locale() string                    { return h.lang }
-func (h *headless) region() i18n.Region               { return h.reg }
-func (h *headless) titleBar() TitleBar                { return h.bar }
-func (h *headless) vibrancy() bool                    { return h.material }
-func (h *headless) active() bool                      { return !h.inactive }
+
+func (h *headless) systemSymbol(name string, pointSize, scale float64) (image.Image, bool) {
+	if h.symbols == nil {
+		return nil, false
+	}
+	return h.symbols(name, pointSize, scale)
+}
+func (h *headless) locale() string      { return h.lang }
+func (h *headless) region() i18n.Region { return h.reg }
+func (h *headless) titleBar() TitleBar  { return h.bar }
+func (h *headless) vibrancy() bool      { return h.material }
+func (h *headless) active() bool        { return !h.inactive }
 func (h *headless) invalidate() {
 	h.invalidated.Store(true)
 	h.requested.Store(true)
@@ -439,6 +448,15 @@ func (t *Tester) SetPreferences(p Preferences) {
 		DarkFocusRing: platform.Color{R: p.DarkFocusRing.R, G: p.DarkFocusRing.G, B: p.DarkFocusRing.B, A: p.DarkFocusRing.A}, ReduceMotion: p.ReduceMotion,
 		ReduceTransparency: p.ReduceTransparency, HighContrast: p.HighContrast, TextScale: float64(p.TextScale)}
 	t.rt.themeChanged()
+	t.settle()
+}
+
+// SetSystemSymbols gives the window a library of symbols, as a system has:
+// library returns the mask of a symbol, and false when it has none.
+func (t *Tester) SetSystemSymbols(library func(name string, pointSize, scale float64) (image.Image, bool)) {
+	t.h.symbols = library
+	t.rt.symbols = nil
+	t.h.requested.Store(true)
 	t.settle()
 }
 

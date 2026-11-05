@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"image"
 	"log"
 	"os"
 	"slices"
@@ -1046,6 +1047,13 @@ func (h *windowHost) preferences() platform.Preferences {
 		return platform.Preferences{}
 	}
 	return h.conn.Preferences()
+}
+
+func (h *windowHost) systemSymbol(name string, pointSize, scale float64) (image.Image, bool) {
+	if h.conn.SystemSymbol == nil {
+		return nil, false
+	}
+	return h.conn.SystemSymbol(name, pointSize, scale)
 }
 
 func (h *windowHost) locale() string {
