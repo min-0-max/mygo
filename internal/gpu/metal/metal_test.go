@@ -40,7 +40,7 @@ func init() {
 	syncPipelines = true
 	// However long a frame takes here, the next follows it
 	// (TestAFrameAloneFetchesNoDrawable tests a frame that does not).
-	framesFollow = time.Hour
+	followRefreshes = 1 << 20
 }
 
 func TestDrawsAsTheCPURenderer(t *testing.T) {
