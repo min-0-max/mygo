@@ -53,9 +53,11 @@ func click(w *mygo.Window, x, y float64) bool {
 	return fake(func() bool { return linux.TestClickSurface(w.NativeHandle(), x, y) })
 }
 
-// clickPage clicks a window's page, through XTEST.
-func clickPage(w *mygo.Window, x, y float64) bool {
-	return fake(func() bool { return linux.TestClickPage(w.NativeHandle(), x, y) })
+// clickPage clicks a window's page with events made inside the process,
+// which it handled by the time the hook returns.
+func clickPage(w *mygo.Window, x, y float64) (ok bool) {
+	mygo.RunOnMain(func() { ok = linux.TestClickPage(w.NativeHandle(), x, y) })
+	return ok
 }
 
 // appClick is click, already through XTEST.
@@ -401,9 +403,10 @@ func pinchPage(w *mygo.Window, webView int, x, y float64, scales ...float64) (ok
 const pageMenusHooked = true
 
 // rightClickPage clicks (x, y) in a window's page with the secondary
-// button, through XTEST.
-func rightClickPage(w *mygo.Window, x, y float64) bool {
-	return fake(func() bool { return linux.TestRightClickPage(w.NativeHandle(), x, y) })
+// button, as clickPage does with the primary.
+func rightClickPage(w *mygo.Window, x, y float64) (ok bool) {
+	mygo.RunOnMain(func() { ok = linux.TestRightClickPage(w.NativeHandle(), x, y) })
+	return ok
 }
 
 // pageMenu returns the labels of the items of the web view's context menu
