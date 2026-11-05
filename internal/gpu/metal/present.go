@@ -17,8 +17,9 @@ import (
 )
 
 // A presenter fetches the layer's next drawable on a thread of its own,
-// after each frame presented as soon as drawn, so that the main thread
-// never waits for the display. nextDrawable blocks while the layer's
+// after a frame presented as soon as drawn that followed another
+// (framesFollow), so that the main thread never waits for the display.
+// nextDrawable blocks while the layer's
 // drawables are all in use, as the display holds them until its next
 // refreshes: a frame following another would wait most of a refresh,
 // with the main thread able to do nothing else. Instead, a frame that
@@ -45,6 +46,11 @@ type presenter struct {
 	wake     func()
 	started  bool
 }
+
+// framesFollow is how soon after the last frame a frame counts as following
+// it, so that another is likely to follow in turn: three refreshes of the
+// slowest display. Only tests change it.
+var framesFollow = 50 * time.Millisecond
 
 // qosUserInteractive is QOS_CLASS_USER_INTERACTIVE, the main thread's.
 const qosUserInteractive = 0x21

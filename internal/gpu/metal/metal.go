@@ -551,7 +551,9 @@ func New(layer uintptr) (r *Renderer, err error) {
 		// waited for one most of each refresh. Three, as Core
 		// Animation makes while a window animates, also let both instance
 		// slots have a frame in flight while the display shows a third.
-		// They cost a frame of memory until the window idles (trim).
+		// The system makes the third only when one is asked for with two in
+		// use, which frames following each other do (framesFollow); it
+		// costs a frame of memory until the window idles (trim).
 		if respondsTo(ml, "setMaximumDrawableCount:") {
 			sendMain(ml, "setMaximumDrawableCount:", 3)
 		}
@@ -1785,8 +1787,14 @@ func (r *Renderer) render(s *scene.Scene, done func(platform.Presentation, error
 		r.facts.Request = r.reportNow()
 		send(cb, "presentDrawable:", drawable)
 		byReceiver(cb, "commit")
-		// The next frame's drawable, while this one is shown.
-		r.pre.start(r.layer)
+		// The next frame's drawable, while this one is shown, when frames
+		// follow each other. For a frame alone, the display still shows the
+		// last and the GPU has this one, so the system would make a third
+		// drawable, whose memory stays until the window idles (trim). The
+		// next frame takes one itself; with two in use, one is free for it.
+		if time.Since(r.lastRender) < framesFollow {
+			r.pre.start(r.layer)
+		}
 	}
 	r.track(cb)
 	r.lastRender = time.Now()
