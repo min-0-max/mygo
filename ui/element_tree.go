@@ -10,7 +10,8 @@ import (
 // ElementNode is an element of a frame as its element tree tells it
 // (Content.ElementTree, Tester.ElementTree): what assistive technology
 // reads of the element, with the key the app gave it. The tree holds the
-// elements assistive technology sees, in every build, inspector or not.
+// elements assistive technology sees and those behind a dialog, in every
+// build, inspector or not.
 type ElementNode struct {
 	// ID names the element in the frame for ActElement.
 	ID uint64
@@ -26,6 +27,10 @@ type ElementNode struct {
 	Bounds Rect
 	// Actions are the actions the element takes.
 	Actions Actions
+	// Inert is set on an element behind a dialog (Element.Modal). It keeps
+	// its Bounds, assistive technology does not see it, and ActElement
+	// refuses it.
+	Inert bool
 	// Children are the elements inside it, in order.
 	Children []ElementNode
 }
@@ -70,8 +75,9 @@ func (v *Content) ElementTree() ([]ElementNode, error) {
 // ActElement performs one action on the element id of the last frame, as
 // assistive technology does: ActionPress clicks it, and ActionSetValue
 // replaces its text with text. What the action changes shows in the frame
-// that follows. It fails for an element the frame does not hold and for
-// an action the element does not take, and where ElementTree fails.
+// that follows. It fails for an element the frame does not hold, for an
+// element behind a dialog and for an action the element does not take, and
+// where ElementTree fails.
 func (v *Content) ActElement(id uint64, action Actions, text string) error {
 	rt, err := v.frameEngine()
 	if err != nil {
@@ -138,13 +144,29 @@ func (rt *engine) actElement(id uint64, action Actions, text string) error {
 			return nil
 		}
 	}
+	if rt.dialogOnTop() {
+		for _, n := range rt.describeFrame(false).Nodes {
+			if n.ID == id {
+				return errors.New("ui: the element is behind a dialog")
+			}
+		}
+	}
 	return fmt.Errorf("ui: the last frame has no element %d", id)
 }
 
 // elementTree describes the last frame as assistive technology reads it,
 // with the elements' keys.
 func (rt *engine) elementTree() []ElementNode {
-	tree := rt.windowAccess(rt.accessTree())
+	tree := rt.windowAccess(rt.describeFrame(false))
+	// What assistive technology does not see of the whole frame is behind
+	// the dialog on top.
+	var seen map[uint64]bool
+	if rt.dialogOnTop() {
+		seen = map[uint64]bool{}
+		for _, n := range rt.accessTree().Nodes {
+			seen[n.ID] = true
+		}
+	}
 	keys := rt.elementKeys()
 	// Nodes come in tree order, a parent before its children.
 	children := make([][]int, len(tree.Nodes))
@@ -171,6 +193,7 @@ func (rt *engine) elementTree() []ElementNode {
 				Label:    n.Label,
 				Bounds:   Rect{X: float32(n.Bounds.X), Y: float32(n.Bounds.Y), W: float32(n.Bounds.W), H: float32(n.Bounds.H)},
 				Actions:  Actions(n.Actions),
+				Inert:    seen != nil && !seen[n.ID],
 				Children: build(children[i]),
 			}
 		}

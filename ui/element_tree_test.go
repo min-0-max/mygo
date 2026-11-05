@@ -232,3 +232,79 @@ func TestContentElementTree(t *testing.T) {
 	conn.Detach()
 	wantErr("after its window closed", "shows in no window")
 }
+
+// TestElementTreeMarksWhatIsBehindADialog checks that the elements behind a
+// dialog stay in the element tree, at their places, marked inert; that an
+// action on them is refused, in words that say so; and that assistive
+// technology still sees the dialog alone.
+func TestElementTreeMarksWhatIsBehindADialog(t *testing.T) {
+	open := false
+	pressed, confirmed := 0, 0
+	tt := NewTester(func(c *Context) {
+		Column(c).Fill().Children(func() {
+			if Button(c, "outside").Clicked() {
+				pressed++
+			}
+		})
+		if open {
+			Overlay(c, func() {
+				Box(c).Absolute().Left(0).Top(0).Right(0).Bottom(0).Center().Modal().Children(func() {
+					Row(c).Role(RoleDialog).Label("Rename").Children(func() {
+						if Button(c, "ok").Clicked() {
+							confirmed++
+						}
+					})
+				})
+			})
+		}
+	}, 300, 200)
+	before := findElement(t, tt.ElementTree(), "outside")
+	if before.Inert {
+		t.Fatalf("without a dialog the button is inert: %+v", before)
+	}
+	open = true
+	tt.Frame()
+	tt.Frame()
+
+	tree := tt.ElementTree()
+	outside := findElement(t, tree, "outside")
+	if !outside.Inert || outside.Bounds != before.Bounds {
+		t.Fatalf("the button behind the dialog is %+v, want inert in the box %+v", outside, before.Bounds)
+	}
+	for _, label := range []string{"Rename", "ok"} {
+		if inside := findElement(t, tree, label); inside.Inert {
+			t.Fatalf("%s of the dialog is inert: %+v", label, inside)
+		}
+	}
+
+	if err := tt.ActElement(outside.ID, ActionPress, ""); err == nil || err.Error() != "ui: the element is behind a dialog" {
+		t.Fatalf("an action behind the dialog: %v", err)
+	}
+	tt.Frame()
+	if pressed != 0 {
+		t.Fatalf("the button behind the dialog ran %d times", pressed)
+	}
+	ok := findElement(t, tt.ElementTree(), "ok")
+	if err := tt.ActElement(ok.ID, ActionPress, ""); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if confirmed != 1 {
+		t.Fatalf("the button of the dialog ran %d times", confirmed)
+	}
+
+	var seen []string
+	for _, n := range tt.rt.accessTree().Nodes {
+		seen = append(seen, n.Label)
+	}
+	if joined := strings.Join(seen, " "); strings.Contains(joined, "outside") || !strings.Contains(joined, "ok") {
+		t.Fatalf("assistive technology reads %q", joined)
+	}
+
+	open = false
+	tt.Frame()
+	tt.Frame()
+	if after := findElement(t, tt.ElementTree(), "outside"); after.Inert {
+		t.Fatalf("after the dialog the button is inert: %+v", after)
+	}
+}

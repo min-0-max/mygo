@@ -498,6 +498,18 @@ func (t *innerTexts) add(s string) {
 
 // accessTree describes the last frame for assistive technology.
 func (rt *engine) accessTree() *platform.AccessTree {
+	return rt.describeFrame(rt.dialogOnTop())
+}
+
+// dialogOnTop reports whether what is behind a dialog is inert in the last
+// frame.
+func (rt *engine) dialogOnTop() bool {
+	return rt.modal != 0 && rt.modalLayer != 0 && rt.c.overlay != nil
+}
+
+// describeFrame describes the last frame: from the dialog on top alone when
+// inDialog is set, as what is behind it is inert, and whole otherwise.
+func (rt *engine) describeFrame(inDialog bool) *platform.AccessTree {
 	// As many nodes as the last frame's, which the next is usually close
 	// to: growing the slice from empty would copy it again and again.
 	t := &platform.AccessTree{Nodes: make([]platform.AccessNode, 0, rt.accessNodes)}
@@ -505,7 +517,7 @@ func (rt *engine) accessTree() *platform.AccessTree {
 	var focused *node
 	switch root := rt.c.root; {
 	case root == nil:
-	case rt.modal != 0 && rt.modalLayer != 0 && rt.c.overlay != nil:
+	case inDialog:
 		// What is behind a dialog is inert: the dialog on top and what
 		// shows above it alone.
 		on := false
