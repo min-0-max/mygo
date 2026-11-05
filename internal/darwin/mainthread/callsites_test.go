@@ -68,6 +68,7 @@ func TestCallSitesGoThroughTheWorker(t *testing.T) {
 	}
 	t.Logf("%d files in %d packages; %d native call sites judged, %d run on the calling thread or go through %s",
 		stats.files, stats.packages, stats.judged, stats.accepted, ByReceiverFunc)
+	t.Logf("commands that run without the worker, not read: %s", strings.Join(stats.apart, ", "))
 	if len(findings) > 0 {
 		lines := make([]string, len(findings))
 		for i, f := range findings {
@@ -384,6 +385,8 @@ func (f finding) String(root string) string {
 type readStats struct {
 	files, packages  int
 	judged, accepted int
+	// apart are the commands that run without the worker, not read.
+	apart []string
 }
 
 type reader struct {
@@ -404,11 +407,11 @@ func newReader(r rules) *reader {
 
 // listed is a package as go list describes it.
 type listed struct {
-	ImportPath, Dir, Export string
-	GoFiles                 []string
-	Standard, DepOnly       bool
-	Module                  *struct{ Path string }
-	Error                   *struct{ Err string }
+	ImportPath, Dir, Export, Name string
+	GoFiles, Deps                 []string
+	Standard, DepOnly             bool
+	Module                        *struct{ Path string }
+	Error                         *struct{ Err string }
 }
 
 type buildConfig struct {
@@ -419,7 +422,7 @@ type buildConfig struct {
 func (c buildConfig) String() string { return "darwin/" + c.arch + " " + strings.Join(c.tags, ",") }
 
 func goList(dir string, c buildConfig, args ...string) ([]listed, error) {
-	all := []string{"list", "-e", "-json=ImportPath,Dir,Export,GoFiles,Standard,DepOnly,Module,Error"}
+	all := []string{"list", "-e", "-json=ImportPath,Dir,Export,Name,GoFiles,Deps,Standard,DepOnly,Module,Error"}
 	if len(c.tags) > 0 {
 		all = append(all, "-tags="+strings.Join(c.tags, ","))
 	}
@@ -528,6 +531,14 @@ func buildConfigs(root string) ([]buildConfig, error) {
 	return configs, nil
 }
 
+// workerProcess reports whether the package runs in a process that has
+// the worker: every package that a program may import, and a command that
+// links this package. A command that does not link it is a process of its
+// own with no worker, as a tool that measures other processes.
+func (p listed) workerProcess() bool {
+	return p.Name != "main" || slices.Contains(p.Deps, modulePath+"/internal/darwin/mainthread")
+}
+
 func excluded(path string, prefixes []string) bool {
 	for _, p := range prefixes {
 		if path == p || strings.HasPrefix(path, p+"/") {
@@ -538,7 +549,8 @@ func excluded(path string, prefixes []string) bool {
 }
 
 // readModule reads every non-test Go file of the module that builds for
-// darwin in some configuration, other than those of excludedPackages.
+// darwin in some configuration, other than those of excludedPackages and
+// of commands that run without the worker (workerProcess).
 func (r *reader) readModule(root string) ([]finding, readStats, error) {
 	configs, err := buildConfigs(root)
 	if err != nil {
@@ -556,6 +568,12 @@ func (r *reader) readModule(root string) ([]finding, readStats, error) {
 		fileSets[i] = map[string]bool{}
 		for _, p := range pkgs {
 			if p.Module == nil || p.Module.Path != modulePath || excluded(p.ImportPath, excludedPackages) {
+				continue
+			}
+			if !p.workerProcess() {
+				if !slices.Contains(r.stats.apart, p.ImportPath) {
+					r.stats.apart = append(r.stats.apart, p.ImportPath)
+				}
 				continue
 			}
 			for _, f := range p.GoFiles {
@@ -793,7 +811,7 @@ func (r *reader) readConfig(root string, c buildConfig, extra *extraPackage) err
 				return err
 			}
 			p := u.checked[path]
-			if !excluded(path, excludedPackages) {
+			if !excluded(path, excludedPackages) && u.module[path].workerProcess() {
 				p.scan = true
 			}
 		}
@@ -3527,4 +3545,24 @@ func (a *analysis) forwardedResult(entry *fn, c offWorkerCall, calls []offWorker
 		})
 	}
 	return from
+}
+
+// TestACommandWithoutTheWorkerIsNotRead checks which packages run where
+// the worker runs: a library always, as a program may import it, and a
+// command only when it links the worker's package.
+func TestACommandWithoutTheWorkerIsNotRead(t *testing.T) {
+	worker := modulePath + "/internal/darwin/mainthread"
+	for _, tc := range []struct {
+		name string
+		p    listed
+		want bool
+	}{
+		{"a library", listed{Name: "text"}, true},
+		{"a command of the framework", listed{Name: "main", Deps: []string{"fmt", worker}}, true},
+		{"a command that measures other processes", listed{Name: "main", Deps: []string{"fmt", "github.com/ebitengine/purego"}}, false},
+	} {
+		if got := tc.p.workerProcess(); got != tc.want {
+			t.Errorf("%s: workerProcess is %v, want %v", tc.name, got, tc.want)
+		}
+	}
 }
