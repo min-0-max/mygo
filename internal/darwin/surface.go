@@ -782,11 +782,9 @@ func hasCursor(cls id, name string) bool {
 		var copyMethods func(cls uintptr, n *uint32) unsafe.Pointer
 		var methodName func(m uintptr) objc.SEL
 		var getClass func(obj id) uintptr
-		var free func(p unsafe.Pointer)
-		purego.RegisterLibFunc(&copyMethods, libObjC, "class_copyMethodList")
-		purego.RegisterLibFunc(&methodName, libObjC, "method_getName")
-		purego.RegisterLibFunc(&getClass, libObjC, "object_getClass")
-		purego.RegisterLibFunc(&free, purego.RTLD_DEFAULT, "free")
+		mainthread.Bind(&copyMethods, libObjC, "class_copyMethodList")
+		mainthread.Bind(&methodName, libObjC, "method_getName")
+		mainthread.Bind(&getClass, libObjC, "object_getClass")
 		var n uint32
 		list := copyMethods(getClass(cls), &n)
 		if list == nil {
@@ -796,7 +794,7 @@ func hasCursor(cls id, name string) bool {
 		for _, m := range unsafe.Slice((*uintptr)(list), n) {
 			ownCursors[methodName(m)] = true
 		}
-		free(list)
+		mainthread.Forward[struct{}](mustDlsym(purego.RTLD_DEFAULT, "free"), uintptr(list))
 	})
 	return ownCursors[sel(name)]
 }
