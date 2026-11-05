@@ -17,6 +17,7 @@ import (
 
 	"github.com/egoist/mygo/internal/gpu"
 	"github.com/egoist/mygo/internal/gpu/gputest"
+	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/internal/scene"
 )
 
@@ -169,6 +170,33 @@ func TestTrimDrawables(t *testing.T) {
 			t.Error("next frame did not restore the drawables")
 		}
 	})
+}
+
+// TestTrimCommandQueue checks that a trimmed renderer holds no command queue,
+// whose memory of frames the driver keeps as long as it lives, and that the
+// next frame makes another without making the rest of what drawing needs again.
+func TestTrimCommandQueue(t *testing.T) {
+	r := layerRenderer(t)
+	var drawn noticed
+	render(t, r, squareAt(0), &drawn)
+	drawn.want(t, "before the trim", platform.Presented)
+	sampler, empty := r.sampler, r.empty
+	r.trim()
+	if r.queue != 0 {
+		t.Fatal("the trimmed renderer holds its command queue")
+	}
+	if r.sampler != sampler || r.empty != empty {
+		t.Fatal("the trim let go of what a window keeps until it closes")
+	}
+	drawn = noticed{}
+	render(t, r, squareAt(1), &drawn)
+	drawn.want(t, "after the trim", platform.Presented)
+	if r.queue == 0 {
+		t.Fatal("the frame after the trim has no command queue")
+	}
+	if r.sampler != sampler || r.empty != empty {
+		t.Fatal("the frame after the trim made the sampler and the empty texture again")
+	}
 }
 
 // TestChangedSince checks what frames drawn in memory copy into the
