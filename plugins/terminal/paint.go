@@ -454,6 +454,20 @@ func (v *view) shapeRun(line *rowCache, text []rune, cols []int16, widths []int8
 		room := float32(max(span, 1)) * cw
 		fit := float32(max(span, 1)) * fw
 		group := shaped[i : j+1]
+		// A wide cell's glyphs are its text's alone: the system's fallback
+		// picks a font by the text around a character, so a neighbor or a
+		// color that splits the run would change its font and its width.
+		// Glyphs that a ligature or a joiner makes of several cells stay
+		// as the run shaped them.
+		if span > 1 && cols[last] == col && last-first+1 < len(text) {
+			if alone := v.shape(string(text[first:last+1]), variant, 1); len(alone) > 0 {
+				group = alone
+				x0, x1 = alone[0].X, alone[0].X+alone[0].Advance
+				for _, g := range alone {
+					x0, x1 = min(x0, g.X), max(x1, g.X+g.Advance)
+				}
+			}
+		}
 		if f := fit / (x1 - x0); f < 0.95 && x1 > x0 {
 			// Too wide: the same text, smaller.
 			small := v.shape(string(text[first:last+1]), variant, max(f, 0.5))
