@@ -106,8 +106,12 @@ func (h *headless) occluded() bool                    { return h.hidden }
 func (h *headless) framesHeld()                       {}
 func (h *headless) present(s *scene.Scene) {
 	h.last = s
-	h.img.Render(s)
-	h.facts = gpu.FrameFacts{Outcome: gpu.FrameImmediate, Damage: s.Width * s.Height}
+	// What the frame changed, as a window drawn in memory tells it.
+	damage := h.img.Render(s)
+	h.facts = gpu.FrameFacts{Outcome: gpu.FrameImmediate, Damage: gpu.DamageArea(damage, true, 0, 0)}
+	if len(damage) == 0 {
+		h.facts.Outcome = gpu.FrameUndamaged
+	}
 }
 func (h *headless) frameFacts() gpu.FrameFacts { return h.facts }
 func (h *headless) frameAsks() bool            { return h.requested.Load() }
@@ -553,6 +557,11 @@ func (t *Tester) SetDirection(d Direction) {
 	t.h.rtl = d == RightToLeft
 	t.Frame()
 }
+
+// RecordFrames has r hear the frames of the window, as Content.RecordFrames
+// does those of a window on screen, with the damage of each as the renderer
+// in memory draws it. Call it before the frames to hear.
+func (t *Tester) RecordFrames(r *FrameRecorder) { t.rt.recorder = r }
 
 // Frame renders another frame, as when the view's state changed.
 func (t *Tester) Frame() { t.h.requested.Store(true); t.settle() }
