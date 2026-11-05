@@ -674,6 +674,9 @@ type state struct {
 
 	// hitFn is where in its box the element takes the pointer (HitTest).
 	hitFn func(x, y float32, r Rect) bool
+	// hitOutset is how far beyond its box the element takes the pointer
+	// (HitOutset).
+	hitOutset float32
 
 	world scene.Affine
 	clips bool
