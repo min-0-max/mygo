@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unsafe"
 
 	"github.com/egoist/mygo/internal/darwin/mainthread"
+	"github.com/egoist/mygo/internal/gpu"
 	"github.com/egoist/mygo/internal/scene"
 )
 
@@ -102,6 +104,75 @@ func (o *Offscreen) Render(s *scene.Scene) (gpu time.Duration, err error) {
 // drew: building its instances (gpu.Builder), uploading what changed in
 // its atlases, and encoding its passes, before committing them.
 func (o *Offscreen) Encoded() time.Duration { return o.encoded }
+
+// Pixels returns the premultiplied BGRA rows of the frame Render drew
+// last.
+func (o *Offscreen) Pixels() (pix []byte, err error) {
+	pool(func() {
+		if o.tex == 0 {
+			err = errors.New("metal: no frame drawn")
+			return
+		}
+		cb := send(o.r.queue, "commandBuffer")
+		blit := send(cb, "blitCommandEncoder")
+		send(blit, "synchronizeResource:", o.tex)
+		send(blit, "endEncoding")
+		byReceiver(cb, "commit")
+		o.r.committedOutside(gpu.CommitPixels)
+		send(cb, "waitUntilCompleted")
+		if int(send(cb, "status")) == statusError {
+			err = fmt.Errorf("metal: reading the frame failed: %s", describe(send(cb, "error")))
+			return
+		}
+		pix = make([]byte, o.w*o.h*4)
+		msgGetBytes(o.tex, sel("getBytes:bytesPerRow:fromRegion:mipmapLevel:"), unsafe.Pointer(&pix[0]), uint(o.w*4),
+			mtlRegion{W: uint(o.w), H: uint(o.h), D: 1}, 0)
+	})
+	return pix, err
+}
+
+// HeldTextures returns the textures the renderer holds besides the one
+// drawn into, with the bytes the GPU allocated for each.
+func (o *Offscreen) HeldTextures() (held []HeldTexture) {
+	pool(func() { held = o.r.heldTextures() })
+	return held
+}
+
+// HeldBuffers returns the buffers of instances the renderer holds, with
+// the bytes the GPU allocated for each; W is a buffer's length.
+func (o *Offscreen) HeldBuffers() (held []HeldTexture) {
+	pool(func() { held = o.r.heldBuffers() })
+	return held
+}
+
+// HeldTextureBytes returns the bytes of the textures HeldTextures returns.
+func (o *Offscreen) HeldTextureBytes() int {
+	n := 0
+	for _, t := range o.HeldTextures() {
+		n += t.Bytes
+	}
+	return n
+}
+
+// DeviceAllocatedBytes returns the bytes the GPU device allocated for
+// the process, every renderer's textures and buffers together
+// (currentAllocatedSize). The reader of the call sites does not know the
+// device that MTLCreateSystemDefaultDevice returns, and MTLHeap declares
+// the message too, so it goes to the main thread.
+func (o *Offscreen) DeviceAllocatedBytes() int {
+	return int(mainthread.Forward[uint64](msgSend, o.r.device, sel("currentAllocatedSize")))
+}
+
+// TargetBytes returns the bytes the GPU allocated for the texture drawn
+// into.
+func (o *Offscreen) TargetBytes() (n int) {
+	pool(func() {
+		if o.tex != 0 {
+			n = int(send(o.tex, "allocatedSize"))
+		}
+	})
+	return n
+}
 
 // Release frees the texture and the renderer.
 func (o *Offscreen) Release() {

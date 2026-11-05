@@ -489,15 +489,19 @@ type Renderer struct {
 	images map[uint64]*texture
 	// canvases are the textures canvases are drawn into.
 	canvases map[uint64]*canvasTexture
-	// blurred are the textures of the images the frame draws blurred
-	// (gpu.Builder.BlurredImage), the first used of them, and blurTmp the
-	// textures their passes go through; stopsTex is the texture of the
-	// stops of the scene drawn.
-	blurred  []texture
-	used     int
-	blurTmp  [2]texture
-	stopsTex id
-	frame    uint64
+	// blurs are the textures of the images frames draw blurred
+	// (gpu.Builder.BlurredImage), each by the image, its version and the
+	// blur, kept while frames draw them: an image unchanged is not
+	// blurred again, and a canvas shown only so needs no texture of its
+	// own (needsDrawing). blurTmp are the textures their passes go
+	// through, kept while each frame blurs, and blurPassed tells whether
+	// this one did. stopsTex is the texture of the stops of the scene
+	// drawn.
+	blurs      map[blurKey]*texture
+	blurTmp    [2]texture
+	blurPassed bool
+	stopsTex   id
+	frame      uint64
 	// Command buffers retain every resource used by their frame slot.
 	inflight    [ringSize]id
 	slot, inUse int
@@ -1109,15 +1113,21 @@ func (r *Renderer) prepare(s *scene.Scene) (cb id, built *scene.Scene, err error
 		return 0, nil, err
 	}
 	r.pipes.fallbacks = 0
-	r.used = 0
+	r.blurPassed = false
 	cb = send(r.queue, "commandBuffer")
 	if !r.checked {
 		if err := need(cb, "command buffer", "renderCommandEncoderWithDescriptor:", "commit", "presentDrawable:", "waitUntilScheduled", "waitUntilCompleted", "status", "blitCommandEncoder"); err != nil {
 			return 0, nil, err
 		}
 	}
-	// Canvases first, into textures of their own, which the frame samples.
+	// Canvases first, into textures of their own, which the frame samples;
+	// a canvas the frame shows only through blurs kept has none.
+	need := r.needsDrawing(s)
 	s.EachCanvas(func(c *scene.Image) {
+		if !need[c] {
+			r.dropCanvas(c.ID())
+			return
+		}
 		if err == nil {
 			err = r.drawCanvas(cb, c)
 		}
@@ -1129,7 +1139,84 @@ func (r *Renderer) prepare(s *scene.Scene) (cb id, built *scene.Scene, err error
 	if built, err = r.build(cb, s, &r.drawState); err != nil {
 		return 0, nil, err
 	}
+	r.dropBlurs()
 	return cb, built, nil
+}
+
+// blurKey names a blurred image: the image, its version, and the blur
+// (gpu.Builder.BlurredImage).
+type blurKey struct {
+	image, version uint64
+	bk             scene.Backdrop
+}
+
+// keeps reports whether the renderer keeps the blur that op, an image
+// drawn blurred, draws of its image as it is.
+func (r *Renderer) keeps(op *scene.Op) bool {
+	img := op.Image
+	_, ok := r.blurs[blurKey{img.ID(), img.Version(), scene.ImageBlur(scene.ImageArea(op.Src, img.W, img.H), op.Blur)}]
+	return ok
+}
+
+// needsDrawing returns the canvases whose textures s needs: those its
+// images show unblurred, or blurred anew, and its shaders read, with the
+// canvases those show, and the canvases drawn anew. A canvas shown only
+// through blurs the renderer keeps needs none.
+func (r *Renderer) needsDrawing(s *scene.Scene) map[*scene.Image]bool {
+	need := map[*scene.Image]bool{}
+	var look func(sc *scene.Scene)
+	mark := func(c *scene.Image) {
+		if c != nil && c.Scene != nil && !need[c] {
+			need[c] = true
+			look(c.Scene)
+		}
+	}
+	look = func(sc *scene.Scene) {
+		for i := range sc.Ops {
+			op := &sc.Ops[i]
+			if op.Kind != scene.OpImage || op.Image == nil || op.Image.Scene == nil || op.Blur > 0 && r.keeps(op) {
+				continue
+			}
+			mark(op.Image)
+		}
+		for i := range sc.Effects {
+			for _, img := range sc.Effects[i].Images {
+				mark(img)
+			}
+		}
+	}
+	look(s)
+	for _, c := range s.Canvases {
+		mark(c)
+	}
+	return need
+}
+
+// dropCanvas frees the texture of a canvas, which its next drawing makes
+// again.
+func (r *Renderer) dropCanvas(key uint64) {
+	if t := r.canvases[key]; t != nil {
+		release(&t.tex)
+		t.drawState.release()
+		delete(r.canvases, key)
+	}
+}
+
+// dropBlurs frees the blurred images the frame did not draw, and the
+// textures of the blur passes when it ran none.
+func (r *Renderer) dropBlurs() {
+	for key, t := range r.blurs {
+		if t.lastFrame != r.frame {
+			release(&t.tex)
+			delete(r.blurs, key)
+		}
+	}
+	if !r.blurPassed {
+		for i := range r.blurTmp {
+			release(&r.blurTmp[i].tex)
+			r.blurTmp[i] = texture{}
+		}
+	}
 }
 
 // drawCanvas draws a canvas into its texture, unless it holds its version
@@ -1501,6 +1588,11 @@ func (r *Renderer) syncStops(d *drawState) error {
 // BGRA8 whatever the frame's format, as internal/raster computes them,
 // and returns it, or 0.
 func (r *Renderer) blurImage(cb id, img *scene.Image, bk scene.Backdrop) uintptr {
+	key := blurKey{img.ID(), img.Version(), bk}
+	if t := r.blurs[key]; t != nil {
+		t.lastFrame = r.frame
+		return uintptr(t.tex)
+	}
 	src := id(r.imageTexture(img))
 	w, h := bk.Size()
 	f := &r.formats[0]
@@ -1524,19 +1616,17 @@ func (r *Renderer) blurImage(cb id, img *scene.Image, bk scene.Backdrop) uintptr
 			t.w, t.h = nw, nh
 		}
 	}
-	if r.used == len(r.blurred) {
-		r.blurred = append(r.blurred, texture{})
-	}
-	out := &r.blurred[r.used]
-	r.used++
+	out := r.blurTexture(key, w, h)
 	if out.tex == 0 || out.w != w || out.h != h {
 		release(&out.tex)
 		if out.tex = r.newTexture(w, h, pixelFormatBGRA8Unorm, usageRenderTarget|usageShaderRead, nil, 0); out.tex == 0 {
-			*out = texture{}
+			delete(r.blurs, key)
 			return 0
 		}
 		out.w, out.h = w, h
 	}
+	out.lastFrame = r.frame
+	r.blurPassed = true
 	p := gpu.ImageDownPass(bk)
 	if bk.Radius == 0 {
 		r.pass(cb, f.downPipe, src, out.tex, w, h, &p)
@@ -1548,6 +1638,25 @@ func (r *Renderer) blurImage(cb id, img *scene.Image, bk scene.Backdrop) uintptr
 	p = gpu.ImageBlurPass(bk, [2]int32{0, 1})
 	r.pass(cb, f.blurPipe, r.blurTmp[1].tex, out.tex, w, h, &p)
 	return uintptr(out.tex)
+}
+
+// blurTexture returns the texture kept for the blurred image key: that of
+// an earlier version of its image of the same size that this frame does
+// not draw, as an image changing every frame takes, or a new one.
+func (r *Renderer) blurTexture(key blurKey, w, h int) *texture {
+	if r.blurs == nil {
+		r.blurs = map[blurKey]*texture{}
+	}
+	for k, t := range r.blurs {
+		if k.image == key.image && t.w == w && t.h == h && t.lastFrame != r.frame {
+			delete(r.blurs, k)
+			r.blurs[key] = t
+			return t
+		}
+	}
+	t := &texture{}
+	r.blurs[key] = t
+	return t
 }
 
 // readBackdrop encodes the passes computing the backdrop bk of what
@@ -1977,10 +2086,10 @@ func (r *Renderer) releaseTextures() {
 		delete(r.canvases, key)
 	}
 	r.drawState.release()
-	for i := range r.blurred {
-		release(&r.blurred[i].tex)
+	for key, t := range r.blurs {
+		release(&t.tex)
+		delete(r.blurs, key)
 	}
-	r.blurred, r.used = nil, 0
 	for i := range r.blurTmp {
 		release(&r.blurTmp[i].tex)
 		r.blurTmp[i] = texture{}
@@ -1994,6 +2103,72 @@ func (r *Renderer) releaseTextures() {
 	r.b.Release()
 	r.b.Classes = true
 	r.b.Opaque = true // Release empties the builder
+}
+
+// HeldTexture is a texture a renderer holds: what it is, its size in
+// texels, and the bytes the GPU allocated for it (allocatedSize).
+type HeldTexture struct {
+	Name  string
+	W, H  int
+	Bytes int
+}
+
+// heldTextures returns the textures releaseTextures frees, and the empty
+// texture bound where there is none: what a window's frames hold on the
+// GPU besides its drawables.
+func (r *Renderer) heldTextures() []HeldTexture {
+	var held []HeldTexture
+	add := func(name string, t id) {
+		if t != 0 {
+			held = append(held, HeldTexture{Name: name, W: int(send(t, "width")), H: int(send(t, "height")), Bytes: int(send(t, "allocatedSize"))})
+		}
+	}
+	add("empty", r.empty)
+	add("mask atlas", r.mask.tex)
+	add("color atlas", r.color.tex)
+	for _, t := range r.images {
+		add("image", t.tex)
+	}
+	for _, t := range r.canvases {
+		add("canvas", t.tex)
+		for i := range t.stops {
+			add("canvas stops", t.stops[i].tex)
+		}
+	}
+	for i := range r.stops {
+		add("stops", r.stops[i].tex)
+	}
+	for _, t := range r.blurs {
+		add("blurred image", t.tex)
+	}
+	for i := range r.blurTmp {
+		add("blur pass", r.blurTmp[i].tex)
+	}
+	for i := range r.formats {
+		for j := range r.formats[i].backdrop {
+			add("backdrop", r.formats[i].backdrop[j].tex)
+		}
+	}
+	return held
+}
+
+// heldBuffers returns the buffers of instances the frames and the canvases
+// hold, a buffer for each frame slot, with the bytes the GPU allocated
+// for each; W is its length.
+func (r *Renderer) heldBuffers() []HeldTexture {
+	var held []HeldTexture
+	add := func(name string, d *drawState) {
+		for i := range d.instBufs {
+			if b := d.instBufs[i]; b != 0 {
+				held = append(held, HeldTexture{Name: name, W: int(send(b, "length")), Bytes: int(send(b, "allocatedSize"))})
+			}
+		}
+	}
+	add("frame instances", &r.drawState)
+	for _, t := range r.canvases {
+		add("canvas instances", &t.drawState)
+	}
+	return held
 }
 
 // trimAfter is how long a window draws nothing before its spare drawables
