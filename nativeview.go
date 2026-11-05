@@ -61,7 +61,7 @@ func (w *Window) NewNativeView(view uintptr, place func(views []NativePlacement)
 	if place == nil {
 		return errNativeView
 	}
-	if w.content == nil {
+	if !w.content {
 		return errNoContent
 	}
 	err := errDestroyed

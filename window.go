@@ -319,12 +319,15 @@ type Window struct {
 	// pg is the window's page, which Page returns unless the window shows
 	// native UI.
 	pg *Page
-	// content is WindowOptions.Content; conn connects it to the native
+	// content tells that the window shows WindowOptions.Content, which
+	// the window hands to its surface as it attaches it and keeps no
+	// reference to: the Content's view, and all it reaches, stays only as
+	// long as the window is open (#1281). conn connects it to the native
 	// surface (main thread only). devTools tells that PageOptions.DevTools
 	// turned the developer tools on: the web inspector, or the inspector
 	// of the Content, and drawWhileOccluded that the Content draws its
 	// frames out of sight (WindowOptions.DrawWhileOccluded).
-	content           Content
+	content           bool
 	conn              *surface.Conn
 	devTools          bool
 	drawWhileOccluded bool
@@ -593,7 +596,7 @@ func newWindow(opts WindowOptions, bg, tint *background, native uintptr, flyout 
 	id := windows.nextID
 	windows.Unlock()
 
-	w := &Window{id: id, parent: opts.Parent, trustedOrigins: opts.Page.TrustedOrigins, untrusted: opts.Page.Untrusted, secret: randomText(), stateKey: opts.StateKey, background: bg, vibrancyTint: tint, content: opts.Content, panel: opts.Panel && flyout == nil, active: true}
+	w := &Window{id: id, parent: opts.Parent, trustedOrigins: opts.Page.TrustedOrigins, untrusted: opts.Page.Untrusted, secret: randomText(), stateKey: opts.StateKey, background: bg, vibrancyTint: tint, content: opts.Content != nil, panel: opts.Panel && flyout == nil, active: true}
 	w.pg = &Page{w}
 	if flyout != nil {
 		w.fit = flyout.fit
@@ -650,8 +653,8 @@ func newWindow(opts WindowOptions, bg, tint *background, native uintptr, flyout 
 	if w.stateKey != "" {
 		w.initState(popts)
 	}
-	if w.content != nil {
-		w.attachContent()
+	if w.content {
+		w.attachContent(opts.Content)
 	} else {
 		startContentRules(nw, opts.Page.ContentRules)
 	}
@@ -661,12 +664,12 @@ func newWindow(opts WindowOptions, bg, tint *background, native uintptr, flyout 
 	windows.Unlock()
 
 	fire1(&App.onWindowCreated, w)
-	if w.content == nil {
+	if !w.content {
 		w.loadPage(opts.Page.SessionState, opts.URL)
 	}
 	switch {
 	case opts.Hidden:
-	case w.content != nil:
+	case w.content:
 		// The window of native UI shows, and its view runs for the first
 		// frame, once NewWindow returned on the main thread, so that the
 		// view can use what NewWindow returns (#1053): shown now, the
@@ -1447,7 +1450,7 @@ func (w *Window) NativeHandle() uintptr { return get(w, platform.Window.Handle) 
 // SetFrontend). Besides http(s) URLs, schemes registered with
 // Protocol.Handle can be used.
 func (p *Page) LoadURL(rawURL string) error {
-	if p.w.content != nil {
+	if p.w.content {
 		return errNoPage
 	}
 	resolved, err := resolveURL(rawURL)
@@ -1465,7 +1468,7 @@ func (p *Page) LoadURL(rawURL string) error {
 // working directory, then against the directory of the executable (and the
 // Resources directory of a macOS app bundle).
 func (p *Page) LoadFile(path string) error {
-	if p.w.content != nil {
+	if p.w.content {
 		return errNoPage
 	}
 	abs, err := resolveFile(path)
@@ -1659,7 +1662,7 @@ func (p *Page) Print() { p.w.page(platform.Window.Print) }
 // CapturePage returns a PNG screenshot of the visible page. For a window
 // showing Content it renders the content as it is.
 func (w *Window) CapturePage() ([]byte, error) {
-	if w.content != nil {
+	if w.content {
 		return w.captureContent()
 	}
 	type result struct {
@@ -1800,7 +1803,7 @@ const maxHeldEvents = 1024
 // the DOM of the page is ready; replies to calls are sent right away since
 // the page is waiting for them.
 func (w *Window) enqueue(msg message, event bool) {
-	if w.content != nil {
+	if w.content {
 		return
 	}
 	w.outMu.Lock()
