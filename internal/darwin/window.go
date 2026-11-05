@@ -2178,6 +2178,16 @@ func (w *window) DroppedFiles() []string {
 	return paths
 }
 
+// backingChanged tells the handler of a new scale of the backing store.
+// AppKit also calls for the same scale, as a view goes into a window or the
+// color space changes.
+func (w *window) backingChanged() {
+	if scale := msgFloat(w.win, sel("backingScaleFactor")); scale != w.backing {
+		w.backing = scale
+		w.h.ScaleChanged(scale)
+	}
+}
+
 func (b *Backend) windowFor(delegate id) *window {
 	w := b.byDelegate[delegate]
 	if w == nil || w.closed {
@@ -2341,12 +2351,10 @@ func registerWindowClasses() {
 				}
 			}),
 			method("windowDidChangeBackingProperties:", func(self id, _ objc.SEL, n id) {
-				// AppKit also sends it for a change of the color space.
-				if w := b().windowFor(self); w != nil {
-					if scale := msgFloat(w.win, sel("backingScaleFactor")); scale != w.backing {
-						w.backing = scale
-						w.h.ScaleChanged(scale)
-					}
+				// A window with a surface hears of it from its view, once the
+				// surface reads the new scale.
+				if w := b().windowFor(self); w != nil && w.surface == nil {
+					w.backingChanged()
 				}
 			}),
 			method("windowDidChangeOcclusionState:", func(self id, _ objc.SEL, n id) {

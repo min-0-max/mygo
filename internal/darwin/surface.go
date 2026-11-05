@@ -1148,6 +1148,7 @@ func registerSurfaceClass() {
 				s.resized = true
 				s.send(platform.SurfaceEvent{Kind: platform.SurfaceResize})
 				send(self, "setNeedsDisplay:", 1)
+				s.w.backingChanged()
 			}
 		}),
 		method("becomeFirstResponder", func(self id, _ objc.SEL) bool {
