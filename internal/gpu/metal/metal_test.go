@@ -142,7 +142,7 @@ func TestShaderLibrary(t *testing.T) {
 	pool(func() { release(&lib) })
 }
 
-// TestTrimDrawables checks that a renderer keeps three drawables, and that
+// TestTrimDrawables checks that a renderer starts with two drawables, and that
 // trimming them shrinks them until the next frame.
 func TestTrimDrawables(t *testing.T) {
 	if err := load(); err != nil {
@@ -161,8 +161,8 @@ func TestTrimDrawables(t *testing.T) {
 	defer r.Release()
 	pool(func() {
 		r.fit(800, 600, 1)
-		if n := sendMain(r.layer, "maximumDrawableCount"); n != 3 {
-			t.Errorf("drawable count = %d, want 3", n)
+		if n := sendMain(r.layer, "maximumDrawableCount"); n != 2 {
+			t.Errorf("drawable count = %d, want 2", n)
 		}
 		r.trim()
 		if !r.trimmed {

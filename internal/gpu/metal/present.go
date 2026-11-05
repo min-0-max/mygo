@@ -51,6 +51,10 @@ type presenter struct {
 // frame a frame counts as following it. Only tests change it.
 var followRefreshes = 2.0
 
+// framesForThird is how many frames in a row must follow the last before
+// the layer may have a third drawable.
+const framesForThird = 6
+
 // qosUserInteractive is QOS_CLASS_USER_INTERACTIVE, the main thread's.
 const qosUserInteractive = 0x21
 
@@ -230,6 +234,35 @@ func (r *Renderer) follows(since time.Duration) bool {
 		}
 	}
 	return since.Seconds() < followRefreshes/hz
+}
+
+// countFollowing counts a frame about to draw. Two drawables hold a few frames
+// in a row, as opening a view draws: the system makes a drawable when one is
+// asked for with all in use, so with three allowed those frames would cost a
+// third until the window idles, and with two the last of them waits at most
+// for the display to let go of one. They are too few for frames that keep
+// coming on a ProMotion display, which would wait for one most of each
+// refresh, so frames that keep following get a third, also as Core Animation
+// makes while a window animates, until the idle trim.
+func (r *Renderer) countFollowing() {
+	if !r.follows(time.Since(r.lastRender)) {
+		r.following = 0
+		return
+	}
+	r.following++
+	if r.following >= framesForThird && !r.third {
+		// No drawable is being fetched while the layer changes.
+		r.pre.wait()
+		r.setDrawables(3)
+	}
+}
+
+// setDrawables sets how many drawables the layer may have.
+func (r *Renderer) setDrawables(n uintptr) {
+	if respondsTo(r.layer, "setMaximumDrawableCount:") {
+		sendMain(r.layer, "setMaximumDrawableCount:", n)
+	}
+	r.third = n == 3
 }
 
 // layerChanges reports whether drawing s at scale changes the layer, its

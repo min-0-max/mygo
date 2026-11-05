@@ -537,3 +537,47 @@ func TestFramesFollowByTheRefresh(t *testing.T) {
 		t.Error("a renderer without a rate does not count the display as a 60 Hz one")
 	}
 }
+
+// TestAThirdDrawableAwaitsFramesFollowing checks that the layer keeps two
+// drawables through the few frames that opening a view draws in a row, so
+// that they cost no third drawable, gets a third once frames keep following,
+// and goes back to two with the idle trim.
+func TestAThirdDrawableAwaitsFramesFollowing(t *testing.T) {
+	r := layerRenderer(t)
+	refreshes := followRefreshes
+	followRefreshes = 2
+	defer func() { followRefreshes = refreshes }()
+	// A refresh a second: however long a frame takes here, the next follows
+	// it.
+	r.SetRefreshRate(func() float64 { return 1 })
+	count := func() (n id) {
+		pool(func() { n = sendMain(r.layer, "maximumDrawableCount") })
+		return n
+	}
+	frame := func(i int) {
+		t.Helper()
+		render(t, r, squareAt(i), nil)
+		r.pre.wait()
+	}
+	frame(0)
+	for i := 1; i < framesForThird; i++ {
+		frame(i)
+		if n := count(); n != 2 {
+			t.Fatalf("after %d frames following, the layer allows %d drawables, want 2", i, n)
+		}
+	}
+	frame(framesForThird)
+	if n := count(); n != 3 {
+		t.Fatalf("after %d frames following, the layer allows %d drawables, want 3", framesForThird, n)
+	}
+	r.trim()
+	if n := count(); n != 2 {
+		t.Fatalf("after the idle trim, the layer allows %d drawables, want 2", n)
+	}
+	r.lastRender = time.Now().Add(-time.Minute)
+	frame(0)
+	frame(1)
+	if n := count(); n != 2 {
+		t.Fatalf("the count of frames following outlived the trim: the layer allows %d drawables, want 2", n)
+	}
+}
