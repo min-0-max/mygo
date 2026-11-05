@@ -7,6 +7,7 @@ import (
 	"weak"
 
 	"github.com/egoist/mygo/i18n"
+	"github.com/egoist/mygo/internal/gpu"
 	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/internal/scene"
 	"github.com/egoist/mygo/internal/text"
@@ -28,6 +29,10 @@ type host interface {
 	// hears so.
 	framesHeld()
 	present(s *scene.Scene)
+	// frameFacts tells what came of the frame presented last, and frameAsks
+	// whether a frame was asked for that has not come (FrameRecord).
+	frameFacts() gpu.FrameFacts
+	frameAsks() bool
 	requestFrame()
 	// setFrameRate tells the surface how many frames a second come while
 	// only drawings move, 0 for one each refresh (engine.pace).
@@ -481,6 +486,16 @@ type engine struct {
 	announcements []string
 	// stats measures frames for MYGO_FRAME_STATS, nil when it is unset.
 	stats *frameStats
+	// recorder hears the frames (FrameRecord), and record is the record of
+	// the frame being drawn. recordAsked is when it asked to present, as
+	// recordPresent tells it did; nodes are the elements of the last build
+	// pass, and afterArmed tells that the timer of After is armed.
+	recorder      *FrameRecorder
+	record        FrameRecord
+	recordAsked   uint64
+	recordPresent bool
+	nodes         int
+	afterArmed    bool
 	// dropOver is the element files are dragged over; access is true once
 	// assistive technology asked for the content, and accessNodes is how
 	// many nodes the last frame's tree had.
@@ -637,6 +652,7 @@ func (rt *engine) runFrame() {
 	rt.frame++
 	rt.input = false
 	rt.focusRead, rt.activeRead, rt.withinRead = false, false, false
+	rt.beginRecord()
 	rt.stats.begin(rt)
 	now := rt.frameTime()
 	rt.zoomChanged = false
@@ -743,6 +759,7 @@ func (rt *engine) runFrame() {
 	if rt.stats != nil {
 		rt.stats.passes = rt.pass + 1
 	}
+	rt.nodes = rt.c.used
 	root := rt.c.root
 	if rt.insp.open {
 		// What the inspector's Styles tab changed, over what the view built.
@@ -787,6 +804,7 @@ func (rt *engine) runFrame() {
 	// Before the frame presents, which shows them with it.
 	rt.placeWebViews()
 	rt.placeNativeGlass()
+	rt.askPresent()
 	rt.host.present(&rt.scene)
 	// The window hit-tests its maximize button in its own DIPs.
 	if r := rt.windowRect(rt.maxButton); r != rt.maxSent {
@@ -1000,6 +1018,7 @@ func (rt *engine) holdFrame() bool {
 func (rt *engine) repaintFrame(w, h, scale float32) {
 	rt.inFrame = true
 	defer rt.endFrame()
+	rt.beginRecord()
 	rt.stats.begin(rt)
 	start := time.Now()
 	rt.c.now = rt.frameTime()
@@ -1019,6 +1038,7 @@ func (rt *engine) repaintFrame(w, h, scale float32) {
 	rt.insp.repainted(time.Since(start))
 	rt.placeWebViews()
 	rt.placeNativeGlass()
+	rt.askPresent()
 	rt.host.present(&rt.scene)
 	rt.stats.lap(phasePresent)
 	rt.text.EndFrame()
@@ -1195,6 +1215,7 @@ func (rt *engine) armTimer() {
 	at := rt.wakeAt
 	rt.wakeAt = time.Time{}
 	rt.wakeMu.Unlock()
+	rt.afterArmed = !at.IsZero()
 	rt.host.afterTimer(at)
 }
 
@@ -1258,6 +1279,7 @@ func (rt *engine) endFrame() {
 	} else if len(rt.dropped) > 0 {
 		rt.closeDropped()
 	}
+	rt.reportFrame()
 }
 
 // commit records the laid out frame in the elements' states: their

@@ -11,6 +11,7 @@ import (
 	"github.com/ebitengine/purego"
 
 	"github.com/egoist/mygo/internal/darwin/mainthread"
+	"github.com/egoist/mygo/internal/gpu"
 	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/internal/scene"
 )
@@ -244,6 +245,7 @@ func (r *Renderer) finishPending(prefetch bool) error {
 		// before its drawable committed.
 		r.forgetFrames()
 		byReceiver(p.cb, "commit")
+		r.committedOutside(gpu.CommitStashed)
 		r.track(p.cb)
 		release(&p.cb)
 		p.done(platform.PresentNoDrawable, nil)
@@ -263,6 +265,7 @@ func (r *Renderer) finishPending(prefetch bool) error {
 	r.presenting(drawable)
 	send(p.cb, "presentDrawable:", drawable)
 	byReceiver(p.cb, "commit")
+	r.committedOutside(gpu.CommitStashed)
 	if prefetch {
 		r.pre.start(r.layer)
 	}
@@ -284,6 +287,7 @@ func (r *Renderer) dropPending() {
 	}
 	r.forgetFrames()
 	byReceiver(r.pending.cb, "commit")
+	r.committedOutside(gpu.CommitStashed)
 	r.track(r.pending.cb)
 	release(&r.pending.cb)
 	again := r.pending.again

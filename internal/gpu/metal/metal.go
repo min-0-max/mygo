@@ -428,6 +428,11 @@ type formatState struct {
 
 // Renderer draws scenes into a CAMetalLayer it adds to a view's layer.
 type Renderer struct {
+	// facts is what came of the last frame given to render; reportClock and
+	// reportCommit report it and the commits outside a frame (ReportFrames).
+	facts                  gpu.FrameFacts
+	reportClock            func() uint64
+	reportCommit           func(gpu.CommitKind, uint64)
 	device, queue, sampler id
 	// shaderBytes holds the uniforms of the shader being drawn, laid out.
 	shaderBytes []byte
@@ -1668,6 +1673,7 @@ func (r *Renderer) RenderNotice(s *scene.Scene, done func(platform.Presentation,
 }
 
 func (r *Renderer) render(s *scene.Scene, done func(platform.Presentation, error), again func()) error {
+	r.facts = gpu.FrameFacts{}
 	if r.err != nil {
 		return r.err
 	}
@@ -1716,14 +1722,17 @@ func (r *Renderer) render(s *scene.Scene, done func(platform.Presentation, error
 	}
 	r.diff.Wide = r.wide
 	damage, known := r.diff.Diff(s)
+	r.facts.Damage = gpu.DamageArea(damage, known, s.Width, s.Height)
 	if known && len(damage) == 0 && !sync {
 		r.redrew = redrewNothing
+		r.facts.Outcome = gpu.FrameUndamaged
 		done(platform.PresentNoDamage, nil)
 		return nil
 	}
 	if !sync && r.fetched != nil && !r.pre.ready(r.fetched) {
 		// The next drawable is being fetched: the frame is built now and
 		// drawn into it once the presenter has it.
+		r.facts.Outcome = gpu.FrameStashed
 		return r.stash(s, damage, known, done, again)
 	}
 	var drawable id
@@ -1736,12 +1745,14 @@ func (r *Renderer) render(s *scene.Scene, done func(platform.Presentation, error
 			sendMain(r.layer, "setPresentsWithTransaction:", on)
 			r.synced = sync
 		}
+		waited := r.reportNow()
 		if !sync {
 			drawable = r.prefetched()
 		}
 		if drawable == 0 {
 			drawable = frameDrawable(r.layer)
 		}
+		r.facts.DrawableWait = r.reportNow() - waited
 		if drawable == 0 {
 			return 0
 		}
@@ -1754,17 +1765,23 @@ func (r *Renderer) render(s *scene.Scene, done func(platform.Presentation, error
 		// None came within a second: the frame is skipped, its canvases
 		// drawn.
 		byReceiver(cb, "commit")
+		r.facts.Outcome, r.facts.CommandBuffer = gpu.FrameSkipped, true
 		r.track(cb)
 		done(platform.PresentNoDrawable, nil)
 		return nil
 	}
+	r.facts.CommandBuffer = true
 	if sync {
+		r.facts.Outcome = gpu.FrameTransaction
 		byReceiver(cb, "commit")
 		send(cb, "waitUntilScheduled")
 		r.presenting(drawable)
+		r.facts.Request = r.reportNow()
 		sendMain(drawable, "present")
 	} else {
+		r.facts.Outcome = gpu.FrameImmediate
 		r.presenting(drawable)
+		r.facts.Request = r.reportNow()
 		send(cb, "presentDrawable:", drawable)
 		byReceiver(cb, "commit")
 		// The next frame's drawable, while this one is shown.
@@ -1781,6 +1798,33 @@ func (r *Renderer) render(s *scene.Scene, done func(platform.Presentation, error
 	done(platform.Presented, nil)
 	return nil
 }
+
+// ReportFrames has the renderer read clock for the times of FrameFacts, and tell
+// commit of each command buffer it commits outside a frame, at the time it did.
+func (r *Renderer) ReportFrames(clock func() uint64, commit func(gpu.CommitKind, uint64)) {
+	r.reportClock, r.reportCommit = clock, commit
+}
+
+// FrameFacts tells what came of the last frame given to Render or RenderNotice.
+func (r *Renderer) FrameFacts() gpu.FrameFacts { return r.facts }
+
+// reportNow returns the time on the clock of ReportFrames, 0 without one.
+func (r *Renderer) reportNow() uint64 {
+	if r.reportClock == nil {
+		return 0
+	}
+	return r.reportClock()
+}
+
+// committedOutside reports a command buffer committed outside a frame.
+func (r *Renderer) committedOutside(kind gpu.CommitKind) {
+	if r.reportCommit != nil {
+		r.reportCommit(kind, r.reportNow())
+	}
+}
+
+// committedOffscreen reports the commit of an offscreen canvas.
+func (r *Renderer) committedOffscreen() { r.committedOutside(gpu.CommitOffscreen) }
 
 // TestPresenting, when set, is called with the layer and the drawable of
 // each frame before the frame requests the drawable's presentation, on
@@ -2024,6 +2068,7 @@ func (r *Renderer) renderOffscreen(s *scene.Scene) (pix []byte, err error) {
 		send(blit, "synchronizeResource:", tex)
 		send(blit, "endEncoding")
 		byReceiver(cb, "commit")
+		r.committedOutside(gpu.CommitPixels)
 		send(cb, "waitUntilCompleted")
 		if int(send(cb, "status")) == statusError {
 			err = fmt.Errorf("metal: the frame failed: %s", describe(send(cb, "error")))

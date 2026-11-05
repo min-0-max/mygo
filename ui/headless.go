@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/i18n"
+	"github.com/egoist/mygo/internal/gpu"
 	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/internal/raster"
 	"github.com/egoist/mygo/internal/scene"
@@ -53,6 +54,8 @@ type headless struct {
 	menu   *platform.Menu
 	menuAt [2]float32
 	chosen func(id int)
+	// facts is what came of the frame presented last.
+	facts gpu.FrameFacts
 	// hz is the display's refresh rate; hidden tells that nothing of the
 	// window shows.
 	hz     float32
@@ -99,7 +102,10 @@ func (h *headless) framesHeld()                       {}
 func (h *headless) present(s *scene.Scene) {
 	h.last = s
 	h.img.Render(s)
+	h.facts = gpu.FrameFacts{Outcome: gpu.FrameImmediate, Damage: s.Width * s.Height}
 }
+func (h *headless) frameFacts() gpu.FrameFacts { return h.facts }
+func (h *headless) frameAsks() bool            { return h.requested.Load() }
 func (h *headless) afterTimer(at time.Time) {
 	h.afterAt = at
 	if h.clock != nil {

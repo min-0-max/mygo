@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/i18n"
+	"github.com/egoist/mygo/internal/gpu"
 	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/internal/raster"
 	"github.com/egoist/mygo/internal/scene"
@@ -21,6 +22,8 @@ type Content struct {
 	view func(*context)
 	// hosts are the windows the content shows in, as they attached.
 	hosts []*windowHost
+	// recorder hears the frames of those windows (RecordFrames).
+	recorder *FrameRecorder
 }
 
 // View returns the content of a window whose user interface view builds,
@@ -79,6 +82,7 @@ func (v *Content) AttachContent(conn *surface.Conn) {
 	h := &windowHost{conn: conn, content: v}
 	rt := newRuntime(v.view, h)
 	h.rt = rt
+	rt.recorder = v.recorder
 	v.hosts = append(v.hosts, h)
 	conn.Event = h.event
 	conn.ThemeChanged = func() {
@@ -139,6 +143,8 @@ type windowHost struct {
 	last     *scene.Scene
 	// lastFrame is when the last frame was presented.
 	lastFrame time.Time
+	// facts is what came of the frame presented last (FrameRecord).
+	facts gpu.FrameFacts
 	// framing tells that the surface asked for the frame being drawn, and
 	// frameAsked that the content asked the surface for a frame that has
 	// not come yet.
@@ -486,6 +492,7 @@ func (h *windowHost) size() (float32, float32, float32) {
 func (h *windowHost) present(s *scene.Scene) {
 	h.last, h.path = s, ""
 	defer h.recheck()
+	h.facts = gpu.FrameFacts{Outcome: gpu.FrameUndamaged}
 	if s.Width <= 0 || s.Height <= 0 {
 		return
 	}
@@ -498,6 +505,7 @@ func (h *windowHost) present(s *scene.Scene) {
 	if !h.framing {
 		// A frame built outside the surface's, for a capture, is shown by
 		// the surface's next.
+		h.facts.Outcome = gpu.FrameHeld
 		h.requestFrame()
 		return
 	}
@@ -528,6 +536,10 @@ func (h *windowHost) present(s *scene.Scene) {
 		}
 	}
 	if h.render(s, done, again) {
+		h.facts = gpu.FrameFacts{Outcome: gpu.FrameImmediate, Damage: s.Width * s.Height}
+		if f, ok := h.gpu.(frameReporter); ok {
+			h.facts = f.FrameFacts()
+		}
 		h.path = "drawn on the GPU"
 		if h.degraded {
 			h.path = "drawn by the GPU renderer in software"
@@ -538,10 +550,13 @@ func (h *windowHost) present(s *scene.Scene) {
 	damage := h.soft.Render(s)
 	m := &h.soft.Image
 	presented := platform.Presented
+	h.facts = gpu.FrameFacts{Outcome: gpu.FrameImmediate, Damage: s.Width * s.Height}
 	if d, ok := h.conn.Surface.(platform.DamageSurface); ok {
 		d.PresentDamage(m.Pix, m.Stride, m.W, m.H, damage)
+		h.facts.Damage = gpu.DamageArea(damage, true, 0, 0)
 		if len(damage) == 0 {
 			presented = platform.PresentNoDamage
+			h.facts.Outcome = gpu.FrameUndamaged
 		}
 	} else {
 		h.conn.Surface.PresentPixels(m.Pix, m.Stride, m.W, m.H)
@@ -773,6 +788,7 @@ func (h *windowHost) makeGPU() {
 		// Frames waiting for the display draw through the main thread.
 		p.SetPost(h.conn.Post)
 	}
+	h.reportFrames()
 }
 
 // accelerated reports whether the frame draws on a GPU (Painter.Accelerated).
