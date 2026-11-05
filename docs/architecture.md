@@ -2671,7 +2671,18 @@ either.
   rows is `AccessMultiselectable` (ATK's `multiselectable`, UIA's
   `CanSelectMultiple`, rows then raising `ElementAddedToSelection` and
   `ElementRemovedFromSelection` unless chosen alone), and its focus is on
-  the row last chosen.
+  the row last chosen. `RoleListBox` and `RoleOption`, a list box of an
+  app's own (ARIA's `listbox` and `option`), are `RoleList` and
+  `RoleListItem` with `AccessSelectable`, as a `ComboboxBase`'s popup and
+  its options (`choosesItems`, `flagChoosable`) and a `SelectBase`'s
+  are, so the bridges show them as the lists above, selected with
+  `Checked`; unlike `flagChoosable`'s rows, they take the focus only
+  when `Focusable`. A `SelectBase`'s options are selected while
+  highlighted, the trigger's `ActiveDescendant` the one highlighted, as a
+  native select's popup: assistive technology focusing one
+  (`focusHighlights`) notes it on its state (`focusAsked`), which the
+  select highlights as it builds it, rather than clicking it, which
+  would choose it.
 - **The connection.** `content.go` attaches the content to its window
   through `internal/surface.Conn`, which carries the surface and, as
   functions, what the content needs of the app (the clipboard, dragging
@@ -5685,6 +5696,7 @@ which npm allows only for packages that exist: the first release uses an
 | custom scheme origin | `<scheme>://<host>` | `<scheme>://<host>` | `http://<scheme>.localhost`, or `http://<host>.<scheme>.localhost` for another host (the page's `location`) |
 | `LoadHTML` documents | a reload loads the base URL (`about:blank` without one), so the core cancels it (`Navigation.Reload`) and loads the HTML again; not in the history | as macOS | as macOS, but in the history: going back to one with a base URL loads that URL |
 | window.open | keeps the opener | independent window | keeps the opener: the new window's web view, set up, becomes the popup (`put_NewWindow`, under a deferral) |
+| keys held (`Context.KeyDown`) | `keyDown:` and `keyUp:`; a local monitor of key ups hands the surface those let go of while Command is held, which `sendEvent:` keeps from the key window; resigning first responder or key window lets go of all | key presses and releases, and a release the input method filters (`HeldKeys.Lift`): IBus and Fcitx hand back those they leave, which `HeldKeys` keeps from the content | `WM_KEYUP` and `WM_SYSKEYUP`; a `VK_PROCESSKEY` release lets go of the key at its scancode; `WM_ENTERMENULOOP` lets go of all (`HeldKeys.LiftAll`), whose releases the menu's loop takes; `WM_KILLFOCUS` all |
 | native UI surface | layer-backed NSView, frames from `CADisplayLink` (a timer at the display's rate before macOS 14), input methods through NSTextInputClient | GtkGLArea (GtkDrawingArea without a GPU), GtkIMMulticontext | `MyGoSurface` child window, IMM32 |
 | native UI data drags | NSDraggingSession, NSPasteboardItemDataProvider, NSDraggingDestination | GTK drag contexts, MIME selections, text/uri-list | OLE IDataObject, IDropSource, IDropTarget, Shell drag images |
 | native UI accessibility | `NSAccessibilityElement` subclasses | ATK objects (GObject types registered through purego), bridged to AT-SPI by GTK | UI Automation fragments (COM objects; assembly thunks for the methods taking doubles) |

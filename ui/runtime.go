@@ -377,6 +377,11 @@ type engine struct {
 	// drawn as active (windowActive), so that a change of it draws a
 	// frame.
 	activeRead bool
+	// keysHeld are the keys held in the window (Context.KeyDown); keysRead
+	// tells that the last frame read them, so that a change of them draws
+	// a frame.
+	keysHeld []heldKey
+	keysRead bool
 	// withinRead tells that the frame read FocusWithin, which follows the
 	// parents its last layout committed: the focus moving as it builds, to
 	// an element it builds for the first time or after the read, draws
@@ -657,7 +662,7 @@ func (rt *engine) runFrame() {
 
 	rt.frame++
 	rt.input = false
-	rt.focusRead, rt.activeRead, rt.withinRead = false, false, false
+	rt.focusRead, rt.activeRead, rt.withinRead, rt.keysRead = false, false, false, false
 	rt.beginRecord()
 	rt.stats.begin(rt)
 	now := rt.frameTime()
@@ -1398,7 +1403,7 @@ func (rt *engine) commitElement(e *node, clip Rect, hidden bool) {
 	s.accessHidden = e.accessHidden || e.flags&flagInert != 0 || e.parent != nil && e.parent.st.accessHidden
 	s.cursor, s.tip = e.cursor, e.tip
 	s.webView = e.webView
-	s.role = e.role
+	s.role, s.focusHighlights = e.role, e.focusHighlights
 	s.input, s.caret, s.takesText, s.noIME = e.inputFn, e.caret, e.takesText, e.noIME
 	if s.observe = e.observeFn; s.observe != nil {
 		rt.observers++

@@ -230,6 +230,9 @@ type textStyle struct {
 	background Color
 	// selection is the highlight of selected text, the theme's when unset.
 	selection Color
+	// caret is the color of the insertion caret, the theme's accent when
+	// unset.
+	caret Color
 	// strokeWidth and strokeColor stroke the outlines of the glyphs
 	// under their fill (TextStroke).
 	strokeWidth float32
@@ -258,6 +261,7 @@ const (
 	setSelection
 	setLang
 	setDecoOffset
+	setCaret
 	setStroke
 	setTabSize
 	setKeepAll
@@ -307,11 +311,12 @@ type layoutStyle struct {
 	// the first lines of its label and control.
 	baselines bool
 
-	maxLines int
-	single   bool
-	noWrap   bool
-	balance  bool
-	ellipsis string
+	maxLines   int
+	single     bool
+	noWrap     bool
+	balance    bool
+	keepSpaces bool
+	ellipsis   string
 }
 
 // Element is a node of a frame's user interface. The functions that create
@@ -494,12 +499,15 @@ type node struct {
 	tip bool
 	// highlighted is set on the option of a select the pointer or the
 	// arrows are on, and keepOpen on an item of a menu that leaves the
-	// menu open as it is chosen (KeepOpen).
-	highlighted bool
-	keepOpen    bool
-	accValue    string
-	accRange    [3]float64
-	hasRange    bool
+	// menu open as it is chosen (KeepOpen). focusHighlights marks an
+	// option of a select, which assistive technology focusing highlights,
+	// as the arrows do, rather than choosing it.
+	highlighted     bool
+	focusHighlights bool
+	keepOpen        bool
+	accValue        string
+	accRange        [3]float64
+	hasRange        bool
 	// accFill describes the element to assistive technology further, as
 	// a code editor its text and selection.
 	accFill func(n *platform.AccessNode)
@@ -1558,6 +1566,23 @@ func (ts *textStyle) selectionColor(t *Theme) Color {
 	return t.Selection
 }
 
+// CaretColor sets the color of the insertion caret of the text inputs in
+// the element, as CSS's caret-color does, a field's own text color for
+// one; the theme's accent is the color elsewhere.
+func (e *node) CaretColor(c Color) *node {
+	e.ts.caret = c
+	e.ts.set |= setCaret
+	return e
+}
+
+// caretColor is the color of the style's insertion caret.
+func (ts *textStyle) caretColor(t *Theme) Color {
+	if ts.set&setCaret != 0 {
+		return ts.caret
+	}
+	return t.Accent
+}
+
 // LineHeight sets the height of lines of text as a multiple of the font
 // size.
 func (e *node) LineHeight(m float32) *node {
@@ -1746,6 +1771,13 @@ func (e *node) NoWrap() *node { e.noWrap = true; return e }
 // within that width. Each paragraph is balanced on its own, once a
 // layout, as the text system keeps it.
 func (e *node) Balance() *node { e.balance = true; return e }
+
+// PreserveSpaces keeps the spaces the element's text ends its lines with,
+// and a text of only spaces, with their advance, as CSS's white-space:
+// break-spaces does: a gap made of spaces between two texts in a row, or
+// the padding a monospaced column is aligned with. Without it spaces
+// ending a line take no room, as with white-space: normal.
+func (e *node) PreserveSpaces() *node { e.keepSpaces = true; return e }
 
 // Ellipsis sets what ends text that MaxLines or SingleLine cuts, "…" by
 // default.

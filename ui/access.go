@@ -95,6 +95,14 @@ const (
 	// navigation bar: screen readers list it among the window's
 	// landmarks, and jump to it.
 	RoleNavigation
+	// RoleListBox is a list of options to choose from, as ARIA's listbox,
+	// and RoleOption one of its options, selected with Checked, as ARIA's
+	// aria-selected: what a list of your own offers, such as suggestions
+	// at a text area's caret whose highlighted one the text area points
+	// at with ActiveDescendant. The popups of SelectBase and ComboboxBase
+	// are list boxes.
+	RoleListBox
+	RoleOption
 )
 
 // Role sets what the element is to assistive technology, for an element
@@ -109,8 +117,9 @@ func (e *node) Role(r Role) *node {
 // on the web.
 
 // Checked tells assistive technology whether the element, as a check box,
-// switch, radio button, toggle button or menu item of your own, is on.
-// Bases set it from their value.
+// switch, radio button, toggle button or menu item of your own, is on, or
+// whether an option (RoleOption) is selected. Bases set it from their
+// value.
 func (e *node) Checked(on bool) *node {
 	e.checked = 1 + int8(b2f(on))
 	return e
@@ -236,6 +245,10 @@ func (e *node) accessRole() (platform.AccessRole, bool) {
 	case RoleNone:
 		return 0, false
 	case RoleAuto:
+	case RoleListBox:
+		return platform.RoleList, true // choosing its items (accessDetails)
+	case RoleOption:
+		return platform.RoleListItem, true
 	default:
 		return platform.AccessRole(e.role - RoleGroup), true
 	}
@@ -259,14 +272,14 @@ func (e *node) accessRole() (platform.AccessRole, bool) {
 }
 
 // leafRole reports whether elements of a role take the text inside them
-// as their name, rather than showing it as elements of its own. A column
-// header shows what is inside it too, as ARIA's columnheader, whose
-// children are not presentational: a sort button in it is reached.
+// as their name, rather than showing it as elements of its own. Column
+// headers and headings show what is inside them too, as their children
+// are not presentational in ARIA: buttons in them can be reached.
 func leafRole(r platform.AccessRole) bool {
 	switch r {
 	case platform.RoleGroup, platform.RoleList, platform.RoleScroll, platform.RoleDialog, platform.RoleAlertDialog, platform.RolePopup, platform.RoleStatus,
 		platform.RoleTabList, platform.RoleTable, platform.RoleRow, platform.RoleCell, platform.RoleColumnHeader, platform.RoleTree, platform.RoleListItem,
-		platform.RoleToolbar, platform.RoleRadioGroup, platform.RoleMenu, platform.RoleMenuBar, platform.RoleNavigation:
+		platform.RoleToolbar, platform.RoleRadioGroup, platform.RoleMenu, platform.RoleMenuBar, platform.RoleHeading, platform.RoleNavigation:
 		return false
 	}
 	return true
@@ -500,16 +513,16 @@ func (rt *engine) accessDetails(e *node, n *platform.AccessNode) {
 	if e.setSize > 0 {
 		n.PosInSet, n.SetSize = e.setPos, e.setSize
 	}
-	if e.choosesItems {
+	if e.choosesItems || e.role == RoleListBox {
 		n.States |= platform.AccessSelectable
 	}
 	if e.chooseMany {
 		n.States |= platform.AccessMultiselectable
 	}
-	// Rows and items of lists, column headers and statuses are named by
-	// their content, as leaves are, but show what is inside them too, as a
-	// toast's button.
-	if n.Label == "" && (leafRole(n.Role) || n.Role == platform.RoleListItem || n.Role == platform.RoleRow || n.Role == platform.RoleColumnHeader || n.Role == platform.RoleStatus) {
+	// Rows and items of lists, column headers, headings and statuses are
+	// named by their content, as leaves are, but show what is inside them
+	// too, as a toast's button.
+	if n.Label == "" && (leafRole(n.Role) || n.Role == platform.RoleListItem || n.Role == platform.RoleRow || n.Role == platform.RoleColumnHeader || n.Role == platform.RoleHeading || n.Role == platform.RoleStatus) {
 		n.Label = e.innerText()
 	}
 	switch e.checked {
@@ -548,7 +561,7 @@ func (rt *engine) accessDetails(e *node, n *platform.AccessNode) {
 			n.States |= platform.AccessMultiselectable
 		}
 	}
-	if e.flags&flagChoosable != 0 {
+	if e.flags&flagChoosable != 0 || e.role == RoleOption {
 		n.States |= platform.AccessSelectable
 	}
 	// What a scroll container built out of view, as the rows of a list
@@ -562,8 +575,9 @@ func (rt *engine) accessDetails(e *node, n *platform.AccessNode) {
 	// What ignores input takes no focus, which moving a slider with its
 	// keys needs, but is pressed as any other.
 	keys := !e.st.ignoreInput
-	if e.flags&(flagFocusable|flagEditable|flagChoosable) != 0 && keys {
-		// Focusing a row a list chooses chooses it.
+	if (e.flags&(flagFocusable|flagEditable|flagChoosable) != 0 || e.focusHighlights) && keys {
+		// Focusing a row a list chooses chooses it, and an option of a
+		// select highlights it.
 		n.States |= platform.AccessFocusable
 		n.Actions |= platform.ActionFocus
 	}
@@ -640,6 +654,12 @@ func (rt *engine) accessAction(ev platform.SurfaceEvent) {
 	case platform.AccessFocus:
 		if s.ignoreInput {
 			return
+		}
+		if s.focusHighlights {
+			// An option of a select: the select highlights it as it
+			// builds it, and Enter or a press chooses it.
+			s.focusAsked = true
+			break
 		}
 		if s.flags&flagChoosable != 0 {
 			// A row of a list choosing rows: its list takes the focus for
