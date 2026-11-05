@@ -4,6 +4,7 @@ package metal
 
 import (
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/internal/gpu"
 	"github.com/egoist/mygo/internal/scene"
@@ -446,5 +447,56 @@ func TestPixelsCommitOutsideAFrame(t *testing.T) {
 	}
 	if len(c.kinds) != 1 || c.kinds[0] != gpu.CommitPixels || c.times[0] == 0 {
 		t.Errorf("a render to pixels committed %v at %v", c.kinds, c.times)
+	}
+}
+
+// TestAFrameAloneFetchesNoDrawable draws a frame after a pause, as a key or
+// a click does: the display still shows the last frame and the GPU has this
+// one, so a fetch would have the system make another drawable, which would
+// only hold memory until the window idles. A frame following it fetches.
+func TestAFrameAloneFetchesNoDrawable(t *testing.T) {
+	if err := load(); err != nil {
+		t.Skip("no Metal:", err)
+	}
+	var layer id
+	pool(func() { layer = sendMain(class("CALayer"), "new") })
+	if layer == 0 {
+		t.Skip("no Core Animation")
+	}
+	defer pool(func() { release(&layer) })
+	r, err := New(uintptr(layer))
+	if err != nil {
+		unavailable(t, err)
+	}
+	defer r.Release()
+	var fetched int
+	next := nextDrawable
+	nextDrawable = func(l id) id { fetched++; return next(l) }
+	defer func() { nextDrawable = next }()
+	frame := func(i int) {
+		t.Helper()
+		s := &scene.Scene{}
+		s.Reset(64, 32, scene.Color{A: 255})
+		s.Ops = append(s.Ops, scene.Op{Kind: scene.OpFill, Rect: scene.Rect{X: float32(i), W: 8, H: 8}, Color: scene.Color{R: 255, A: 255}})
+		if err := r.Render(s); err != nil {
+			t.Fatal(err)
+		}
+		r.pre.wait()
+	}
+	frame(0)
+	if !r.synced {
+		t.Fatal("the first frame did not present with the transaction")
+	}
+	r.lastRender = time.Now().Add(-2 * framesFollow)
+	frame(1)
+	if r.synced {
+		t.Fatal("the frame alone presented with the transaction")
+	}
+	if fetched != 0 || r.pre.drawable != 0 {
+		t.Errorf("the frame alone fetched %d drawables, holding %#x", fetched, r.pre.drawable)
+	}
+	frame(2)
+	if fetched != 1 || r.pre.drawable == 0 {
+		t.Errorf("the frame following it fetched %d drawables, holding %#x", fetched, r.pre.drawable)
 	}
 }

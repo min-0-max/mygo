@@ -38,6 +38,9 @@ func init() {
 	// make the pipelines they need first (TestFramesNeverWaitForACompile
 	// tests the other way).
 	syncPipelines = true
+	// However long a frame takes here, the next follows it
+	// (TestAFrameAloneFetchesNoDrawable tests a frame that does not).
+	framesFollow = time.Hour
 }
 
 func TestDrawsAsTheCPURenderer(t *testing.T) {
