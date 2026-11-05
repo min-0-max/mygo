@@ -232,6 +232,7 @@ var elementChains = map[string]bool{
 	"Height":               true,
 	"HeightPercent":        true,
 	"Hidden":               true,
+	"HitOutset":            true,
 	"HitTest":              true,
 	"IgnoreInput":          true,
 	"InputMethod":          true,
