@@ -126,6 +126,39 @@ func TestShowActivation(t *testing.T) {
 	}
 }
 
+// AppOptions.WindowShow takes over what Show does to a window that shows
+// as any window: the application decides where it goes. A child window
+// over its parent, which AppKit orders by the parent, keeps its place.
+func TestShowOfAWindowShow(t *testing.T) {
+	for _, c := range []struct {
+		name        string
+		installed   bool
+		shows       int
+		keyAndFront int
+	}{
+		{"by default", false, 0, 1},
+		{"with a window show", true, 1, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			app, win := activationStandIns(t)
+			b := New()
+			b.app, b.noSelfActivation = app, true
+			var shown []uintptr
+			if c.installed {
+				b.windowShow = func(window uintptr) { shown = append(shown, window) }
+			}
+			w := &window{b: b, opts: &platform.WindowOptions{}, win: win}
+			w.Show()
+			if len(shown) != c.shows || (c.shows == 1 && shown[0] != uintptr(win)) {
+				t.Errorf("the window show received %v, want %d calls with the window", shown, c.shows)
+			}
+			if activationCalls.keyAndFront != c.keyAndFront {
+				t.Errorf("makeKeyAndOrderFront: as Show showed the window: %d, want %d", activationCalls.keyAndFront, c.keyAndFront)
+			}
+		})
+	}
+}
+
 // A change to the regular activation policy activates the application,
 // unless AppOptions.NoSelfActivation keeps it from activating itself: the
 // change is no request to activate it (U5).

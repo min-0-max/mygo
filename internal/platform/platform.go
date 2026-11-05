@@ -176,6 +176,11 @@ type AppOptions struct {
 	// comes to the front without the application being activated. Only
 	// meaningful on macOS.
 	NoSelfActivation bool
+	// WindowShow, when set, does what Window.Show does to a window that
+	// shows as any window, in place of making it key and ordering it
+	// front. It receives the NSWindow on the main goroutine. Only
+	// meaningful on macOS.
+	WindowShow func(window uintptr)
 	// NoNotificationDelegate keeps the backend from setting the delegate of
 	// the notification center, which the application sets: the backend
 	// then neither shows notifications while the application is in front

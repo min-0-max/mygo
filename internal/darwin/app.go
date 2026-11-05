@@ -26,6 +26,8 @@ type Backend struct {
 	// noSelfActivation is AppOptions.NoSelfActivation: neither the launch
 	// nor Show activates the app (selfActivate).
 	noSelfActivation bool
+	// windowShow is AppOptions.WindowShow.
+	windowShow func(window uintptr)
 	// noNotificationDelegate is AppOptions.NoNotificationDelegate: the app
 	// sets the delegate of the notification center
 	// (attachNotificationDelegate).
@@ -112,6 +114,7 @@ func activationPolicy(p string) uintptr {
 func (b *Backend) Init(h platform.AppHandler, opts platform.AppOptions) error {
 	b.h = h
 	b.noSelfActivation = opts.NoSelfActivation
+	b.windowShow = opts.WindowShow
 	b.noNotificationDelegate = opts.NoNotificationDelegate
 	theBackend = b
 	registerClasses()
