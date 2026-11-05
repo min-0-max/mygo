@@ -28,10 +28,10 @@ func TestSystemSymbol(t *testing.T) {
 		if name != "disc" || pointSize != 13 || scale != 2 {
 			return nil, false
 		}
-		// The size of a mask in points is its pixels at the scale of the window.
-		m := image.NewAlpha(image.Rect(0, 0, 30, 20))
-		for y := 0; y < 20; y++ {
-			for x := 0; x < 30; x++ {
+		// The size of a symbol in points is the pixels of what it paints at the scale of the window, without the room around them.
+		m := image.NewAlpha(image.Rect(0, 0, 38, 24))
+		for y := 2; y < 22; y++ {
+			for x := 6; x < 36; x++ {
 				m.SetAlpha(x, y, color.Alpha{A: 255})
 			}
 		}
