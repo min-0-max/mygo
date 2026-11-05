@@ -20,13 +20,15 @@ func TestPermissions(t *testing.T) {
 		guide:   func(p permissionflow.Permission) { guided = append(guided, p) },
 	}
 	tt := ui.NewTester(m.view, 520, 640)
-	for _, s := range []string{"Accessibility", "granted", "Microphone", "not determined"} {
+	// The system names Accessibility as it pleases: macOS 27 calls it Device
+	// Control and Data Access.
+	for _, s := range []string{permissionflow.Accessibility.Title(), "granted", "Microphone", "not determined"} {
 		if _, ok := tt.Find(s); !ok {
 			t.Errorf("%q isn't shown", s)
 		}
 	}
 	// Granted, Accessibility's buttons are disabled.
-	if err := tt.Click("Request Accessibility"); err != nil {
+	if err := tt.Click("Request " + permissionflow.Accessibility.Title()); err != nil {
 		t.Fatal(err)
 	}
 	if err := tt.Click("Request Microphone"); err != nil {
