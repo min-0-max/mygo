@@ -527,6 +527,11 @@ func (t *Tester) SetDirection(d Direction) {
 	t.Frame()
 }
 
+// RecordFrames has r hear the frames of the window, as Content.RecordFrames
+// does those of a window on screen, with the damage of each as the renderer
+// in memory draws it. Call it before the frames to hear.
+func (t *Tester) RecordFrames(r *FrameRecorder) { t.rt.recorder = r }
+
 // Frame renders another frame, as when the view's state changed.
 func (t *Tester) Frame() { t.h.requested.Store(true); t.settle() }
 

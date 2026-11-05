@@ -25,14 +25,18 @@ func (r *recorded) recorder() *FrameRecorder {
 // TestAFrameReportsOneRecordAndASettledWindowNone checks that each frame that
 // starts reports once, and that a window with nothing to do reports nothing.
 func TestAFrameReportsOneRecordAndASettledWindowNone(t *testing.T) {
+	back := RGB(255, 255, 255)
 	tt := NewTester(func(c *Context) {
-		Column(c).Children(func() {
+		Column(c).Size(200, 100).Background(back).Children(func() {
 			Text(c, "one")
 			Text(c, "two")
 		})
 	}, 200, 100)
 	var r recorded
 	tt.rt.recorder = r.recorder()
+	// The Tester drew the window as it started: a frame drawing it all
+	// changes all of it.
+	back = RGB(240, 240, 240)
 	tt.Frame()
 	if len(r.frames) != 1 {
 		t.Fatalf("one frame reported %d records", len(r.frames))
@@ -56,6 +60,37 @@ func TestAFrameReportsOneRecordAndASettledWindowNone(t *testing.T) {
 	tt.Advance(time.Hour)
 	if len(r.frames) != 1 {
 		t.Fatalf("a settled window reported %d records in an hour", len(r.frames)-1)
+	}
+}
+
+// TestATesterRecordsTheDamageOfAFrame checks that a frame in memory tells the
+// pixels it changed, as a window's do: those of a box that changes, none when
+// nothing did, all of them when the window's background changes.
+func TestATesterRecordsTheDamageOfAFrame(t *testing.T) {
+	box, back := RGB(200, 0, 0), RGB(255, 255, 255)
+	tt := NewTester(func(c *Context) {
+		Column(c).Size(200, 100).Background(back).Children(func() {
+			Box(c).Absolute().Left(10).Top(10).Size(20, 20).Background(box)
+		})
+	}, 200, 100)
+	var r recorded
+	tt.RecordFrames(r.recorder())
+	box = RGB(0, 200, 0)
+	tt.Frame()
+	tt.Frame()
+	back = RGB(240, 240, 240)
+	tt.Frame()
+	if len(r.frames) != 3 {
+		t.Fatalf("three frames reported %d records", len(r.frames))
+	}
+	if f := r.frames[0]; f.Damage < 20*20 || f.Damage > 24*24 || f.Outcome != FrameImmediate {
+		t.Errorf("a box of 20×20 changing: damage %d, outcome %v", f.Damage, f.Outcome)
+	}
+	if f := r.frames[1]; f.Damage != 0 || f.Outcome != FrameUndamaged {
+		t.Errorf("nothing changing: damage %d, outcome %v", f.Damage, f.Outcome)
+	}
+	if f := r.frames[2]; f.Damage != 200*100 || f.Outcome != FrameImmediate {
+		t.Errorf("the background changing: damage %d of 200×100, outcome %v", f.Damage, f.Outcome)
 	}
 }
 
