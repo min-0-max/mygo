@@ -203,23 +203,44 @@ func (t theme) Preferences() platform.Preferences {
 		p.ReduceMotion = sendBool(ws, "accessibilityDisplayShouldReduceMotion")
 		p.ReduceTransparency = sendBool(ws, "accessibilityDisplayShouldReduceTransparency")
 		p.HighContrast = sendBool(ws, "accessibilityDisplayShouldIncreaseContrast")
-		// The accent, as the app's appearance draws it.
-		var c id
 		appearance := class("NSAppearance")
 		prev := send(appearance, "currentAppearance")
+		// The accent, as the app's appearance draws it.
 		send(appearance, "setCurrentAppearance:", uintptr(send(t.b.app, "effectiveAppearance")))
-		if accent := send(class("NSColor"), "controlAccentColor"); accent != 0 {
-			c = send(accent, "colorUsingColorSpace:", uintptr(send(class("NSColorSpace"), "sRGBColorSpace")))
-		}
+		p.Accent = opaqueColor(systemColor("controlAccentColor"))
+		// The ring of a page of the dark color scheme, which WebKit reads in
+		// the dark appearance.
+		send(appearance, "setCurrentAppearance:", uintptr(send(appearance, "appearanceNamed:", uintptr(nsString("NSAppearanceNameDarkAqua")))))
+		p.DarkFocusRing = systemColor("keyboardFocusIndicatorColor")
 		send(appearance, "setCurrentAppearance:", uintptr(prev))
-		if c != 0 {
-			var r, g, b, a float64
-			send(c, "getRed:green:blue:alpha:", uintptr(unsafe.Pointer(&r)), uintptr(unsafe.Pointer(&g)), uintptr(unsafe.Pointer(&b)), uintptr(unsafe.Pointer(&a)))
-			byteOf := func(v float64) uint8 { return uint8(max(0, min(v, 1))*255 + 0.5) }
-			p.Accent = platform.Color{R: byteOf(r), G: byteOf(g), B: byteOf(b), A: 255}
-		}
 	})
 	return p
+}
+
+// systemColor reads the class property name of NSColor in the current
+// appearance, as sRGB with its alpha, and no color when it has none.
+func systemColor(name string) platform.Color {
+	color := send(class("NSColor"), name)
+	if color == 0 {
+		return platform.Color{}
+	}
+	c := send(color, "colorUsingColorSpace:", uintptr(send(class("NSColorSpace"), "sRGBColorSpace")))
+	if c == 0 {
+		return platform.Color{}
+	}
+	var r, g, b, a float64
+	send(c, "getRed:green:blue:alpha:", uintptr(unsafe.Pointer(&r)), uintptr(unsafe.Pointer(&g)), uintptr(unsafe.Pointer(&b)), uintptr(unsafe.Pointer(&a)))
+	byteOf := func(v float64) uint8 { return uint8(max(0, min(v, 1))*255 + 0.5) }
+	return platform.Color{R: byteOf(r), G: byteOf(g), B: byteOf(b), A: byteOf(a)}
+}
+
+// opaqueColor is c as a color without alpha, and no color when c is none.
+func opaqueColor(c platform.Color) platform.Color {
+	if c == (platform.Color{}) {
+		return c
+	}
+	c.A = 255
+	return c
 }
 
 func (t theme) IsDark() bool {

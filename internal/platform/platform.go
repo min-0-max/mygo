@@ -1233,6 +1233,11 @@ type Preferences struct {
 	// Accent is the accent color the user chose; A is 0 where the desktop
 	// has none.
 	Accent Color
+	// DarkFocusRing is the color of the keyboard focus ring in the dark
+	// appearance, whichever appearance the app has: what a web page of the
+	// dark color scheme rings a control with. A is 0 where the desktop has
+	// none.
+	DarkFocusRing Color
 	// ReduceMotion asks for less motion: macOS's Reduce Motion, Windows's
 	// animation effects and GNOME's animations turned off.
 	ReduceMotion bool
