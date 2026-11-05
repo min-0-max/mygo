@@ -298,6 +298,21 @@ func (e *node) Password() *node {
 	return e
 }
 
+// SelectAll selects the text of a text input, so that the next key replaces
+// it, as Tab reaching an input does. A field around an input, as
+// SearchField's, passes it to its input. Called in a frame, it selects the
+// text as that frame has it; on any other element it does nothing.
+func (e *node) SelectAll() *node {
+	if e != nil && e.focusTo != nil {
+		e.focusTo.SelectAll()
+		return e
+	}
+	if e.hasState() && e.st.editor != nil {
+		e.st.editor.selectAll()
+	}
+	return e
+}
+
 // Selectable lets the user select and copy text by dragging, double-clicking
 // a word, triple-clicking a line, or using Shift with the arrows. Its context
 // menu has Copy and Select All; Cmd+C copies the selection.

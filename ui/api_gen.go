@@ -6721,6 +6721,20 @@ func (_handle Element) Scrollbars(visible bool) Element {
 	return wrapElement(_node.Scrollbars(visible))
 }
 
+// SelectAll selects the text of a text input, so that the next key replaces
+// it, as Tab reaching an input does. A field around an input, as
+// SearchField's, passes it to its input. Called in a frame, it selects the
+// text as that frame has it; on any other element it does nothing.
+func (_handle Element) SelectAll() Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.SelectAll())
+}
+
 // Selectable lets the user select and copy text by dragging, double-clicking
 // a word, triple-clicking a line, or using Shift with the arrows. Its context
 // menu has Copy and Select All; Cmd+C copies the selection.
