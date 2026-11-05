@@ -468,6 +468,10 @@ type Renderer struct {
 	// transaction. pre fetches the drawables of frames following each
 	// other, and pending is a frame waiting for its drawable (present.go).
 	synced bool
+	// following counts the frames in a row that followed the last, and third
+	// tells that the layer may have a third drawable (countFollowing).
+	following int
+	third     bool
 	// refreshRate returns the display's refresh rate (SetRefreshRate).
 	refreshRate func() float64
 	pre         presenter
@@ -549,15 +553,9 @@ func New(layer uintptr) (r *Renderer, err error) {
 		// Effects read their backdrops from the drawable, which their
 		// passes sample then.
 		sendMain(ml, "setFramebufferOnly:", 0)
-		// Two drawables are too few: on a ProMotion display, frames
-		// waited for one most of each refresh. Three, as Core
-		// Animation makes while a window animates, also let both instance
-		// slots have a frame in flight while the display shows a third.
-		// The system makes the third only when one is asked for with two in
-		// use, which frames following each other do (follows); it
-		// costs a frame of memory until the window idles (trim).
+		// A layer starts with two drawables (countFollowing).
 		if respondsTo(ml, "setMaximumDrawableCount:") {
-			sendMain(ml, "setMaximumDrawableCount:", 3)
+			sendMain(ml, "setMaximumDrawableCount:", 2)
 		}
 		// The first frame shows with the window's other changes; render
 		// decides for each frame.
@@ -1734,6 +1732,7 @@ func (r *Renderer) render(s *scene.Scene, done func(platform.Presentation, error
 		done(platform.PresentNoDamage, nil)
 		return nil
 	}
+	r.countFollowing()
 	if !sync && r.fetched != nil && !r.pre.ready(r.fetched) {
 		// The next drawable is being fetched: the frame is built now and
 		// drawn into it once the presenter has it.
@@ -2057,8 +2056,10 @@ func (r *Renderer) trim() {
 		sendMain(tx, "setDisableActions:", 1)
 		mainthread.Forward[struct{}](msgSend, r.layer, sel("setDrawableSize:"), cgSize{1, 1})
 		sendMain(tx, "commit")
+		r.setDrawables(2)
 	})
 	r.trimmed = true
+	r.following = 0
 }
 
 // renderOffscreen draws s into a texture of its own and returns its
