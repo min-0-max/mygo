@@ -1383,6 +1383,14 @@ func glyphCount(sl shapedLine) int {
 // glyphs go to room, which has room for those of sl; buf is a buffer.
 func line(p Params, text []rune, sl shapedLine, offset int, rtl bool, m lineMetrics, y *float32, room []Glyph, buf *[]int, spans []Span) Line {
 	line := Line{Start: offset + sl.start, End: offset + sl.end, RTL: rtl, Ascent: m.ascent, Descent: m.descent}
+	// A line height that the style sets is the height of the line, as in
+	// CSS: the fonts of the text, fallback fonts among them, do not make it
+	// taller. What stands out of it does: an inline object, a span shifted
+	// off the baseline and a span of another size, whose box is its own
+	// size times the line height. above and below are those extents.
+	set := p.Style.LineHeight > 0
+	half := (m.lineHeight - m.ascent - m.descent) / 2
+	above, below := m.ascent+half, m.descent+half
 	if cap(room) > 0 {
 		line.Glyphs = room
 	}
@@ -1403,6 +1411,10 @@ func line(p Params, text []rune, sl shapedLine, offset int, rtl bool, m lineMetr
 			line.Descent = max(line.Descent, f.Descent)
 			if f.Size > 0 {
 				runSize = f.Size // a span of another size
+			}
+			if set && runSize != size {
+				own := (p.Style.LineHeight*runSize - f.Ascent - f.Descent) / 2
+				above, below = max(above, f.Ascent+own), max(below, f.Descent+own)
 			}
 		}
 		// A cluster holds the runes up to the next one of its run: the next
@@ -1445,9 +1457,11 @@ func line(p Params, text []rune, sl shapedLine, offset int, rtl bool, m lineMetr
 						g.Object, g.Advance, g.ID = true, sp.ObjectWidth, 0
 						line.Ascent = max(line.Ascent, sp.ObjectHeight+shift)
 						line.Descent = max(line.Descent, sp.ObjectDescent-shift)
+						above, below = max(above, sp.ObjectHeight+shift), max(below, sp.ObjectDescent-shift)
 					case shift != 0 && g.Font != nil:
 						line.Ascent = max(line.Ascent, g.Font.Ascent+shift)
 						line.Descent = max(line.Descent, g.Font.Descent-shift)
+						above, below = max(above, g.Font.Ascent+shift), max(below, g.Font.Descent-shift)
 					}
 					g.Y -= shift
 				}
@@ -1466,9 +1480,14 @@ func line(p Params, text []rune, sl shapedLine, offset int, rtl bool, m lineMetr
 		x0 = 0
 	}
 	line.Width = max(line.Width, 0)
-	line.Height = max(m.lineHeight, line.Ascent+line.Descent)
 	line.Y = *y
-	line.Baseline = *y + (line.Height-line.Ascent-line.Descent)/2 + line.Ascent
+	if set {
+		line.Height = above + below
+		line.Baseline = *y + above
+	} else {
+		line.Height = max(m.lineHeight, line.Ascent+line.Descent)
+		line.Baseline = *y + (line.Height-line.Ascent-line.Descent)/2 + line.Ascent
+	}
 	for i := range line.Glyphs {
 		line.Glyphs[i].X -= x0
 		line.Glyphs[i].Y += line.Baseline
