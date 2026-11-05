@@ -852,7 +852,7 @@ gained one field, `SurfaceNative.Canvas`.
   set before each frame to the frame's size, `ceil(width × scale)` as
   package ui computes it. `RequestFrame` asks `requestAnimationFrame`;
   `Occluded` is `document.hidden`, where browsers give no frames, and
-  `visibilitychange` brings `SurfaceShown`.
+  `visibilitychange` brings `SurfaceShown`, or `SurfaceHidden`.
 - **Drawing.** The canvas's WebGL 2 context (`gl.NewContext`: premultiplied
   alpha, no depth, stencil or antialiasing) is current while a frame is
   handled, as a GtkGLArea's is in its render signal, and
@@ -2627,7 +2627,26 @@ either.
   kinds) is WebKit's `AXARIACurrent`, ATK's `current` attribute with the
   active state, as Chromium's, and `current=page` in AriaProperties. Both
   bring a generic element into the tree as a group, as ARIA's global
-  states do. `RoleNavigation`, a landmark (`Breadcrumbs`), is
+  states do. `RoleDescription` (`AccessNode.RoleDescription`,
+  aria-roledescription) is AppKit's `accessibilityRoleDescription`,
+  which elements override, ATK's `roledescription` attribute and UIA's
+  LocalizedControlType; `Controls` (`AccessNode.Controls`, the IDs of
+  the elements, aria-controls) is `AXLinkedUIElements`, ATK's
+  `controller-for` relation and `controlled-by` back, from the nodes'
+  `ref_relation_set`, and UIA's ControllerFor; `HasPopup`
+  (`AccessNode.HasPopup`, aria-haspopup) is `AXPopupValue`, answered as
+  `AXInvalid` is, with `AXShowMenu` pressing the element, ATK's
+  has-popup state and `haspopup` attribute, and UIA's ExpandCollapse
+  with `haspopup=` in AriaProperties; `Sort` sets a header's
+  `AccessSortAscending`, `AccessSortDescending` or `AccessSortOther`
+  (ATK's `sort:other`, UIA's ItemStatus and `sort=` in AriaProperties,
+  AppKit's unknown direction). A cell (`RoleCell` or a header) that
+  `Checked` or `Selected` marks is `AccessSelectable`, chosen while
+  `AccessChecked`, as ARIA's gridcells with aria-selected, and the
+  table around it `AccessSelectable` too: `AXSelected` and the table's
+  `AXSelectedCells` (with `AXSelectedCellsChanged`), ATK's selectable
+  and selected states rather than checked, UIA's SelectionItem in the
+  table's Selection. `RoleNavigation`, a landmark (`Breadcrumbs`), is
   `AXGroup` with the subrole `AXLandmarkNavigation`, ATK's landmark with
   `xml-roles:navigation`, and UI Automation's Group with the navigation
   LandmarkType and AriaRole. Native UI in browsers has no accessibility
@@ -2868,7 +2887,8 @@ either.
   While nothing of the window shows (`platform.OccludableSurface`: a macOS
   window hidden, minimized or covered by other windows, whose display link
   still ticks, at the display's rate for half a minute, then at about 40
-  Hz), what moves asks for no frame, and a frame asked for by a change of
+  Hz; a minimized window on Linux, as GDK's `window-state-event` tells
+  on X11, and on Windows, as `WM_SIZE` does), what moves asks for no frame, and a frame asked for by a change of
   the state waits (`holdFrame`; both `held`), as browsers draw nothing for
   windows out of sight and as Apple asks of Mac apps: the view function,
   `Draw` and the work `After` drives wait until some of the window shows.
@@ -2888,7 +2908,11 @@ either.
   as assistive technology turns on, and for `CapturePage`, which builds
   the frame waiting; and none waits before the window's first frame
   reached its surface (`windowHost.occluded`), which a window made hidden
-  waits for to become ready to show.
+  waits for to become ready to show. `Context.WindowHidden` reads
+  `occluded`; once a view asked (`hiddenAsked`), `SurfaceHidden`, which
+  the surfaces send as none of the window shows any more, builds one
+  frame out of sight, as input does, for the view to stop its work, and
+  `SurfaceShown` one whether a frame was held or not.
   The window gaining or losing the keyboard focus draws a frame only when
   the last frame read it (`windowFocus`, as a focus ring, a caret, a
   selection's color or a focused text input's IME state do): a window
@@ -4261,7 +4285,13 @@ either.
   being resized, keeps its `CTTypesetter` while frames use it, and gives it up
   8 frames after the last, or as windows go idle. Core Text opens a break
   iterator for each line of text with a language attribute, so
-  `languageShapes` leaves the attribute out where it changes nothing. Every engine gives a line's glyphs in visual order,
+  `languageShapes` leaves the attribute out where it changes nothing. A
+  number, new in each frame on a dashboard, is put together from the glyphs
+  and kerning of its characters, measured once for each font and checked
+  against Core Text from time to time (`numbers_darwin.go`). Latin text
+  kept across widths is shaped into one line that its lines take their glyphs
+  from, breaking at the spaces before plain words and asking Core Text for
+  every other break, checked in the same way (`wrap_darwin.go`). Every engine gives a line's glyphs in visual order,
   from the left, through right-to-left runs too (DirectWrite's runs, whose
   glyphs come in logical order, are reversed), so that what walks them,
   and `ui.Shape`'s callers, rely on one order. The package assembles their

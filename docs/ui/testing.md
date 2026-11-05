@@ -59,7 +59,9 @@ panics where the second key was given, as apps only log it.
   `tt.SetFocused` takes the keyboard from the window and gives it back,
   and `tt.SetWindowActive` draws it as inactive and active again, as
   another window taking the user's input does
-  ([inactive windows](windows.md#active-and-inactive-windows)).
+  ([inactive windows](windows.md#active-and-inactive-windows)), and
+  `tt.SetWindowHidden` hides all of it from sight and shows it again
+  ([hidden windows](windows.md#hidden-windows)).
 - **What it shows.** `tt.Texts`, `tt.HasText`, `tt.Find` (the box of a
   text), `tt.Focused`, `tt.Cursor`, `tt.Clipboard`, `tt.OpenedURLs` and
   `tt.Announcements`, what the view asked screen readers to read out;
@@ -138,13 +140,16 @@ first element of the last frame with that role and accessible name (any
 name for `""`), as Testing Library's `getByRole(role, { name })` and
 Playwright's find it, and `tt.Access(name)` the first with that name
 whatever its role. The `ui.AccessInfo` they return has the role, the
-name, the value and the description, and the states, as
-[accessibility](accessibility.md#states) lists them: `Checked` and
-`Mixed` (`aria-checked`, `aria-pressed`), `Selected` (`aria-selected`,
-the tab, tree item or row chosen), `Expanded`, `Busy`, `Current`,
-`Disabled`, `Invalid`, `Focused` (the element or option the focus is
-on, `ActiveDescendant` included), `Level`, `PosInSet` and `SetSize`,
-`Min`, `Max` and `Now` of a range, and its `Bounds`. So a test checks
+name, the value, the description and the `RoleDescription`, and the
+states, as [accessibility](accessibility.md#states) lists them:
+`Checked` and `Mixed` (`aria-checked`, `aria-pressed`), `Selected`
+(`aria-selected`, the tab, tree item, row or grid cell chosen),
+`Expanded`, `HasPopup`, `Busy`, `Current`, `Sort` (a column header's
+`ui.SortDirection`), `Disabled`, `Invalid`, `Focused` (the element or
+option the focus is on, `ActiveDescendant` included), `Controls` (the
+names of the elements it controls, which `Access` finds), `Level`,
+`PosInSet` and `SetSize`, `Min`, `Max` and `Now` of a range, and its
+`Bounds`. So a test checks
 that a state reaches assistive technology, not only that the view set
 it:
 

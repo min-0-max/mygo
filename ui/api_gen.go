@@ -746,6 +746,24 @@ func (_handle *Context) WindowActive() bool {
 	return _ctx.WindowActive()
 }
 
+// WindowHidden reports whether nothing of the window shows on screen, as
+// the web's document.hidden: it is minimized, hidden, on another space or
+// desktop, or covered by other windows, as far as the system tells (see
+// the platform differences). A view that shows a clock, a price or what
+// plays stops working while it is hidden, and refreshes as it shows
+// again: the view builds once as it hides, and again as it shows, from
+// the first time it asks. Frames that only move what shows wait while it
+// is hidden anyway.
+//
+//	app.ticker.SetPaused(c.WindowHidden())
+func (_handle *Context) WindowHidden() bool {
+	_ctx := _handle.build()
+	if _ctx == nil {
+		return false
+	}
+	return _ctx.WindowHidden()
+}
+
 func (_handle *Context) WriteClipboard(s string) {
 	_ctx := _handle.build()
 	if _ctx == nil {
@@ -4261,6 +4279,21 @@ func (_handle Element) ContextMenu(build func(m *Menu)) Element {
 	return wrapElement(_node.ContextMenu(build))
 }
 
+// Controls tells assistive technology that the element controls the
+// content or the presence of target, as ARIA's aria-controls: the
+// region a disclosure button opens, or the list a filter's input
+// narrows. Screen readers offer to move to it. Call it once target is
+// built, once for each element it controls.
+func (_handle Element) Controls(target Element) Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.Controls(target.nodeFor(_ctx.rt)))
+}
+
 // CopyData sets what Copy, its shortcut and the context menu's put on
 // the clipboard for the selection of a Selectable container: fn gets its
 // parts, as SelectedTexts returns them, and returns the data, as a
@@ -5145,6 +5178,21 @@ func (_handle Element) HandleTextInput(client TextInputClient) Element {
 	_ctx := _node.c
 	_ = _ctx
 	return wrapElement(_node.HandleTextInput(client))
+}
+
+// HasPopup tells assistive technology the kind of popup the element
+// opens, as a button opening a list of options (PopupListBox) or a menu
+// (PopupMenu), which Expanded says shows: screen readers read it with the
+// element ("pop-up button", "menu button") and offer to open it.
+// PopupNone takes it back.
+func (_handle Element) HasPopup(kind Popup) Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.HasPopup(kind))
 }
 
 // Height sets the height in DIPs.
@@ -6662,6 +6710,21 @@ func (_handle Element) Role(r Role) Element {
 	return wrapElement(_node.Role(r))
 }
 
+// RoleDescription tells assistive technology what to call the element's
+// role, in place of its own, as ARIA's aria-roledescription: "carousel"
+// for a group of slides, and "slide" for each. Screen readers read it
+// where they would read the role, so give it in the user's language, and
+// keep the role, which says how to use the element. "" reads the role.
+func (_handle Element) RoleDescription(s string) Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.RoleDescription(s))
+}
+
 // Rotate rotates an element clockwise around its transform origin, which
 // changes no layout sizes. An Icon keeps turning its SVG artwork around its
 // center, as a spinner does:
@@ -7148,6 +7211,20 @@ func (_handle Element) SnapAlignY(a Align) Element {
 	_ctx := _node.c
 	_ = _ctx
 	return wrapElement(_node.SnapAlignY(a))
+}
+
+// Sort tells assistive technology the order a table's rows are sorted in
+// by the column whose header the element is (RoleColumnHeader), as ARIA's
+// aria-sort: for a sortable table of your own, whose headers show it.
+// Table's headers tell it from ListState.Sort and SortBy.
+func (_handle Element) Sort(dir SortDirection) Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.Sort(dir))
 }
 
 // Spring returns a value following target with a spring, as AnimateTo
