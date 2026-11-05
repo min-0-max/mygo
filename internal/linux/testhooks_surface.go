@@ -153,9 +153,11 @@ func TestDataDragResources() int { return len(gtkDataSources) }
 // it through ATK: the name of its role, its name, and its value.
 type TestAccessNode struct {
 	Role, Label, Value string
-	// Busy, Active, Selectable, Selected and Focused are its ATK states
-	// of those names, and Attributes its object attributes.
+	// Busy, Active, Selectable, Selected, Focused and
+	// SupportsAutocompletion are its ATK states of those names, and
+	// Attributes its object attributes.
 	Busy, Active, Selectable, Selected, Focused bool
+	SupportsAutocompletion                      bool
 	Attributes                                  map[string]string
 	obj                                         ptr
 }
@@ -220,6 +222,7 @@ func TestAccessibility(handle uintptr) ([]TestAccessNode, bool) {
 			n.Selectable = atkStateSetContainsState(states, atkStates.selectable)
 			n.Selected = atkStateSetContainsState(states, atkStates.selected)
 			n.Focused = atkStateSetContainsState(states, atkStates.focused)
+			n.SupportsAutocompletion = atkStateSetContainsState(states, atkStates.supportsAutocompletion)
 			gObjectUnref(states)
 			if set := atkObjectGetAttributes(child); set != 0 {
 				// A GSList of AtkAttribute: name and value.
@@ -275,6 +278,21 @@ func TestAccessibilityPerform(handle uintptr, label, action, value string) bool 
 		return false
 	}
 	return false
+}
+
+// TestAccessibilityEnabled reports whether the element labeled label is
+// enabled and focusable for assistive technology, as ATK's enabled and
+// focusable states say, and ok false without one.
+func TestAccessibilityEnabled(handle uintptr, label string) (enabled, focusable, ok bool) {
+	nodes, _ := TestAccessibility(handle)
+	for _, n := range nodes {
+		if n.Label == label {
+			states := atkObjectRefStateSet(n.obj)
+			defer gObjectUnref(states)
+			return atkStateSetContainsState(states, atkStates.enabled), atkStateSetContainsState(states, atkStates.focusable), true
+		}
+	}
+	return false, false, false
 }
 
 // What tests read of ATK's states by name and of relations.

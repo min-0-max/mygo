@@ -761,8 +761,45 @@ features GTK 4 lacks become X11-only code beside it.
   menus show (`WM_ENTERMENULOOP` to `WM_EXITMENULOOP`, and around
   `TrackPopupMenuEx`, which creates its window before), a `WH_CALLWNDPROC`
   hook of the main thread rounds the windows of class `#32768` in their
-  `WM_CREATE` (`DWMWCP_ROUNDSMALL`, outlined in the colors of Windows'
-  menus) and takes the shadow off the class, for DWM's around the window.
+  `WM_CREATE` (`DWMWCP_ROUND`, WinUI's 8 pixels), gives them one outline
+  (`DWMWA_BORDER_COLOR`: a pixel of WinUI's `SurfaceStrokeColorFlyout`
+  over the menu's background, `#00000019` in the light appearance and
+  `#FFFFFF19` in the dark, a color of its own rather than the accent) and
+  takes the shadow off the class, for DWM's around the window. It also
+  subclasses them: on Windows 11 22H2 with transparency effects on, no
+  contrast theme, energy saver off, outside remote sessions and with a
+  GPU (`glassConditions`: DWM draws no material when the first DXGI
+  adapter is Microsoft's Basic Render Driver or a software one, unless
+  its `ForceEffectMode` policy is 2), a window that says (`MN_GETHMENU`, before it shows
+  or paints) that it shows a menu MyGo draws gets Acrylic
+  (`DWMSBT_TRANSIENTWINDOW`, in the appearance through
+  `DWMWA_USE_IMMERSIVE_DARK_MODE`) with the frame extended over all of
+  it, and is framed active (`WM_NCACTIVATE` to `DefWindowProc` as active
+  with an lParam of -1, again once shown and whatever it is told after,
+  as Firefox's popups with Acrylic are): DWM draws a system backdrop as a
+  flat grey in a window it frames inactive, as a menu's window, never
+  activated, otherwise is. Its background brush turns black, which DWM
+  shows as transparent, its border too (`WM_NCPAINT`, and `WM_PRINT` for
+  animations), and its items wear the veil of WinUI's Acrylic tint over
+  the material: the fallback color at the opacity of its luminosity layer
+  (`acrylicLuminosity`, 85% in either appearance), so that a menu is as
+  light as the shell's flyouts over a dark desktop, the material showing
+  a seventh of the way through, and the highlights and separators are
+  WinUI's translucent fills over it, their rounded corners leaving DWM's
+  window to show. The labels, the shortcuts and the icons go over the
+  veil's own color, opaque, and once: what shows is the text as GDI draws
+  it on the color the shell's menus draw theirs on, its ClearType
+  blending with it, rather than the grayscale antialiasing of text drawn
+  over black and over white for unblend to tell its alpha, and the pixels
+  GDI leaves no alpha to take the item's. A window that shows another
+  menu, as Windows' window menu, stays as it is, and so do its items.
+  Elsewhere a menu MyGo draws has WinUI's solid background, the fallback
+  of its Acrylic (`#F9F9F9`, dark `#2C2C2C`), its window's own border
+  painted in it, for that one outline to be the menu's only border. Tray
+  menus open on Windows 11 as the system's do, centered on the icon 12
+  DIPs from the taskbar (`ABM_GETTASKBARPOS`, aligned by
+  `TrackPopupMenuEx` and kept off the taskbar by its `rcExclude`), and at
+  the pointer on Windows 10 or for an icon not on the taskbar.
   The bar grows from `WM_UAHMEASUREMENUITEM` and its items get inset
   backplates with rounded corners. A contrast theme keeps the system's
   colors: the bar is Windows' again, the popup items take the system's.
@@ -1626,6 +1663,18 @@ Package `i18n` is a leaf (it imports golang.org/x/text/language only):
   `scripts/format-golden.ts` records Node's `Intl` (upstream ICU) for
   every locale; `TestFormatMatchesICU` compares, and `knownDifference`
   lists, with reasons, the cases that differ on purpose.
+- **Relative times** (`relative.go`) use dateFields from the same pinned
+  cldr-dates-full tarball, written to `relative_tables.go` in a compressed
+  blob of their own: runs of slots as `recordSections` writes them, by
+  style, unit, and words for offsets -2 to 2 or past/future plural form.
+  Only `NewRelativeTimeFormatter` reaches it, so formatting dates or
+  numbers links none of it. The formatter uses the number formatter
+  (half-even, as ICU's RelativeDateTimeFormatter does), the plural form
+  of its rounded number, and ICU's rounding of offsets to hundredths
+  when choosing words with `Auto`. `scripts/relative-time-golden.ts`
+  records Node's Intl for every formatting locale, with the full matrix
+  compressed in `testdata/relative_time_icu.json.gz`; the tests name the
+  CLDR/ICU data differences explicitly.
 - **MessageFormat** (`message.go`, `format.go`) parses ICU's syntax as
   ICU's MessagePattern does (apostrophe mode DOUBLE_OPTIONAL, `#` only in
   a plural's own cases), and formats numbers and dates with the
@@ -2609,6 +2658,15 @@ either.
   takes input, but `accessElement` skips it with what is inside it, as an
   invisible one, its text names no ancestor (`innerText`), and its
   state drops what `AccessAction` sends it.
+  One only unavailable (`AccessDisabled`, ARIA's aria-disabled, a
+  field of the node and of its inherited state too) keeps
+  `flagDisabled` off, and so its hits, its stop of Tab and its look,
+  but its node is `AccessDisabled`, which the backends already map
+  (`AXEnabled`, ATK's enabled and sensitive states, UI Automation's
+  `IsEnabled`), still `AccessFocusable`, with no actions but the focus
+  and scrolling into view, and its state drops the others; UI
+  Automation's `SetFocus` reaches a disabled element that offers the
+  focus, as Chromium's does one aria-disabled.
   `AccessTree.Announcements` are texts to read out once
   (`Context.Announce`, toasts, routers): `AXAnnouncementRequested` posted
   on the application with a medium priority on macOS, AtkObject's
@@ -2620,14 +2678,24 @@ either.
   Statuses, as toasts, are polite live regions too (`LiveSetting`).
   Widgets of an app's own set what the bases set with element methods
   (`Checked`, `Mixed`, `Expanded`, `Value`, `Range`, `Level`,
-  `ActiveDescendant`, `Busy`, `Current`). `Busy` (`AccessBusy`, ARIA's
-  aria-busy) is WebKit's `AXElementBusy`, with `AXElementBusyChanged`, on
+  `ActiveDescendant`, `Busy`, `Current`, `AutoComplete`). `Busy`
+  (`AccessBusy`, ARIA's aria-busy) is WebKit's `AXElementBusy`, with `AXElementBusyChanged`, on
   macOS, ATK's busy state, and `busy=true` in UI Automation's
   AriaProperties; `Current` (`AccessNode.Current`, aria-current's
   kinds) is WebKit's `AXARIACurrent`, ATK's `current` attribute with the
   active state, as Chromium's, and `current=page` in AriaProperties. Both
   bring a generic element into the tree as a group, as ARIA's global
-  states do. `RoleDescription` (`AccessNode.RoleDescription`,
+  states do. `AutoComplete` (`AccessNode.AutoComplete`,
+  aria-autocomplete's inline, list and both; none writes nothing) is
+  WebKit's `AXAutocompleteValue`, answered through
+  `accessibilityAttributeValue:`, ATK's `autocomplete` object attribute
+  with the supports-autocompletion state, as Core-AAM maps it (and as
+  IAccessible2's object attribute and state), and `autocomplete=list`
+  in AriaProperties, which UI Automation has for ARIA's properties
+  without one of its own: Core-AAM maps nothing in UI Automation nor in
+  AX API, and Chromium nothing in UI Automation; `Combobox`,
+  `Autocomplete` and a `TokenField` with suggestions set it to list.
+  `RoleDescription` (`AccessNode.RoleDescription`,
   aria-roledescription) is AppKit's `accessibilityRoleDescription`,
   which elements override, ATK's `roledescription` attribute and UIA's
   LocalizedControlType; `Controls` (`AccessNode.Controls`, the IDs of
@@ -3339,12 +3407,21 @@ either.
   `SPI_GETHIGHCONTRAST` and Accessibility's `TextScaleFactor`, with
   `WM_SETTINGCHANGE`; on Linux, GTK's `gtk-enable-animations` and the
   settings portal's accent, contrast and GNOME's text scaling factor
-  (`ReadAll`, `SettingChanged`). A change goes through
-  `Handler.ThemeChanged`, as the appearance's does; package `ui` reads them
+  (`ReadAll`, `SettingChanged`). What the pointing devices can do
+  (`Pointer`, `AnyPointer`, `NoHover`, `NoAnyHover`, Media Queries 4's
+  interaction features), whose zero is a mouse's, as macOS's always is,
+  comes from the media queries in browsers; on Linux from the sources of
+  the default seat's pointing devices (`gdk_seat_get_slaves`), followed
+  through its `device-added` and `device-removed`; on Windows from
+  `SM_MOUSEPRESENT` and `SM_DIGITIZER`, the touch screen primary in
+  tablet mode (`SM_CONVERTIBLESLATEMODE`, whose `ConvertibleSlateMode`
+  setting changes), as Chromium tells them, primary the finest. A change
+  goes through `Handler.ThemeChanged`, as the appearance's does; package `ui` reads them
   once until the next, the default theme follows them (`Theme.follow`), and
   `Animate` follows reduced motion. Package `mygo` reads them the same way:
   `Theme.Preferences()` keeps them until the next change, with reduced
-  transparency too, which package `ui` does not follow. Pages get them as
+  transparency too, which package `ui` does not follow, and without the
+  pointing devices, which pages' own media queries answer. Pages get them as
   `ThemePreferences`' JSON (its `MarshalJSON`, the accent a CSS color or
   `null`), which is mygo-runtime's `ThemePreferences`: `tsgen` imports that
   type for it rather than declaring one (`runtimeTypes`). A user script
@@ -4386,6 +4463,16 @@ either.
     every renderer as any mask glyph, all of a text's before its glyphs
     (`paint-order: stroke fill`). `TextStroke` links it, so that apps that
     stroke no text do not.
+  - *Shadows.* `TextShadow` and `Span.Shadow` draw each glyph's shadow
+    as a mask of its own (`System.ShadowGlyph`), the glyph's coverage
+    (the alpha of a color glyph) blurred in Go by a separable Gaussian
+    of sigma half the blur, as CSS has it, padded by three sigmas and
+    capped at 64 pixels. Cached with the glyphs, under a key with the
+    sigma, and drawn as a mask glyph at the offset, all of a text's
+    before its strokes and glyphs. `NewTextShadow`, which
+    `Element.TextShadow` and a `Span`'s `Shadow` take, links it: a
+    `TextShadow` has no fields to set otherwise, so a shadow that paints
+    is one that linked it.
   - *Tabs.* `Style.TabSize` sets tab stops every that many spaces of the
     style's font, letter spacing included, from the start of each line,
     which each engine takes natively: Core Text's paragraph style (no
@@ -4513,8 +4600,13 @@ either.
   without an indent, a soft hyphen or a padded span is shaped once.
   `Params.Balance` (`Element.Balance`) breaks a paragraph that wraps at
   narrower widths, bisecting to a quarter of a DIP, for the narrowest
-  that keeps its count of lines (`System.balance`). The layout cache
-  keys it with the other params, so a build lays it out once.
+  that keeps its count of lines (`System.balance`); `Params.Pretty`
+  (`Element.Pretty`) breaks again only its last two lines, when the last
+  is a word alone, bisecting for the widest width at which the line
+  before gives it a word and they stay two, at a space
+  (`System.prettyLines`), which `Element.Pretty` and a `TextShape` that
+  asks for it link (`System.UsePretty`). The layout cache keys both with
+  the other params, so a build lays it out once.
   Text elements built inside a text (`ui/inline.go`) are inline: the
   paragraph takes their text when its `Children` returns, and their
   styles as spans over its own when it lays out. At commit, each gets the
@@ -5435,11 +5527,22 @@ a longer timeout only makes that rarer. So:
   fail) may wait a short while: a slow machine can only make them miss
   a bug, never fail right code.
 
+### What tests leave behind
+
+The GUI tests of a package share a process, and on Linux an X server,
+which can outlive the process when one is reused between runs. A test
+that leaves something in them can fail another much later, or in every
+other run as a lock key flips, which looks like a race in a test that did
+nothing wrong. `newWindow` checks after each test that used it (`watchLeftBehind`), and fails
+that test by name if it left a window open or, on an X server, a key held
+or Caps Lock or Num Lock changed, then puts them back so that the tests
+after it are not affected. A test that changes them undoes it in a cleanup.
+
 ### Benchmarks
 
 `.github/workflows/bench.yml` measures every push to main on GitHub's
 macOS, Linux and Windows runners, and the website shows the results at
-[/benchmarks](https://mygo.egoist.dev/benchmarks). `scripts/bench.ts`
+[/measures](https://mygo.egoist.dev/measures). `scripts/bench.ts`
 runs them:
 
 ```sh
@@ -5486,7 +5589,7 @@ push that races another run's merges again onto it. Started by hand with a
 in history.
 
 The page finds the commits that moved each series (`findSteps` in
-`website/src/lib/benchmarks.ts`): a commit whose value, and the median of
+`website/src/lib/measures.ts`): a commit whose value, and the median of
 the five from it, differ from the median of the five before by more than
 the series' noise, five median absolute deviations of the twenty before
 (their range while fewer than fifteen; at least 5% for time, 1% for
@@ -5595,6 +5698,17 @@ image's `LastPresentTime`), and took 43 ms when every frame was built ahead: hal
 a millisecond builds it, and a refresh or so goes from its present to
 the screen. Linux's frames follow GTK's frame clock, which is not measured:
 the containers have no display that refreshes.
+
+### Comparison with other frameworks
+
+`benchmarks/` holds the same small apps written with MyGo's native UI, GPUI,
+GPUI Fast and egui, and `go run ./benchmarks/run`, which measures them from outside the
+process: see `benchmarks/README.md`. It runs by hand on a real Mac, and
+`benchmarks/results.json`, which it writes, is what the website's
+[/benchmarks](https://mygo.egoist.dev/benchmarks) page shows.
+`.github/workflows/comparison.yml` only checks that the apps build and run.
+An app of a scene does what the others do, each the usual way of its
+framework: a scene changes in all of them, or in none.
 
 ### Binary size
 
@@ -5747,7 +5861,7 @@ which npm allows only for packages that exist: the first release uses an
 | secrets | Security.framework generic passwords in the login keychain (`SecItem*`), service and account as keytar | libsecret's `org.freedesktop.Secret.Generic` schema (attributes `service`, `account`), loaded on first use, libsecret 0.19 or later; no libsecret, no session bus (`g_bus_get_sync`) or no Secret Service on it (`G_DBUS_ERROR_SERVICE_UNKNOWN`, `NAME_HAS_NO_OWNER`, `NO_SERVER`) is `ErrUnsupported` | Credential Manager generic credentials (`CredWriteW`), target `service/account` |
 | vibrancy | all materials, behind pages and native UI; Liquid Glass (`NSGlassEffectView`) from macOS 26, the popover and HUD materials before, with a `tintColor` and the native UI's `Glass{Native}` placed over web views; frameless windows cut to `CornerRadius`; `SetActiveAppearance` through AppKit's private `_setForceMainAppearance:` | ignored | Windows 11 22H2 Mica, Acrylic, Tabbed, behind pages and native UI, in windows created with a material, which have no menu bar; Liquid Glass as Acrylic; frameless windows given a `CornerRadius` rounded by DWM |
 | active windows | the core's state, from key windows; materials follow AppKit's (`NSVisualEffectStateFollowsWindowActiveState`), but panels', flyouts' and kept ones' (`NSVisualEffectStateActive`) | the core's state, from GDK's focus; GTK's own title bar goes `:backdrop` as a focusable flyout takes the keyboard | the core's state, from `WM_ACTIVATE`; DWM's Mica and Acrylic follow the frame, kept active while the window's focusable flyout is (`WM_NCACTIVATE`) |
-| accent color and accessibility preferences | `NSColor.controlAccentColor` (10.14+), `accessibilityDisplayShouldReduceMotion` (10.12+), `accessibilityDisplayShouldReduceTransparency` and `accessibilityDisplayShouldIncreaseContrast` (10.10+), with `NSSystemColorsDidChangeNotification` and `NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification`; no text scale | GTK's `gtk-enable-animations` and theme name, and the settings portal's accent, contrast and GNOME's `text-scaling-factor` (`ReadAll`, `SettingChanged`); no reduced transparency | DWM's `AccentColor`, `SPI_GETCLIENTAREAANIMATION`, Personalize's `EnableTransparency`, `SPI_GETHIGHCONTRAST` and Accessibility's `TextScaleFactor`, with `WM_SETTINGCHANGE` |
+| accent color and accessibility preferences | `NSColor.controlAccentColor` (10.14+), `accessibilityDisplayShouldReduceMotion` (10.12+), `accessibilityDisplayShouldReduceTransparency` and `accessibilityDisplayShouldIncreaseContrast` (10.10+), with `NSSystemColorsDidChangeNotification` and `NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification`; no text scale | GTK's `gtk-enable-animations` and theme name, and the settings portal's accent, contrast and GNOME's `text-scaling-factor` (`ReadAll`, `SettingChanged`); no reduced transparency; the pointing devices from the default seat's, as they come and go | DWM's `AccentColor`, `SPI_GETCLIENTAREAANIMATION`, Personalize's `EnableTransparency`, `SPI_GETHIGHCONTRAST` and Accessibility's `TextScaleFactor`, with `WM_SETTINGCHANGE`; the pointing devices from `SM_MOUSEPRESENT`, `SM_DIGITIZER` and tablet mode, not followed as they are plugged in |
 | preferred languages | the global `AppleLanguages` (`CFPreferencesCopyValue`), not the app's | `LANGUAGE`, then `LC_ALL`, `LC_MESSAGES`, `LANG`; read when asked, no changes reported | `GetUserPreferredUILanguages`, `WM_SETTINGCHANGE` "intl" |
 | regional formats | `autoupdatingCurrentLocale`, its calendar's first weekday, the hour of the skeleton "j"; `NSCurrentLocaleDidChangeNotification` and System Settings' distributed notifications | glibc's `nl_langinfo_l` of `LC_TIME` (`_NL_TIME_FIRST_WEEKDAY`, `T_FMT`), else by region | `GetLocaleInfoEx` of the user's default: `LOCALE_IFIRSTDAYOFWEEK`, `LOCALE_STIMEFORMAT` |
 | the app's language kept | `AppleLanguages` of the app's defaults | the file `locale` in PathUserData | the file `locale` in PathUserData, and the process's preferred UI languages |

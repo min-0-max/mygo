@@ -116,6 +116,7 @@ your own tells it with these, as ARIA's states do on the web:
 | `ActiveDescendant(e)` | the option that has the focus while the element keeps it, as the one the arrows are on in a menu or a list |
 | `Busy(on)` | that the element's content is about to change, as a region loading: screen readers wait for it before reading it |
 | `Current(kind)` | that the element is the current one of the items around it: `ui.CurrentPage` (the page the user is on), `CurrentStep`, `CurrentLocation`, `CurrentDate`, `CurrentTime` or `CurrentItem` |
+| `AutoComplete(kind)` | what a text input's suggestions complete as the user types: `ui.AutoCompleteList` (a popup of them), `AutoCompleteInline` (the text completed in place) or `AutoCompleteBoth` ([below](#suggestions)) |
 | `RoleDescription(s)` | what to call its role, in place of the role's own name, as "carousel" for a group of slides and "slide" for each |
 | `Controls(e)` | that it controls the content or presence of `e`, as a disclosure button the region it opens; once for each |
 | `HasPopup(kind)` | the kind of popup it opens: `ui.PopupMenu`, `PopupListBox`, `PopupTree`, `PopupGrid` or `PopupDialog` |
@@ -224,6 +225,35 @@ A check box that is mixed as often as not is better built on
 [`CheckboxStateBase`](checkbox.md#without-a-look), which tells it itself
 from its `ui.CheckState`, and checks it as it is pressed.
 
+## Suggestions
+
+`AutoComplete(kind)` tells screen readers what a text input's suggestions
+complete as the user types, as ARIA's `aria-autocomplete`, so that they
+say a field has them: `ui.AutoCompleteList` for a popup of the values
+matching what was typed, `AutoCompleteInline` for the rest of the value
+inserted after the caret, selected, and `AutoCompleteBoth` for both. A
+[combobox](combobox.md), an [autocomplete](autocomplete.md) and a
+[token field](token-field.md) with suggestions tell `AutoCompleteList`
+themselves; a combobox of your own, with `Expanded` for its popup and
+`ActiveDescendant` for the option the arrows are on, tells it too:
+
+```go
+in := ui.TextInputBase(c, &app.query).Role(ui.RoleComboBox).Label("Search")
+in.Expanded(len(app.matches) > 0).AutoComplete(ui.AutoCompleteList)
+```
+
+It only tells: the view shows the suggestions itself. `AutoCompleteNone`,
+the default, tells nothing, as for a combobox whose popup shows the same
+options whatever is typed. It is AppKit's `AXAutocompleteValue` on macOS,
+as WebKit gives it, ATK's `autocomplete` object attribute with the
+supports-autocompletion state on Linux, as Core-AAM maps it, and
+`autocomplete=list` in UI Automation's `AriaProperties` on Windows, the
+place of ARIA's properties UI Automation has none of. A
+[test](testing.md#what-assistive-technology-sees) reads it in the
+`AutoComplete` of `Tester.AccessByRole`'s answer, and the
+[automation plugin](../plugins/automation.md) in a node's
+`autoComplete`.
+
 ## Descriptions and errors
 
 `Description` tells more than the name, as help text read after it, as a
@@ -281,6 +311,40 @@ Down are read as they move the choice, and focusing a row chooses it. A
 screen reader moving out of view asks the list to scroll there, which
 builds the rows it reaches. `Label` names a list or a table.
 
+## Unavailable, still reachable
+
+`Disabled(true)` does three things: the element reads as disabled, it
+leaves the focus and the Tab order and takes no clicks, and it shows at
+half its opacity (unless `DimDisabled(false)`). A screen reader moving
+by Tab then never reaches it. `AccessDisabled(true)` does the first alone,
+as HTML's `aria-disabled="true"`, for what the user must still find while
+it cannot be used, as the APG asks of a menu item whose action is
+blocked, a tab disabled but still in the arrows' order, or a submit
+button while the form is not valid: the element, and those inside it,
+read as disabled (dimmed, unavailable), and keep the focus, their place
+in the Tab order, the pointer and their look.
+
+```go
+del := ui.Button(c, "Delete project").AccessDisabled(app.locked)
+if app.locked {
+	del.Description("Unlock the project to delete it")
+}
+if del.Clicked() && !app.locked {
+	app.deleteProject()
+}
+```
+
+It only tells: clicks, Enter and Space still press the element, which
+the view ignores while it is unavailable, as on the web, and it shows as
+the view styles it. Assistive technology focuses it and reads it, its
+`Description` with it, but neither presses nor edits it. It is AppKit's
+`AXEnabled` false on macOS, ATK's enabled and sensitive states left out
+on Linux, and UI Automation's `IsEnabled` false on Windows, with
+`IsKeyboardFocusable` true and its `SetFocus` taken, as Chromium's
+aria-disabled. A [test](testing.md#what-assistive-technology-sees)
+reads it as `Disabled` with `Focusable` in `Tester.AccessByRole`'s
+answer.
+
 ## Out of the pointer's way
 
 `IgnoreInput(true)` leaves an element, and those inside it, to assistive
@@ -313,7 +377,7 @@ both go through the keyboard focus; it can set a text input's value.
 Unlike HTML's `inert`, which hides an element from assistive technology
 too, it stays in the tree: `Invisible` and `Hidden` take it out of it,
 `AccessHidden` too while it still shows, and `Disabled` keeps it there
-without its press.
+without its press, as `AccessDisabled` does with its focus too.
 
 ## Out of assistive technology's way
 

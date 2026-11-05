@@ -825,9 +825,10 @@ func registerAccessClass() {
 		// AXInvalid, which the newer API lacks, says a value is not valid,
 		// as WebKit's fields do, AXMenuItemMarkChar what an item of a
 		// menu shows of its choice, AXElementBusy that the content is
-		// about to change, and AXARIACurrent which item of those around it
-		// the element is the current one of, as WebKit's say aria-busy and
-		// aria-current.
+		// about to change, AXARIACurrent which item of those around it the
+		// element is the current one of, and AXAutocompleteValue what a
+		// text field's suggestions complete, as WebKit's say aria-busy,
+		// aria-current and aria-autocomplete.
 		method("accessibilityAttributeNames", func(self id, cmd objc.SEL) id {
 			names := sendSuper(self, "MyGoAccessibilityElement", cmd)
 			el := b().accessElementOf(self)
@@ -848,6 +849,10 @@ func registerAccessClass() {
 				sendHere(all, "addObject:", uintptr(nsString("AXPopupValue")))
 			}
 			sendHere(all, "addObject:", uintptr(nsString("AXElementBusy")))
+			// Whether it can be used: the older API does not list or answer
+			// AXEnabled for what setAccessibilityEnabled: set, and VoiceOver
+			// would read every disabled control as available.
+			sendHere(all, "addObject:", uintptr(nsString("AXEnabled")))
 			// Where a cell is and whether it is chosen, and the cells a
 			// table has chosen, which AppKit's names of an AXCell and an
 			// AXTable leave out though their setters are called.
@@ -880,6 +885,9 @@ func registerAccessClass() {
 			}
 			if el.node.Current != platform.CurrentNone {
 				sendHere(all, "addObject:", uintptr(nsString("AXARIACurrent")))
+			}
+			if el.node.AutoComplete != platform.AutoCompleteNone {
+				sendHere(all, "addObject:", uintptr(nsString("AXAutocompleteValue")))
 			}
 			// How a live region is read, as WebKit's say aria-live,
 			// aria-atomic and aria-relevant.
@@ -918,6 +926,8 @@ func registerAccessClass() {
 					}
 				case "AXElementBusy":
 					return nsBool(el.node.States&platform.AccessBusy != 0)
+				case "AXEnabled":
+					return nsBool(el.node.States&platform.AccessDisabled == 0)
 				// The role and subrole the newer API was given, so that
 				// both APIs agree: AppKit's answer here missed a header
 				// made a sort button.
@@ -986,6 +996,10 @@ func registerAccessClass() {
 				case "AXARIACurrent":
 					if c := el.node.Current; c != platform.CurrentNone {
 						return nsString(c.String())
+					}
+				case "AXAutocompleteValue":
+					if a := el.node.AutoComplete; a != platform.AutoCompleteNone {
+						return nsString(a.String())
 					}
 				case "AXARIALive", "AXARIAAtomic", "AXARIARelevant":
 					if live, atomic := el.node.Role.Live(); live != "" {

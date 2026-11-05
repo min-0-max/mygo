@@ -446,6 +446,10 @@ func textStyles(ts *textStyle, set uint32) []inspDecl {
 	if set&setKeepAll != 0 {
 		add("word-break", "keep-all")
 	}
+	if set&setShadow != 0 {
+		sh := ts.shadow
+		ds = append(ds, inspDecl{name: "text-shadow", value: pxText(sh.x) + " " + pxText(sh.y) + " " + pxText(sh.blur) + " " + colorText(sh.color), color: sh.color, swatch: true})
+	}
 	return ds
 }
 
@@ -559,6 +563,11 @@ func properties(rt *engine, e *node) []inspSection {
 		{name: "keyboard-focusable", value: yes(e.flags&flagFocusable != 0 && !e.IsDisabled() && !e.st.ignoreInput)},
 		{name: "ignored", value: yes(!seen || e.flags&(flagInvisible|flagInert) != 0 || e.inHidden() || e.st.accessHidden)},
 	}}
+	// Unavailable to assistive technology alone, focusable still
+	// (AccessDisabled), as aria-disabled.
+	if e.st.accessDisabled && !e.IsDisabled() {
+		acc.rows = append(acc.rows, inspDecl{name: "disabled", value: "true"})
+	}
 	if e.description != "" {
 		acc.rows = append(acc.rows, inspDecl{name: "description", value: strconv.Quote(e.description)})
 	}
@@ -570,6 +579,9 @@ func properties(rt *engine, e *node) []inspSection {
 	}
 	if e.current != CurrentNone {
 		acc.rows = append(acc.rows, inspDecl{name: "current", value: platform.AccessCurrent(e.current).String()})
+	}
+	if e.autoComplete != AutoCompleteNone {
+		acc.rows = append(acc.rows, inspDecl{name: "autocomplete", value: platform.AccessAutoComplete(e.autoComplete).String()})
 	}
 	if e.roleDescription != "" {
 		acc.rows = append(acc.rows, inspDecl{name: "roledescription", value: strconv.Quote(e.roleDescription)})

@@ -213,6 +213,39 @@ func (e *node) Current(kind Current) *node {
 	return e
 }
 
+// AutoComplete is what the suggestions of a text input complete as the
+// user types (Element.AutoComplete), as ARIA's aria-autocomplete says.
+type AutoComplete uint8
+
+const (
+	// AutoCompleteNone suggests nothing as the user types: the popup of
+	// a combobox, if any, shows the same options whatever is typed.
+	AutoCompleteNone AutoComplete = iota
+	// AutoCompleteInline completes the text in place: the rest of the
+	// value the input guesses is inserted after the caret, selected.
+	AutoCompleteInline
+	// AutoCompleteList shows a popup of the values that complete what
+	// was typed, as the options of a Combobox or an Autocomplete.
+	AutoCompleteList
+	// AutoCompleteBoth shows the popup, and completes the text in place
+	// with the option the arrows are on.
+	AutoCompleteBoth
+)
+
+// AutoComplete tells assistive technology what the suggestions of a
+// text input or a combobox of your own complete as the user types, as
+// ARIA's aria-autocomplete: AutoCompleteList for a popup of the values
+// matching what was typed, which screen readers announce with the field
+// so that the user knows to look there, AutoCompleteInline for the text
+// completed in place. It only tells it: the view shows the suggestions
+// itself, as in ComboboxBase's popup. Combobox, Autocomplete, and a
+// TokenField with suggestions, tell AutoCompleteList themselves;
+// AutoCompleteNone takes it back.
+func (e *node) AutoComplete(kind AutoComplete) *node {
+	e.autoComplete = kind
+	return e
+}
+
 // Value sets what assistive technology reads as the element's value, as
 // the choice a button opening a popup shows, or the text of a range's
 // value beside its number (aria-valuetext), as "3 of 10 steps".
@@ -622,7 +655,7 @@ const pageNodeID = 0x9e3779b97f4a7c15
 // accessDetails fills in the name, value, states and actions of a node.
 func (rt *engine) accessDetails(e *node, n *platform.AccessNode) {
 	disabled := e.IsDisabled()
-	if disabled {
+	if disabled || e.st.accessDisabled {
 		n.States |= platform.AccessDisabled
 	}
 	if e.segment {
@@ -704,6 +737,7 @@ func (rt *engine) accessDetails(e *node, n *platform.AccessNode) {
 		n.States |= platform.AccessBusy
 	}
 	n.Current = platform.AccessCurrent(e.current)
+	n.AutoComplete = platform.AccessAutoComplete(e.autoComplete)
 	n.Level = e.level
 	n.Value = e.accValue
 	n.KeyShortcuts = e.keyShortcuts
@@ -778,6 +812,11 @@ func (rt *engine) accessDetails(e *node, n *platform.AccessNode) {
 	if e.accFill != nil {
 		e.accFill(n)
 	}
+	// What is unavailable (AccessDisabled) is reached, read and focused,
+	// but not operated, as ARIA's aria-disabled.
+	if e.st.accessDisabled {
+		n.Actions &= platform.ActionFocus | platform.ActionScrollIntoView
+	}
 }
 
 // accessibilityOn starts describing frames for assistive technology,
@@ -804,6 +843,15 @@ func (rt *engine) accessAction(ev platform.SurfaceEvent) {
 	// What is hidden from it, as a page leaving, takes none of its actions.
 	if s == nil || s.flags&flagDisabled != 0 || s.accessHidden {
 		return
+	}
+	// What is unavailable takes the focus, is scrolled to and has its text
+	// selected, but is neither pressed nor edited.
+	if s.accessDisabled {
+		switch ev.Action {
+		case platform.AccessFocus, platform.AccessScrollIntoView, platform.AccessSelectText:
+		default:
+			return
+		}
 	}
 	switch ev.Action {
 	case platform.AccessPress:
