@@ -28,7 +28,7 @@ func RegisterClass(name string, super objc.Class, protocols []*objc.Protocol, iv
 		}
 		t := reflect.TypeOf(m.Fn)
 		returnsObject := t.NumOut() == 1 && t.Out(0) == reflect.TypeFor[objc.ID]()
-		native.methodSetImplementation(meth, Method(native.methodGetImplementation(meth), returnsObject))
+		native.methodSetImplementation(meth, method(native.methodGetImplementation(meth), returnsObject, native.selGetName(uintptr(m.Cmd))))
 	}
 	return c, nil
 }

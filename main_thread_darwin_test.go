@@ -2,7 +2,13 @@
 
 package mygo
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/ebitengine/purego"
+
+	"github.com/egoist/mygo/internal/darwin/mainthread"
+)
 
 // The two C functions of the worker of the main thread are functions of
 // their own: code that calls one for the other runs its block on the wrong
@@ -14,5 +20,13 @@ func TestTheMainThreadFunctionsHaveAddresses(t *testing.T) {
 	}
 	if worker == main {
 		t.Fatalf("both are %#x", worker)
+	}
+}
+
+func TestRegisteredCallbacksCountsTheCallbacksOfTheFramework(t *testing.T) {
+	before := RegisteredCallbacks()
+	mainthread.Callback(purego.NewCallback(func() uintptr { return 0 }))
+	if got := RegisteredCallbacks(); got != before+1 {
+		t.Fatalf("a callback took the count from %d to %d", before, got)
 	}
 }

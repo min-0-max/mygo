@@ -2,7 +2,11 @@
 
 package vt
 
-import "github.com/ebitengine/purego"
+import (
+	"github.com/ebitengine/purego"
+
+	"github.com/egoist/mygo/internal/callbacks"
+)
 
 // Supported reports whether the platform can load the library.
 const Supported = true
@@ -20,4 +24,7 @@ func call(fn uintptr, args ...uintptr) uintptr {
 
 func registerFunc(fptr any, addr uintptr) { purego.RegisterFunc(fptr, addr) }
 
-func newCallback(fn any) uintptr { return purego.NewCallback(fn) }
+func newCallback(fn any) uintptr {
+	callbacks.Add(1)
+	return purego.NewCallback(fn)
+}

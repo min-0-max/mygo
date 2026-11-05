@@ -14,7 +14,9 @@ import (
 	"unsafe"
 
 	"github.com/ebitengine/purego"
+
 	"github.com/ebitengine/purego/objc"
+	"github.com/egoist/mygo/internal/callbacks"
 )
 
 // linkState is what the main thread and the worker share; the assembly of
@@ -40,6 +42,9 @@ type linkState struct {
 	semaphoreSignal, semaphoreWait uintptr
 	poolPush, poolPop              uintptr
 	retain, autorelease            uintptr
+	// stepsOn says that the steps are recorded (RecordSteps), and clock is
+	// clock_gettime_nsec_np, which reads their times.
+	stepsOn, clock uintptr
 	// violation is the C callback that exchange calls when the other side
 	// breaks the protocol, which panics with the state.
 	violation uintptr
@@ -80,7 +85,9 @@ func runOnMainAddress() uintptr
 // the main thread calls it while the worker runs, and at once anywhere
 // else. The main thread waits for the step and meanwhile runs the calls
 // that the worker forwards to it.
-func RunOnWorkerAddress() uintptr { return entry(invokeBlockAddress(), 0) }
+func RunOnWorkerAddress() uintptr {
+	return uncountedEntry(invokeBlockAddress(), 0, StepBlock, "mainthread.RunOnWorker")
+}
 
 // RunOnMainAddress returns the address of a C function that takes a block
 // that takes no arguments and runs it on the main thread when the worker
@@ -103,6 +110,8 @@ const trampolines = 2048
 var (
 	targets     [trampolines]uintptr
 	targetFlags [trampolines]uintptr
+	targetKinds [trampolines]StepKind
+	targetNames [trampolines]string
 	tableMu     sync.Mutex
 	tableUsed   int
 	tableIndex  = map[[2]uintptr]uintptr{}
@@ -135,6 +144,7 @@ var native struct {
 	classGetInstanceMethod  func(cls uintptr, sel objc.SEL) uintptr
 	methodGetImplementation func(m uintptr) uintptr
 	methodSetImplementation func(m, imp uintptr) uintptr
+	selGetName              func(sel uintptr) string
 }
 
 // loadNative resolves the C functions of the worker.
@@ -178,6 +188,7 @@ func resolve() error {
 	purego.RegisterLibFunc(&native.classGetInstanceMethod, libObjC, "class_getInstanceMethod")
 	purego.RegisterLibFunc(&native.methodGetImplementation, libObjC, "method_getImplementation")
 	purego.RegisterLibFunc(&native.methodSetImplementation, libObjC, "method_setImplementation")
+	purego.RegisterLibFunc(&native.selGetName, libObjC, "sel_getName")
 	purego.RegisterLibFunc(&native.dispatchAsyncF, libSystem, "dispatch_async_f")
 	native.mainQueue = sym(libSystem, "_dispatch_main_q")
 	if p := sym(cf, "kCFRunLoopCommonModes"); p != 0 {
@@ -189,6 +200,8 @@ func resolve() error {
 	link.autorelease = sym(libObjC, "objc_autorelease")
 	link.semaphoreSignal = sym(libSystem, "semaphore_signal")
 	link.semaphoreWait = sym(libSystem, "semaphore_wait")
+	link.clock = sym(libSystem, "clock_gettime_nsec_np")
+	callbacks.Add(1)
 	link.violation = purego.NewCallback(violation)
 	if err != nil {
 		return err
@@ -356,6 +369,7 @@ var runSteps struct {
 // ends Run before the event loop and finish.
 func Run(start func() (Call, error), finish func()) error {
 	runSteps.once.Do(func() {
+		callbacks.Add(1)
 		runSteps.callback = purego.NewCallback(func(step uintptr) uintptr {
 			switch step {
 			case runStart:
@@ -444,7 +458,7 @@ func runFromOtherThread(fn func()) {
 			delete(mainFuncs.m, n)
 			mainFuncs.Unlock()
 			f()
-		}), 0)
+		}), 0, StepCallback, "mainthread.runFromOtherThread")
 	}
 	mainFuncs.next++
 	n := mainFuncs.next
@@ -613,27 +627,52 @@ func forward(rec *record) {
 	runtime.KeepAlive(rec)
 }
 
-// entry returns the trampoline that calls target with flags, the same for
-// each call with the same target and flags.
-func entry(target, flags uintptr) uintptr {
+// entry returns the trampoline that calls target, a callback that purego
+// made, with flags, the same for each call with the same target and flags,
+// and counts the callback when it makes the trampoline. Its steps report
+// kind and name, or without a name the function that asked for the
+// trampoline.
+func entry(target, flags uintptr, kind StepKind, name string) uintptr {
+	trampoline, made := makeEntry(target, flags, kind, name)
+	if made {
+		callbacks.Add(1)
+	}
+	return trampoline
+}
+
+// uncountedEntry is entry for a target that is no callback that the
+// framework registered: an assembly function of this package, or the one
+// dispose function that package objc makes for all blocks.
+func uncountedEntry(target, flags uintptr, kind StepKind, name string) uintptr {
+	trampoline, _ := makeEntry(target, flags, kind, name)
+	return trampoline
+}
+
+func makeEntry(target, flags uintptr, kind StepKind, name string) (uintptr, bool) {
 	if target == 0 {
-		return 0
+		return 0, false
 	}
 	tableMu.Lock()
 	defer tableMu.Unlock()
 	key := [2]uintptr{target, flags}
 	if i, ok := tableIndex[key]; ok {
-		return trampolineAddress(i)
+		return trampolineAddress(i), false
 	}
 	if tableUsed == trampolines {
 		panic(fmt.Sprintf("mainthread: all %d trampolines are taken; %s asked for one for %#x", trampolines, registeringCall(), target))
+	}
+	if name == "" {
+		frame, _ := registeringFrame()
+		name = frame.Function
 	}
 	i := uintptr(tableUsed)
 	tableUsed++
 	targets[i] = target
 	targetFlags[i] = flags | recordStep
+	targetKinds[i] = kind
+	targetNames[i] = name
 	tableIndex[key] = i
-	return trampolineAddress(i)
+	return trampolineAddress(i), true
 }
 
 // registeringCall names the call that asked for a trampoline: the first
@@ -641,6 +680,17 @@ func entry(target, flags uintptr) uintptr {
 // (a test of the package among them), with the function of this package
 // that it called.
 func registeringCall() string {
+	frame, called := registeringFrame()
+	if frame.Function == "" {
+		return "an unknown call, calling " + called + ","
+	}
+	return fmt.Sprintf("%s at %s:%d, calling %s,", frame.Function, frame.File, frame.Line, called)
+}
+
+// registeringFrame returns the frame of that call and the function of this
+// package that it called, without a function when the stack holds no such
+// call.
+func registeringFrame() (runtime.Frame, string) {
 	pcs := make([]uintptr, 32)
 	frames := runtime.CallersFrames(pcs[:runtime.Callers(2, pcs)])
 	_, self, _, _ := runtime.Caller(0)
@@ -649,11 +699,11 @@ func registeringCall() string {
 	for {
 		f, more := frames.Next()
 		if filepath.Dir(f.File) != dir || strings.HasSuffix(f.File, "_test.go") {
-			return fmt.Sprintf("%s at %s:%d, calling %s,", f.Function, f.File, f.Line, called)
+			return f, called
 		}
 		called = f.Function
 		if !more {
-			return "an unknown call, calling " + called + ","
+			return runtime.Frame{}, called
 		}
 	}
 }
@@ -667,15 +717,18 @@ func isTrampoline(fn uintptr) bool {
 // Callback returns the trampoline for a C callback that purego made, to
 // pass in its place: called on the main thread while the worker runs, it
 // runs the callback on the worker as a step.
-func Callback(fn uintptr) uintptr { return entry(fn, 0) }
+func Callback(fn uintptr) uintptr { return entry(fn, 0, StepCallback, "") }
 
 // Method returns the trampoline for the implementation imp of an
 // Objective-C method that purego made, to set in its place with
 // method_setImplementation. returnsObject says that the method returns an
 // object, which the step hands to the autorelease pool of the main thread.
-func Method(imp uintptr, returnsObject bool) uintptr {
+func Method(imp uintptr, returnsObject bool) uintptr { return method(imp, returnsObject, "") }
+
+// method is Method for the selector named name.
+func method(imp uintptr, returnsObject bool, name string) uintptr {
 	if returnsObject {
-		return entry(imp, recordReturnsObject)
+		return entry(imp, recordReturnsObject, StepSelector, name)
 	}
-	return entry(imp, 0)
+	return entry(imp, 0, StepSelector, name)
 }

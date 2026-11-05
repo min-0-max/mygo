@@ -33,6 +33,11 @@ type record struct {
 	// for the main thread, and sem is the Mach semaphore that the main
 	// thread signals when it ran one.
 	next, sem uintptr
+
+	// What a trampoline records of a step with recordTimed: the index of
+	// its entry and when it entered, which it sets, and what exchange adds
+	// to on the main thread.
+	index, entry, forwarded, wait uintptr
 }
 
 const (
@@ -42,6 +47,9 @@ const (
 	// returns, for a caller that keeps it.
 	recordRetainsResultBit = 2
 	recordRetainsResult    = 1 << recordRetainsResultBit
+	// recordTimed has a trampoline and exchange record the step.
+	recordTimedBit = 3
+	recordTimed    = 1 << recordTimedBit
 )
 
 // stackWords is how many words of stack arguments a record carries.

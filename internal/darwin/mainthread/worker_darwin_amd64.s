@@ -86,6 +86,28 @@ take:
 	XCHGQ	AX, (R13)
 	TESTQ	AX, AX
 	JNZ	got
+	// The main thread times its sleep in a step that it records.
+	TESTQ	R12, R12
+	JZ	sleep
+	TESTQ	BX, BX
+	JZ	sleep
+	MOVQ	record_flags(BX), CX
+	BTQ	$const_recordTimedBit, CX
+	JCC	sleep
+	MOVQ	$const_stepClock, DI
+	MOVQ	linkState_clock(R14), AX
+	CALL	AX
+	MOVQ	AX, POOL(SP)
+	MOVL	MYSEM(SP), DI
+	MOVQ	linkState_semaphoreWait(R14), AX
+	CALL	AX
+	MOVQ	$const_stepClock, DI
+	MOVQ	linkState_clock(R14), AX
+	CALL	AX
+	SUBQ	POOL(SP), AX
+	ADDQ	AX, record_wait(BX)
+	JMP	loop
+sleep:
 	MOVL	MYSEM(SP), DI
 	MOVQ	linkState_semaphoreWait(R14), AX
 	CALL	AX
@@ -135,6 +157,14 @@ pop:
 	DECQ	linkState_depth(R14)
 	JMP	post
 onmain:
+	// A call that a step forwarded, which a step that it records counts.
+	TESTQ	BX, BX
+	JZ	forwarded
+	MOVQ	record_flags(BX), CX
+	BTQ	$const_recordTimedBit, CX
+	JCC	forwarded
+	INCQ	record_forwarded(BX)
+forwarded:
 	MOVQ	MSG(SP), DI
 	CALL	·callRecord(SB)
 
@@ -276,6 +306,7 @@ TEXT ·trampolineCommon(SB), NOSPLIT|NOFRAME, $0-0
 	MOVQ	AX, (record_stack+112)(BX)
 	MOVQ	120(R11), AX
 	MOVQ	AX, (record_stack+120)(BX)
+	MOVQ	R12, record_index(BX)
 	MOVQ	$·targets(SB), R11
 	MOVQ	(R11)(R12*8), AX
 	MOVQ	AX, record_fn(BX)
@@ -284,18 +315,35 @@ TEXT ·trampolineCommon(SB), NOSPLIT|NOFRAME, $0-0
 	MOVQ	R12, record_flags(BX)
 	MOVQ	$0, record_next(BX)
 	MOVQ	$0, record_sem(BX)
+	MOVQ	$·link(SB), R11
+	CMPQ	linkState_stepsOn(R11), $0
+	JEQ	hand
+	ORQ	$const_recordTimed, R12
+	MOVQ	R12, record_flags(BX)
+	MOVQ	$0, record_forwarded(BX)
+	MOVQ	$0, record_wait(BX)
+	MOVQ	$const_stepClock, DI
+	MOVQ	linkState_clock(R11), AX
+	CALL	AX
+	MOVQ	AX, record_entry(BX)
+hand:
 
 	MOVQ	BX, DI
 	CALL	·exchange(SB)
 
 	BTQ	$1, R12
-	JCC	returned
+	JCC	timed
 	MOVQ	(record_r+0)(BX), DI
 	TESTQ	DI, DI
-	JZ	returned
+	JZ	timed
 	MOVQ	$·link(SB), AX
 	MOVQ	linkState_autorelease(AX), AX
 	CALL	AX
+timed:
+	BTQ	$const_recordTimedBit, R12
+	JCC	returned
+	MOVQ	BX, DI
+	CALL	·stepDone(SB)
 returned:
 	MOVQ	(record_r+0)(BX), AX
 	MOVQ	(record_r+8)(BX), DX
@@ -312,6 +360,44 @@ direct:
 	MOVQ	(AX)(R11*8), R11
 	MOVQ	R10, AX
 	JMP	R11
+
+// stepDone(rec *record) is a C function, which the main thread calls when a
+// step that it records returned: it writes the step to the ring, or counts
+// it as lost when the ring is full.
+TEXT ·stepDone(SB), NOSPLIT|NOFRAME, $0-0
+	PUSHQ	BX
+	MOVQ	DI, BX
+	MOVQ	$const_stepClock, DI
+	MOVQ	$·link(SB), AX
+	MOVQ	linkState_clock(AX), AX
+	CALL	AX
+	MOVQ	$·stepRing(SB), R8
+	MOVQ	stepRingState_head(R8), R9
+	MOVQ	R9, R10
+	SUBQ	stepRingState_tail(R8), R10
+	CMPQ	R10, $const_stepSlots
+	JAE	full
+	MOVQ	R9, R10
+	ANDQ	$(const_stepSlots-1), R10
+	IMULQ	$stepSlot__size, R10
+	LEAQ	stepRingState_slots(R8)(R10*1), R10
+	MOVQ	record_index(BX), R11
+	MOVQ	R11, stepSlot_index(R10)
+	MOVQ	record_entry(BX), R11
+	MOVQ	R11, stepSlot_entry(R10)
+	MOVQ	AX, stepSlot_ret(R10)
+	MOVQ	record_forwarded(BX), R11
+	MOVQ	R11, stepSlot_forwarded(R10)
+	MOVQ	record_wait(BX), R11
+	MOVQ	R11, stepSlot_wait(R10)
+	INCQ	R9
+	MOVQ	R9, stepRingState_head(R8)
+	JMP	out
+full:
+	INCQ	stepRingState_lost(R8)
+out:
+	POPQ	BX
+	RET
 
 // runApp(records *[4]*record) is a C function, which the main thread calls
 // to run an application with no Go code of its own in between: it hands

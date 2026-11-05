@@ -69,6 +69,28 @@ loop:
 take:
 	SWPALD	ZR, (R22), R26
 	CBNZ	R26, got
+	// The main thread times its sleep in a step that it records.
+	CBZ	R20, sleep
+	CBZ	R19, sleep
+	MOVD	record_flags(R19), R1
+	TBZ	$const_recordTimedBit, R1, sleep
+	MOVD	$const_stepClock, R0
+	MOVD	linkState_clock(R21), R1
+	CALL	R1
+	MOVD	R0, 88(RSP)
+	MOVW	R24, R0
+	MOVD	linkState_semaphoreWait(R21), R1
+	CALL	R1
+	MOVD	$const_stepClock, R0
+	MOVD	linkState_clock(R21), R1
+	CALL	R1
+	MOVD	88(RSP), R1
+	SUB	R1, R0
+	MOVD	record_wait(R19), R1
+	ADD	R0, R1
+	MOVD	R1, record_wait(R19)
+	B	loop
+sleep:
 	MOVW	R24, R0
 	MOVD	linkState_semaphoreWait(R21), R1
 	CALL	R1
@@ -116,6 +138,14 @@ pop:
 	MOVD	R0, linkState_depth(R21)
 	B	post
 onmain:
+	// A call that a step forwarded, which a step that it records counts.
+	CBZ	R19, forwarded
+	MOVD	record_flags(R19), R1
+	TBZ	$const_recordTimedBit, R1, forwarded
+	MOVD	record_forwarded(R19), R1
+	ADD	$1, R1
+	MOVD	R1, record_forwarded(R19)
+forwarded:
 	MOVD	R26, R0
 	CALL	·callRecord(SB)
 
@@ -247,16 +277,33 @@ step:
 	MOVD	R20, record_flags(R19)
 	MOVD	ZR, record_next(R19)
 	MOVD	ZR, record_sem(R19)
+	MOVD	$·link(SB), R9
+	MOVD	linkState_stepsOn(R9), R10
+	CBZ	R10, hand
+	ORR	$const_recordTimed, R20
+	MOVD	R20, record_flags(R19)
+	MOVD	R16, record_index(R19)
+	MOVD	ZR, record_forwarded(R19)
+	MOVD	ZR, record_wait(R19)
+	MOVD	$const_stepClock, R0
+	MOVD	linkState_clock(R9), R9
+	CALL	R9
+	MOVD	R0, record_entry(R19)
+hand:
 
 	MOVD	R19, R0
 	CALL	·exchange(SB)
 
-	TBZ	$1, R20, returned
+	TBZ	$1, R20, timed
 	MOVD	record_r(R19), R0
-	CBZ	R0, returned
+	CBZ	R0, timed
 	MOVD	$·link(SB), R9
 	MOVD	linkState_autorelease(R9), R9
 	CALL	R9
+timed:
+	TBZ	$const_recordTimedBit, R20, returned
+	MOVD	R19, R0
+	CALL	·stepDone(SB)
 returned:
 	LDP	(record_r)(R19), (R0, R1)
 	FMOVD	(record_rd+0)(R19), F0
@@ -266,6 +313,55 @@ returned:
 	LDP	(const_trampolineRecord+16)(RSP), (R19, R20)
 	LDP	const_trampolineRecord(RSP), (R29, R30)
 	ADD	$TFRAME, RSP
+	RET
+
+// stepDone(rec *record) is a C function, which the main thread calls when a
+// step that it records returned: it writes the step to the ring, or counts
+// it as lost when the ring is full. It publishes the slot with head, which
+// the reader reads with acquire.
+TEXT ·stepDone(SB), NOSPLIT|NOFRAME, $0-0
+	SUB	$32, RSP
+	STP	(R29, R30), 0(RSP)
+	MOVD	R19, 16(RSP)
+	MOVD	RSP, R29
+	MOVD	R0, R19
+	MOVD	$const_stepClock, R0
+	MOVD	$·link(SB), R9
+	MOVD	linkState_clock(R9), R9
+	CALL	R9
+	MOVD	$·stepRing(SB), R9
+	MOVD	stepRingState_head(R9), R10
+	ADD	$stepRingState_tail, R9, R11
+	LDAR	(R11), R11
+	SUB	R11, R10, R11
+	CMP	$const_stepSlots, R11
+	BHS	full
+	AND	$(const_stepSlots-1), R10, R11
+	MOVD	$stepSlot__size, R12
+	MUL	R12, R11, R11
+	ADD	$stepRingState_slots, R9, R12
+	ADD	R11, R12, R12
+	MOVD	record_index(R19), R11
+	MOVD	R11, stepSlot_index(R12)
+	MOVD	record_entry(R19), R11
+	MOVD	R11, stepSlot_entry(R12)
+	MOVD	R0, stepSlot_ret(R12)
+	MOVD	record_forwarded(R19), R11
+	MOVD	R11, stepSlot_forwarded(R12)
+	MOVD	record_wait(R19), R11
+	MOVD	R11, stepSlot_wait(R12)
+	ADD	$1, R10
+	ADD	$stepRingState_head, R9, R11
+	STLR	R10, (R11)
+	B	out
+full:
+	MOVD	stepRingState_lost(R9), R10
+	ADD	$1, R10
+	MOVD	R10, stepRingState_lost(R9)
+out:
+	MOVD	16(RSP), R19
+	LDP	0(RSP), (R29, R30)
+	ADD	$32, RSP
 	RET
 
 // runApp(records *[4]*record) is a C function, which the main thread calls

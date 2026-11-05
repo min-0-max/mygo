@@ -36,12 +36,12 @@ func Block(b objc.Block) objc.Block {
 	}
 	invoke := word(p + blockInvoke)
 	if !isTrampoline(*invoke) {
-		*invoke = entry(*invoke, 0)
+		*invoke = entry(*invoke, 0, StepBlock, "")
 	}
 	if uint32(*word(p + blockFlags))&blockHasCopyDispose != 0 {
 		dispose := word(*word(p + blockDescriptor) + descriptorDispose)
 		if !isTrampoline(*dispose) {
-			*dispose = entry(*dispose, 0)
+			*dispose = uncountedEntry(*dispose, 0, StepBlock, "objc.block dispose")
 		}
 	}
 	return b
