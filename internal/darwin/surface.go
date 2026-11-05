@@ -159,6 +159,9 @@ type surface struct {
 	// the view changed size or scale since.
 	linkRunning bool
 	due         bool
+	// leftToDisplay tells that the last tick left the frame due to AppKit's
+	// display of the view (tick).
+	leftToDisplay bool
 	// deferred tells that the content left the last paced frame to draw
 	// later (FrameNow): the link keeps running meanwhile. soon tells that
 	// a frame waits for the backend's queue (drawSoon), asked for after
@@ -184,8 +187,8 @@ type surface struct {
 	sized         bool
 	width, height float64
 	backing, rate float64
-	cursor    platform.Cursor
-	inside    bool
+	cursor        platform.Cursor
+	inside        bool
 	// secondaryClick is set while the primary button is down for a secondary
 	// click: a Control-click, or a press of the secondary button that an event
 	// tap posted again as a primary one.
@@ -507,6 +510,29 @@ func (s *surface) SetFrameRate(fps float64) {
 	msgSetRateRange(s.link, sel("setPreferredFrameRateRange:"), r)
 }
 
+// tick draws the frame due at a tick of the display link, and reports
+// whether the link keeps running.
+func (s *surface) tick(displays func() bool) bool {
+	if !s.due && !s.deferred {
+		// No frame was asked for since the last refresh, nor does the
+		// content wait to draw the last one.
+		s.linkRunning = false
+		return false
+	}
+	if !s.leftToDisplay && displays() {
+		// AppKit displays the view in this pass, as after a resize (the
+		// view's needsDisplay tells nothing): the frame shows with the
+		// window's changes then. The frame stays due: a layer marked to
+		// display waits for a commit of Core Animation, which nothing need
+		// start, and what waits for the frame would wait as long. The next
+		// tick draws it when AppKit displayed nothing.
+		s.leftToDisplay = true
+		return true
+	}
+	s.frameNow(true)
+	return true
+}
+
 // FrameNow draws a frame at once, for one the display link's tick left to
 // draw until the renderer had a drawable.
 func (s *surface) FrameNow() {
@@ -528,6 +554,7 @@ func (s *surface) FrameNow() {
 // more: deferred holds only while the last frame sent was left.
 func (s *surface) frameNow(paced bool) {
 	s.resized = false
+	s.due, s.leftToDisplay = false, false
 	s.framePass = caPass
 	armPass()
 	s.lastFrame = time.Now()
@@ -1104,26 +1131,15 @@ func registerSurfaceClass() {
 		}),
 		method("mygoTick:", func(self id, _ objc.SEL, link id) {
 			s := b().surfaceOf(self)
-			if s != nil {
-				s.firings++
-			}
-			if s == nil || !s.due && !s.deferred {
-				// No frame was asked for since the last refresh, nor
-				// does the content wait to draw the last one.
+			if s == nil {
 				send(link, "setPaused:", 1)
-				if s != nil {
-					s.linkRunning = false
-				}
 				return
 			}
-			s.due = false
-			if sendBool(send(self, "layer"), "needsDisplay") {
-				// AppKit displays the view in this pass, as after a
-				// resize (the view's needsDisplay tells nothing): the
-				// frame shows with the window's changes then.
-				return
+			s.firings++
+			displays := func() bool { return sendBool(send(self, "layer"), "needsDisplay") }
+			if !s.tick(displays) {
+				send(link, "setPaused:", 1)
 			}
-			s.frameNow(true)
 		}),
 		method("mygoTimer:", func(self id, _ objc.SEL, timer id) {
 			// A closed window's view lives until its timer fires.
