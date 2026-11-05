@@ -438,6 +438,9 @@ func textStyles(ts *textStyle, set uint32) []inspDecl {
 	if set&setTabSize != 0 {
 		add("tab-size", num(ts.tabSize))
 	}
+	if set&setKeepAll != 0 {
+		add("word-break", "keep-all")
+	}
 	return ds
 }
 
