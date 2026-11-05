@@ -1996,6 +1996,72 @@ func (r *Renderer) releaseTextures() {
 	r.b.Opaque = true // Release empties the builder
 }
 
+// HeldTexture is a texture a renderer holds: what it is, its size in
+// texels, and the bytes the GPU allocated for it (allocatedSize).
+type HeldTexture struct {
+	Name  string
+	W, H  int
+	Bytes int
+}
+
+// heldTextures returns the textures releaseTextures frees, and the empty
+// texture bound where there is none: what a window's frames hold on the
+// GPU besides its drawables.
+func (r *Renderer) heldTextures() []HeldTexture {
+	var held []HeldTexture
+	add := func(name string, t id) {
+		if t != 0 {
+			held = append(held, HeldTexture{Name: name, W: int(send(t, "width")), H: int(send(t, "height")), Bytes: int(send(t, "allocatedSize"))})
+		}
+	}
+	add("empty", r.empty)
+	add("mask atlas", r.mask.tex)
+	add("color atlas", r.color.tex)
+	for _, t := range r.images {
+		add("image", t.tex)
+	}
+	for _, t := range r.canvases {
+		add("canvas", t.tex)
+		for i := range t.stops {
+			add("canvas stops", t.stops[i].tex)
+		}
+	}
+	for i := range r.stops {
+		add("stops", r.stops[i].tex)
+	}
+	for i := range r.blurred {
+		add("blurred image", r.blurred[i].tex)
+	}
+	for i := range r.blurTmp {
+		add("blur pass", r.blurTmp[i].tex)
+	}
+	for i := range r.formats {
+		for j := range r.formats[i].backdrop {
+			add("backdrop", r.formats[i].backdrop[j].tex)
+		}
+	}
+	return held
+}
+
+// heldBuffers returns the buffers of instances the frames and the canvases
+// hold, a buffer for each frame slot, with the bytes the GPU allocated
+// for each; W is its length.
+func (r *Renderer) heldBuffers() []HeldTexture {
+	var held []HeldTexture
+	add := func(name string, d *drawState) {
+		for i := range d.instBufs {
+			if b := d.instBufs[i]; b != 0 {
+				held = append(held, HeldTexture{Name: name, W: int(send(b, "length")), Bytes: int(send(b, "allocatedSize"))})
+			}
+		}
+	}
+	add("frame instances", &r.drawState)
+	for _, t := range r.canvases {
+		add("canvas instances", &t.drawState)
+	}
+	return held
+}
+
 // trimAfter is how long a window draws nothing before its spare drawables
 // go: about when the Metal driver frees its own memory of frames.
 const trimAfter = 2 * time.Second

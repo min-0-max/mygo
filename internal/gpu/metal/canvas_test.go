@@ -62,3 +62,40 @@ func TestTransientCanvas(t *testing.T) {
 	runtime.KeepAlive(layer)
 	runtime.KeepAlive(kept)
 }
+
+// What an offscreen renderer holds counts the texture of a canvas it drew,
+// as the GPU allocated it, and reading its frame back gives the pixels
+// drawn.
+func TestOffscreenHoldsACanvasAndReadsItsFrame(t *testing.T) {
+	o, err := NewOffscreen(64, 32)
+	if err != nil {
+		t.Skip("no Metal:", err)
+	}
+	defer o.Release()
+	empty := &scene.Scene{Width: 64, Height: 32}
+	if _, err := o.Render(empty); err != nil {
+		t.Fatal(err)
+	}
+	before := o.HeldTextureBytes()
+	cv := scene.NewCanvas(512, 256)
+	cv.Scene.Ops = []scene.Op{{Kind: scene.OpFill, Rect: scene.Rect{W: 512, H: 256}, Color: scene.Color{R: 37, G: 99, B: 235, A: 255}}}
+	s := &scene.Scene{Width: 64, Height: 32, Canvases: []*scene.Image{cv},
+		Ops: []scene.Op{{Kind: scene.OpImage, Rect: scene.Rect{W: 64, H: 32}, Image: cv, Src: scene.Rect{W: 512, H: 256}}}}
+	if _, err := o.Render(s); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := o.HeldTextureBytes()-before, 512*256*4; got < want {
+		t.Errorf("the canvas added %d bytes held, want at least its %d", got, want)
+	}
+	pix, err := o.Pixels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pix) != 64*32*4 {
+		t.Fatalf("%d bytes read, want %d", len(pix), 64*32*4)
+	}
+	if b, g, r, a := pix[0], pix[1], pix[2], pix[3]; b != 235 || g != 99 || r != 37 || a != 255 {
+		t.Errorf("first pixel BGRA %d %d %d %d, want 235 99 37 255", b, g, r, a)
+	}
+	runtime.KeepAlive(cv)
+}
