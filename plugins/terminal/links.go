@@ -12,9 +12,19 @@ import (
 // opens as it does hyperlinks.
 var urlPattern = regexp.MustCompile(`(?:https?|ftp|file)://[^\s"'<>` + "`" + `\x00-\x1f]+|mailto:[^\s"'<>` + "`" + `]+`)
 
-// proseDelimiters end a path printed in Chinese or Japanese prose, which
-// puts no space around it; a quoted path may hold them.
+// proseDelimiters end a path printed in CJK prose, which puts no space
+// around it; a quoted path may hold them.
 const proseDelimiters = "，。；：！？、（）【】《》「」『』"
+
+// proseTail finds what CJK prose attaches to the end of a path with no
+// space: from a Han, Hiragana, Katakana or Hangul letter right after an
+// ASCII letter, a digit or a closing bracket to the end of the token, when
+// it holds no dot, slash or colon. It is a particle or the rest of the
+// clause, as the Korean 를 of main.go를 or the Japanese を開きます of
+// main.goを開きます, not part of the name; report报告.md keeps its letters,
+// as a dot follows them. A name that itself ends in such letters after
+// ASCII, as docs/notes메모, loses them too unless it is quoted.
+var proseTail = regexp.MustCompile(`[A-Za-z0-9)\]}]([\p{Han}\p{Hiragana}\p{Katakana}\p{Hangul}][^./:]*)$`)
 
 // pathToken finds what may be a file path programs print as text, unquoted:
 // a run of anything but spaces, quotes and proseDelimiters.
@@ -119,9 +129,13 @@ func pathOf(tok string) (path string, a, b int) {
 	a, b = 0, len(tok)
 	quoted := tok[0] == '"' || tok[0] == '\''
 	if !quoted {
+		if m := proseTail.FindStringSubmatchIndex(tok); m != nil {
+			tok = tok[:m[2]]
+		}
 		// Brackets and emphasis around a path are not part of it, nor is
-		// the call a path is the argument of, as write(notes.md); a bracket
-		// the path opens is, as icon_(copy).png.
+		// the call or the word a path is the argument of, as write(notes.md)
+		// or 파일(config/app.json); a bracket the path opens is, as
+		// icon_(copy).png.
 		a = len(tok) - len(strings.TrimLeft(tok, "([{*"))
 		// The name of an option or a variable the path is the value of,
 		// as --out=build/app.js or PATH=/usr/bin, is not part of it.

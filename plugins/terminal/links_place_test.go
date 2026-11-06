@@ -5,9 +5,10 @@ import (
 	"testing"
 )
 
-// Paths as compilers, GitHub and prose in Chinese print them, the place in
-// the file written path:line:col however it was printed. Wide characters
-// take two columns, as in a terminal.
+// Paths as compilers, GitHub and CJK prose print them, the place in the file
+// written path:line:col however it was printed; Chinese prose ends a path at
+// full-width punctuation, and Korean and Japanese attach particles to it.
+// Wide characters take two columns, as in a terminal.
 func TestPathAtPlacesQuotesAndProse(t *testing.T) {
 	for _, c := range []struct{ row, at, want string }{
 		{"error: src/main.go:42:5: failed", "main", "src/main.go:42:5"},
@@ -25,6 +26,23 @@ func TestPathAtPlacesQuotesAndProse(t *testing.T) {
 		{"见：src/main.go:42:5，错误", "main", "src/main.go:42:5"},
 		{"已保存 (assets/icon_(copy).png)，继续", "icon", "assets/icon_(copy).png"},
 		{`文件 "assets/图标（新版），副本.png"，已保存`, "新版", "assets/图标（新版），副本.png"},
+		{"src/main.go를 열었습니다", "main", "src/main.go"},
+		{"src/main.go에서 오류", "main", "src/main.go"},
+		{"main.go의 함수", "main", "main.go"},
+		{"src/main.go을", "main", "src/main.go"},
+		{"src/main.go를, 그리고", "main", "src/main.go"},
+		{"src/README를 보라", "README", "src/README"},
+		{"src/app.ts(12)에서 오류", "app", "src/app.ts:12"},
+		{"설정 파일(config/app.json)을 고쳤다", "config", "config/app.json"},
+		{"src/main.goを開きます", "main", "src/main.go"},
+		{"src/main.goが壊れた", "main", "src/main.go"},
+		{"src/main.goをコピーした", "main", "src/main.go"},
+		{"docs/notes메모 파일", "notes", "docs/notes"},
+		{`"docs/notes메모" 파일`, "notes", "docs/notes메모"},
+		{"src/a.go:12에서 오류", "a.go", "src/a.go:12"},
+		{"파일 src/한글.go:4 오류", "한글", "src/한글.go:4"},
+		{"ファイル src/日本.go:4 にエラー", "日本", "src/日本.go:4"},
+		{"见 report报告.md 文件", "report", "report报告.md"},
 		{"(../README.md),", "README", "../README.md"},
 		{"Makefile:4", "Make", "Makefile:4"},
 		{"目录 /tmp/project/", "project", "/tmp/project/"},

@@ -305,10 +305,18 @@ term, err := terminal.New(terminal.Options{
 - `OpenLink` takes the links Command+click opens, on the main thread,
   and with it file paths printed as text too (`/abs/path`, `~/notes.md`,
   `./a.go`, `src/app.go:12:3`, `main.go:250`, `app.ts(12,3)`,
-  `app.go#L12C3`, a quoted path with spaces, a path in Chinese prose with
+  `app.go#L12C3`, a quoted path with spaces, a path in CJK prose with
   no space around it), the place in the file as `path:line:col` however
   it was printed, and without the quotes: a relative path is the
-  program's, as of `Dir`. It reports whether it opened the
+  program's, as of `Dir`. In CJK prose a path ends at full-width
+  punctuation, and what follows an ASCII letter, a digit or a closing
+  bracket from a Han, Hiragana, Katakana or Hangul letter to the end of
+  the word, holding no `.`, `/` or `:`, is a particle or the rest of the
+  clause rather than part of it:
+  `main.go를` opens `main.go`, `src/main.goを開きます` opens `src/main.go`,
+  `파일(config/app.json)을` opens `config/app.json`, and `report报告.md`
+  stays whole; a name that ends in such letters is quoted to keep them,
+  as `"docs/notes메모"`. It reports whether it opened the
   link; a hyperlink or a URL it leaves opens with the system, as every one
   does without `OpenLink`. An app opens a remote shell's paths in a
   preview of its own this way, rather than the system opening them
