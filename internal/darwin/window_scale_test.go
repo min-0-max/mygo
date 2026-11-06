@@ -76,7 +76,7 @@ func windowScaleMain() int {
 			// change of the color space.
 			deliver()
 			fmt.Printf("%s same scale: %v\n", c.name, h.heard)
-			w.backing = scale + 1
+			w.heardScale = scale + 1
 			if c.surface {
 				w.surface.backing = scale + 1
 			}
@@ -92,7 +92,7 @@ func windowScaleMain() int {
 			}
 			h.heard = nil
 			w.Close()
-			w.backing = scale + 1
+			w.heardScale = scale + 1
 			deliver()
 			fmt.Printf("%s closed: %v\n", c.name, h.heard)
 		})

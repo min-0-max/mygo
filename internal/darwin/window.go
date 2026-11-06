@@ -116,7 +116,7 @@ type window struct {
 	downloads     map[id][2]string // WKDownload: URL and path
 	attention     int              // the request of FlashFrame
 	maximized     bool
-	backing       float64 // the scale the handler last heard of
+	heardScale    float64 // the scale the handler last heard of
 	// auxiliary tells that SetVisibleOnAllWorkspaces made a window that
 	// cannot go full screen an auxiliary of full-screen Spaces, to undo.
 	auxiliary     bool
@@ -214,7 +214,7 @@ func (w *window) create() {
 	w.win = msgInitWindow(send(class(cls), "alloc"), sel("initWithContentRect:styleMask:backing:defer:"),
 		content, style, nsBackingStoreBuffered, false)
 	send(w.win, "setReleasedWhenClosed:", 0)
-	w.backing = msgFloat(w.win, sel("backingScaleFactor"))
+	w.heardScale = msgFloat(w.win, sel("backingScaleFactor"))
 	w.delegate = alloc("MyGoWindowDelegate")
 	send(w.win, "setDelegate:", uintptr(w.delegate))
 	send(w.win, "setTitle:", uintptr(nsString(o.Title)))
@@ -308,7 +308,7 @@ func (w *window) createFlyout() {
 	w.win = msgInitWindow(send(class("MyGoFlyout"), "alloc"), sel("initWithContentRect:styleMask:backing:defer:"),
 		content, styleNonactivatingPanel, nsBackingStoreBuffered, false)
 	send(w.win, "setReleasedWhenClosed:", 0)
-	w.backing = msgFloat(w.win, sel("backingScaleFactor"))
+	w.heardScale = msgFloat(w.win, sel("backingScaleFactor"))
 	w.delegate = alloc("MyGoWindowDelegate")
 	send(w.win, "setDelegate:", uintptr(w.delegate))
 	send(w.win, "setTitle:", uintptr(nsString(o.Title)))
@@ -2246,8 +2246,8 @@ func (w *window) DroppedFiles() []string {
 // AppKit also calls for the same scale, as a view goes into a window or the
 // color space changes.
 func (w *window) backingChanged() {
-	if scale := msgFloat(w.win, sel("backingScaleFactor")); scale != w.backing {
-		w.backing = scale
+	if scale := msgFloat(w.win, sel("backingScaleFactor")); scale != w.heardScale {
+		w.heardScale = scale
 		w.h.ScaleChanged(scale)
 	}
 }
