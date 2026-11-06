@@ -119,8 +119,8 @@ func loadChecks() {
 // thread by CallingThreadReceivers.
 func CheckSend(recv, sel uintptr) {
 	loadChecks()
-	c, d := &checks, &decisions
-	cls := d.objectGetClass(recv)
+	c := &checks
+	cls := classOf(recv)
 	key := [2]uintptr{cls, sel}
 	c.mu.Lock()
 	ok, seen := c.messages[key]
@@ -219,7 +219,7 @@ func typeName(obj uintptr) string {
 	const utf8 = 0x08000100 // kCFStringEncodingUTF8
 	loadChecks()
 	c, d := &checks, &decisions
-	id := d.getTypeID(obj)
+	id := typeIDOf(obj)
 	c.mu.Lock()
 	name, seen := c.types[id]
 	c.mu.Unlock()

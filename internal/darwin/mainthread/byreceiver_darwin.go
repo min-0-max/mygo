@@ -24,10 +24,10 @@ var decisions struct {
 	groups                  []decidedGroup
 	mu                      sync.Mutex
 	byClass                 map[[2]uintptr]bool
-	getTypeID               func(obj uintptr) uintptr
+	getTypeID               uintptr // CFGetTypeID, called through typeIDOf
 	copyTypeIDDescription   func(typeID uintptr) uintptr
 	stringGetCString        func(s uintptr, buf *byte, size int, encoding uint32) bool
-	objectGetClass          func(obj uintptr) uintptr
+	objectGetClass          uintptr // object_getClass, called through classOf
 	classIsMetaClass        func(cls uintptr) bool
 	classGetName            func(cls uintptr) string
 	classGetSuperclass      func(cls uintptr) uintptr
@@ -67,13 +67,13 @@ func loadDecisions(cf uintptr) error {
 	d.cfRelease = sym(cf, "CFRelease")
 	d.blockCopy = sym(libSystem, "_Block_copy")
 	d.blockRelease = sym(libSystem, "_Block_release")
+	d.getTypeID = sym(cf, "CFGetTypeID")
+	d.objectGetClass = sym(libObjC, "object_getClass")
 	if err != nil {
 		return err
 	}
-	purego.RegisterLibFunc(&d.getTypeID, cf, "CFGetTypeID")
 	purego.RegisterLibFunc(&d.copyTypeIDDescription, cf, "CFCopyTypeIDDescription")
 	purego.RegisterLibFunc(&d.stringGetCString, cf, "CFStringGetCString")
-	purego.RegisterLibFunc(&d.objectGetClass, libObjC, "object_getClass")
 	purego.RegisterLibFunc(&d.classIsMetaClass, libObjC, "class_isMetaClass")
 	purego.RegisterLibFunc(&d.classGetName, libObjC, "class_getName")
 	purego.RegisterLibFunc(&d.classGetSuperclass, libObjC, "class_getSuperclass")
@@ -134,13 +134,12 @@ func ByReceiver(fn uintptr, args ...uintptr) uintptr {
 	}
 	if len(args) == 0 || args[0] == 0 || callingThread(fn, args) {
 		checkCalling(fn, args)
-		r, _, _ := purego.SyscallN(fn, args...)
-		return r
+		return callC(fn, args...)
 	}
 	d := &decisions
 	if fn == d.msgSend && len(args) > 1 && args[1] == d.autorelease &&
 		atomic.LoadUintptr(&link.running) != 0 && !IsMainThread() {
-		panic("mainthread: autorelease of " + d.classGetName(d.objectGetClass(args[0])) + " off the worker")
+		panic("mainthread: autorelease of " + d.classGetName(classOf(args[0])) + " off the worker")
 	}
 	all := make([]any, len(args))
 	for i, a := range args {
@@ -168,7 +167,7 @@ func callingThread(fn uintptr, args []uintptr) bool {
 		if !ok {
 			return false
 		}
-		cls := d.objectGetClass(recv)
+		cls := classOf(recv)
 		key := [2]uintptr{cls, args[1]}
 		d.mu.Lock()
 		v, seen := d.byClass[key]
@@ -192,7 +191,7 @@ func callingThread(fn uintptr, args []uintptr) bool {
 func cfType(recv uintptr) CFType {
 	const utf8 = 0x08000100 // kCFStringEncodingUTF8
 	d := &decisions
-	typeID := d.getTypeID(recv)
+	typeID := typeIDOf(recv)
 	d.mu.Lock()
 	t, seen := d.cfByID[typeID]
 	d.mu.Unlock()
@@ -214,6 +213,13 @@ func cfType(recv uintptr) CFType {
 	ByReceiver(d.cfRelease, desc)
 	return t
 }
+
+// typeIDOf returns the Core Foundation type ID of obj, and classOf the class
+// of obj. Each call of ByReceiver reads one of them, so they call through
+// callC, which allocates nothing.
+func typeIDOf(obj uintptr) uintptr { return callC(decisions.getTypeID, obj) }
+
+func classOf(obj uintptr) uintptr { return callC(decisions.objectGetClass, obj) }
 
 // decideClass reports whether message name to recv, an instance of cls,
 // runs on the calling thread.

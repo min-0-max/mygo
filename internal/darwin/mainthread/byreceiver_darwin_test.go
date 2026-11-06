@@ -64,6 +64,41 @@ func TestByReceiverDecidesACallByItsReceiver(t *testing.T) {
 	runtime.KeepAlive(&descriptor)
 }
 
+// A call that ByReceiver decided once for the type or the class of its
+// receiver allocates nothing when it comes again: the text engine releases
+// its Core Foundation objects at the end of a frame, and a window that
+// shows nothing new still draws frames.
+func TestARepeatedDecisionAllocatesNothing(t *testing.T) {
+	if err := loadNative(); err != nil {
+		t.Fatal(err)
+	}
+	d := &decisions
+	cf := "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+	cstr := func(s string) *byte { b := append([]byte(s), 0); return &b[0] }
+	str := direct[uintptr](dlsym(t, cf, "CFStringCreateWithCString"), uintptr(0), cstr("x"), uint32(0x08000100))
+	release := uintptr(objc.RegisterName("release"))
+	cases := []struct {
+		name string
+		call func()
+	}{
+		{"CFRetain and CFRelease of a CFString", func() {
+			ByReceiver(d.cfRetain, str)
+			ByReceiver(d.cfRelease, str)
+		}},
+		{"CFRetain and the release message of an NSString", func() {
+			ByReceiver(d.cfRetain, str)
+			ByReceiver(d.msgSend, str, release)
+		}},
+	}
+	for _, c := range cases {
+		c.call()
+		if n := testing.AllocsPerRun(100, c.call); n != 0 {
+			t.Errorf("%s allocates %v times", c.name, n)
+		}
+	}
+	ByReceiver(d.cfRelease, str)
+}
+
 // A block that Block set up runs on the worker when the main thread
 // calls it.
 func TestABlockThatTheMainThreadCallsRunsOnTheWorker(t *testing.T) {
