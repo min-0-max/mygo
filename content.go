@@ -412,6 +412,17 @@ func contentLocaleChanged() {
 	}
 }
 
+// contentAppResigned tells the Content of every window that the pointer
+// left it: the tracking areas of an application that is not active hear
+// nothing more, so a hover and a tip would stay until it comes back.
+func contentAppResigned() {
+	for _, w := range Windows() {
+		if c := w.conn; c != nil && c.Event != nil {
+			c.Event(platform.SurfaceEvent{Kind: platform.PointerLeave})
+		}
+	}
+}
+
 func contentThemeChanged() {
 	for _, w := range Windows() {
 		if c := w.conn; c != nil && c.ThemeChanged != nil {
