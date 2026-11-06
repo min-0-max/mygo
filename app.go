@@ -64,6 +64,14 @@ type Application struct {
 	stateStore WindowStateStore
 	finished   sync.Once
 
+	// noSelfActivation is SetSelfActivation(false), noSignalQuit
+	// SetSignalQuit(false) and noNotificationDelegate
+	// SetNotificationDelegate(false).
+	noSelfActivation       bool
+	windowShow             func(window uintptr)
+	noSignalQuit           bool
+	noNotificationDelegate bool
+
 	// quitting is only touched on the main thread.
 	quitting    bool
 	stopping    bool // the quit sequence ran: the event loop is to stop (main thread)
@@ -99,7 +107,7 @@ var App = &Application{readyCh: make(chan struct{}), Dock: &Dock{}, JumpList: &J
 // of main.
 //
 // SIGINT and SIGTERM quit the application like Quit; a second signal exits
-// immediately.
+// immediately. SetSignalQuit(false) leaves the signals to the application.
 //
 // When the MYGO_GENERATE environment variable is set (see `mygo generate`),
 // Run writes the TypeScript client for the bound services to that path, or
@@ -121,11 +129,19 @@ func (a *Application) Run() error {
 	a.mu.Unlock()
 	go cleanUpdateLeftovers()
 
+	return backend().Run(a.start, a.finish)
+}
+
+// start is the Go code of Run before the event loop.
+func (a *Application) start() error {
 	b := backend()
 	if err := b.Init(appHandler{}, platform.AppOptions{
-		Name:             a.Name(),
-		ActivationPolicy: string(a.ActivationPolicy()),
-		DMABUFRenderer:   string(a.dmabuf),
+		Name:                   a.Name(),
+		ActivationPolicy:       string(a.ActivationPolicy()),
+		DMABUFRenderer:         string(a.dmabuf),
+		NoSelfActivation:       a.noSelfActivation,
+		WindowShow:             a.windowShow,
+		NoNotificationDelegate: a.noNotificationDelegate,
 	}); err != nil {
 		return err
 	}
@@ -140,12 +156,12 @@ func (a *Application) Run() error {
 	if m := a.Dock.Menu(); m != nil {
 		b.App().SetDockMenu(m.snapshot())
 	}
-	quitOnSignals()
+	if !a.noSignalQuit {
+		quitOnSignals()
+	}
 	// Run whatever was scheduled before the event loop existed.
 	b.Signal()
-	err := b.Run()
-	a.finish()
-	return err
+	return nil
 }
 
 // needsApp panics when main calls something that needs the running app
@@ -423,6 +439,8 @@ func (a *Application) ActivationPolicy() ActivationPolicy {
 }
 
 // SetActivationPolicy changes how the app appears in the Dock (macOS).
+// Changed to ActivationPolicyRegular while the app runs, it also
+// activates the app, unless SetSelfActivation(false).
 func (a *Application) SetActivationPolicy(p ActivationPolicy) {
 	a.mu.Lock()
 	a.policy = p
@@ -445,6 +463,67 @@ func (a *Application) SetDMABUFRenderer(r DMABUFRenderer) {
 	}
 	a.mu.Lock()
 	a.dmabuf = r
+	a.mu.Unlock()
+}
+
+// SetSelfActivation sets whether the application activates itself on
+// macOS: as it finishes launching with the regular activation policy, so
+// that a plain executable (go run) comes to the front, and as Window.Show
+// shows a window that is not a panel, and SetActivationPolicy activates it
+// as the policy changes to regular. It does by default. With false, the
+// launch leaves activation to the system, which activates an application
+// that it launches unless the launch asked it not to (open -g),
+// Window.Show makes the window key and orders it front without activating
+// the application, and a change of the policy activates nothing: only
+// what asks for it does, such as Focus, App.Focus, a dialog, the about
+// panel and the user's press. Call it before Run; other systems ignore it.
+func (a *Application) SetSelfActivation(on bool) {
+	a.mu.Lock()
+	a.noSelfActivation = !on
+	a.mu.Unlock()
+}
+
+// SetWindowShow sets what Window.Show does to a window that shows as any
+// window, in place of making it key and ordering it front: the application
+// decides where the window goes. It receives the NSWindow on the main
+// goroutine. A child window over its parent, a flyout, a sheet and
+// ShowInactive keep their own order. Call it before Run; other systems
+// ignore it.
+func (a *Application) SetWindowShow(show func(window uintptr)) {
+	a.mu.Lock()
+	a.windowShow = show
+	a.mu.Unlock()
+}
+
+// WindowShow returns what SetWindowShow set.
+func (a *Application) WindowShow() func(window uintptr) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.windowShow
+}
+
+// SetSignalQuit sets whether Run quits the application on SIGINT and
+// SIGTERM, as Quit does, and exits at once on a second signal, on macOS
+// and Linux. It does by default. With false, Run handles no signal, and
+// the application handles them itself (os/signal), or leaves them to
+// their default action, which ends the process without the quit. Call it
+// before Run; Windows has no such signals.
+func (a *Application) SetSignalQuit(on bool) {
+	a.mu.Lock()
+	a.noSignalQuit = !on
+	a.mu.Unlock()
+}
+
+// SetNotificationDelegate sets whether MyGo sets the delegate of the
+// notification center on macOS, which shows notifications while the
+// application is in front and reports their clicks to the notifications'
+// OnClick listeners and OnNotificationClick. It does by default, as the
+// application launches, so that the click that launched it arrives too.
+// With false, the application sets the delegate itself, and those
+// listeners hear no click. Call it before Run; other systems ignore it.
+func (a *Application) SetNotificationDelegate(on bool) {
+	a.mu.Lock()
+	a.noNotificationDelegate = !on
 	a.mu.Unlock()
 }
 

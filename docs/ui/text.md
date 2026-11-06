@@ -75,6 +75,13 @@ directional character, as numbers, read right to left too.
 `SingleLine` keeps text on one line, cut with an ellipsis, `MaxLines`
 limits it to a few, and `Ellipsis(" →")` ends what they cut with another
 mark; `NoWrap` keeps its lines whole, breaking them only at newlines.
+`KeepAll` breaks no line between two letters or digits, as CSS's
+`word-break: keep-all`: lines of Hangul, Han and kana, which may otherwise
+break between any two of their characters, break where a space or
+punctuation allows it, as lines of Latin words do. The elements inside the
+element inherit it. A word wider than the line still breaks, as any word
+does, where CSS needs `overflow-wrap: break-word` for that; with
+`TextShape.NoBreakWords` it overflows.
 `Balance` wraps text into lines of about the same width, as CSS's
 `text-wrap: balance`: a heading that takes two lines splits near its
 middle instead of leaving one word alone on the second. It keeps the

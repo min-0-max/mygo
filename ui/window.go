@@ -2,12 +2,14 @@ package ui
 
 import (
 	"errors"
+	"image"
 	"log"
 	"os"
 	"slices"
 	"time"
 
 	"github.com/egoist/mygo/i18n"
+	"github.com/egoist/mygo/internal/gpu"
 	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/internal/raster"
 	"github.com/egoist/mygo/internal/scene"
@@ -20,6 +22,10 @@ import (
 // mygo.WindowOptions.Content. Create it with View.
 type Content struct {
 	view func(*context)
+	// hosts are the windows the content shows in, as they attached.
+	hosts []*windowHost
+	// recorder hears the frames of those windows (RecordFrames).
+	recorder *FrameRecorder
 }
 
 // View returns the content of a window whose user interface view builds,
@@ -77,9 +83,11 @@ func FontFamilies() []FontFamily {
 
 // AttachContent connects the content to a window; package mygo calls it.
 func (v *Content) AttachContent(conn *surface.Conn) {
-	h := &windowHost{conn: conn}
+	h := &windowHost{conn: conn, content: v}
 	rt := newRuntime(v.view, h)
 	h.rt = rt
+	rt.recorder = v.recorder
+	v.hosts = append(v.hosts, h)
 	conn.Event = h.event
 	conn.ThemeChanged = func() {
 		// The interface font is part of the appearance.
@@ -95,6 +103,8 @@ func (v *Content) AttachContent(conn *surface.Conn) {
 	}
 	conn.Capture = h.capture
 	conn.Detach = h.detach
+	conn.AfterPresent = h.afterPresent
+	conn.HoldFrames = h.holdFrames
 	if conn.ContentSize != nil && conn.FitWidth != nil {
 		rt.fit = newFitter(conn.FitWidth, conn.ContentSize)
 		conn.Fit = h.fit
@@ -118,7 +128,10 @@ func (v *Content) AttachContent(conn *surface.Conn) {
 type windowHost struct {
 	conn *surface.Conn
 	rt   *engine
-	gpu  gpuRenderer
+	// content is the Content the window shows, nil in tests that make
+	// the host themselves.
+	content *Content
+	gpu     gpuRenderer
 	// gpuTried tells that the first frame tried the GPU, onGPU that its
 	// renderer drew on a GPU, degraded that one drawing in software took
 	// its place, and gpuSince when the renderer was made. After a failure,
@@ -134,6 +147,8 @@ type windowHost struct {
 	last     *scene.Scene
 	// lastFrame is when the last frame was presented.
 	lastFrame time.Time
+	// facts is what came of the frame presented last (FrameRecord).
+	facts gpu.FrameFacts
 	// framing tells that the surface asked for the frame being drawn, and
 	// frameAsked that the content asked the surface for a frame that has
 	// not come yet.
@@ -164,6 +179,15 @@ type windowHost struct {
 	// the web views.
 	placed []platform.WebViewPlacement
 	views  []NativeWebView
+	// natives is where the application shows the native view elements,
+	// misplaced that one was logged, and transact that a frame is to show
+	// a change of the two, until one presents.
+	natives   []platform.NativeViewPlacement
+	misplaced bool
+	transact  bool
+	// holding tells that the window holds its frames (holdFrames), and
+	// heldFrame that a frame was asked for meanwhile.
+	holding, heldFrame bool
 	// glassPlaced is where the surface shows the system's glass.
 	glassPlaced []platform.GlassPlacement
 	// waiting tells that a frame paced by the display waits for waitingOn,
@@ -178,6 +202,17 @@ type windowHost struct {
 	// refresh paces the frames drawn in memory on a surface that shows
 	// them at once (platform.RefreshSurface); nil until one is.
 	refresh *refreshWaiter
+	// notices wait for what comes of the next frame the surface asks for
+	// (afterPresent).
+	notices []func(platform.Presentation, error)
+}
+
+// presentNotifier is a GPU renderer that tells what came of a frame
+// (Metal's): RenderNotice draws s as Render does, then gives done what
+// came of it once, on the main thread, or, for a frame it dropped for the
+// one drawn after it, calls again, unless it returns an error.
+type presentNotifier interface {
+	RenderNotice(s *scene.Scene, done func(platform.Presentation, error), again func()) error
 }
 
 // displayWaiter is a GPU renderer that waits for the display off the main
@@ -328,6 +363,13 @@ func (h *windowHost) event(ev platform.SurfaceEvent) bool {
 		h.requestFrame()
 		return false
 	}
+	if ev.Kind == platform.WebViewTabOut && ev.View != 0 {
+		i := slices.IndexFunc(h.natives, func(p platform.NativeViewPlacement) bool { return p.View == ev.View })
+		if i >= 0 {
+			h.rt.webViewTabOut(nativeElement{ev.View, h.natives[i].KeyView}, ev.Mods&platform.ModShift != 0)
+		}
+		return false
+	}
 	if ev.Kind == platform.WebViewTabOut || ev.Kind == platform.WebViewKey {
 		i := slices.IndexFunc(h.placed, func(p platform.WebViewPlacement) bool { return p.WebView == ev.WebView })
 		switch {
@@ -343,6 +385,11 @@ func (h *windowHost) event(ev platform.SurfaceEvent) bool {
 		if r, ok := h.gpu.(invalidator); ok {
 			r.Invalidate()
 		}
+	}
+	if ev.Kind == platform.SurfaceFrame && h.holding {
+		h.heldFrame = true
+		h.frameAsked = false
+		return false
 	}
 	if ev.Kind == platform.SurfaceFrame {
 		if ev.Paced && h.waitDisplay(time.Now()) {
@@ -428,11 +475,13 @@ const frameIdle = 2 * time.Second
 
 func (h *windowHost) refreshRate() float32 { return float32(h.conn.Surface.RefreshRate()) }
 
-// occluded reports whether nothing of the window shows: never before its
-// first frame reached the surface, which a window made hidden waits for
-// to become ready to show (OnReadyToShow), though it shows nothing yet.
+// occluded reports whether nothing of the window shows, which holds its
+// frames: never before its first frame reached the surface, which a window
+// made hidden waits for to become ready to show (OnReadyToShow), though it
+// shows nothing yet, nor for a window drawing its frames out of sight
+// (surface.Conn.DrawWhileOccluded).
 func (h *windowHost) occluded() bool {
-	if !h.shown {
+	if !h.shown || h.conn.DrawWhileOccluded {
 		return false
 	}
 	s, ok := h.conn.Surface.(platform.OccludableSurface)
@@ -453,6 +502,7 @@ func (h *windowHost) present(s *scene.Scene) {
 	}
 	h.last, h.path = s, ""
 	defer h.recheck()
+	h.facts = gpu.FrameFacts{Outcome: gpu.FrameUndamaged}
 	if s.Width <= 0 || s.Height <= 0 {
 		return
 	}
@@ -465,6 +515,7 @@ func (h *windowHost) present(s *scene.Scene) {
 	if !h.framing {
 		// A frame built outside the surface's, for a capture, is shown by
 		// the surface's next.
+		h.facts.Outcome = gpu.FrameHeld
 		h.requestFrame()
 		return
 	}
@@ -483,7 +534,22 @@ func (h *windowHost) present(s *scene.Scene) {
 	h.armIdle(frameIdle)
 	h.useWide(s, now)
 	defer h.ready()
-	if h.render(s) {
+	done, again := h.takeNotices()
+	if s.Transact = h.transact; s.Transact {
+		// A frame that shows nothing of the change leaves it to the next.
+		told := done
+		done = func(p platform.Presentation, err error) {
+			if p == platform.Presented {
+				h.transact = false
+			}
+			told(p, err)
+		}
+	}
+	if h.render(s, done, again) {
+		h.facts = gpu.FrameFacts{Outcome: gpu.FrameImmediate, Damage: s.Width * s.Height}
+		if f, ok := h.gpu.(frameReporter); ok {
+			h.facts = f.FrameFacts()
+		}
 		h.path = "drawn on the GPU"
 		if h.degraded {
 			h.path = "drawn by the GPU renderer in software"
@@ -493,12 +559,95 @@ func (h *windowHost) present(s *scene.Scene) {
 	h.path = "drawn in memory"
 	damage := h.soft.Render(s)
 	m := &h.soft.Image
+	presented := platform.Presented
+	h.facts = gpu.FrameFacts{Outcome: gpu.FrameImmediate, Damage: s.Width * s.Height}
 	if d, ok := h.conn.Surface.(platform.DamageSurface); ok {
 		d.PresentDamage(m.Pix, m.Stride, m.W, m.H, damage)
+		h.facts.Damage = gpu.DamageArea(damage, true, 0, 0)
+		if len(damage) == 0 {
+			presented = platform.PresentNoDamage
+			h.facts.Outcome = gpu.FrameUndamaged
+		}
 	} else {
 		h.conn.Surface.PresentPixels(m.Pix, m.Stride, m.W, m.H)
 	}
 	h.refreshPresented()
+	done(presented, nil)
+}
+
+// afterPresent has fn run once with what comes of the next frame the
+// surface asks for, which it asks for, built anew (surface.Conn.AfterPresent):
+// at once while the window holds its frames, as while nothing of it shows,
+// or once it closed, as no frame comes then.
+func (h *windowHost) afterPresent(fn func(platform.Presentation, error)) {
+	switch {
+	case h.detached:
+		fn(platform.PresentClosed, nil)
+	case h.holding || h.occluded():
+		fn(platform.PresentHeld, nil)
+	default:
+		h.notices = append(h.notices, fn)
+		h.rt.changed()
+	}
+}
+
+// frameHolder is a GPU renderer that keeps its last frame as the window
+// holds its frames (Metal's): HoldFrames(true) drops the frame waiting for
+// its drawable, which would present while the window holds its frames,
+// and has the frame shown stay as drawn; HoldFrames(false) ends that.
+type frameHolder interface{ HoldFrames(hold bool) }
+
+// holdFrames keeps the surface's frames from drawing while hold is set,
+// those that the system asks for among them, and draws one once it is not
+// if one was asked for meanwhile (surface.Conn.HoldFrames). The notices
+// waiting hear that the window holds its frames.
+func (h *windowHost) holdFrames(hold bool) {
+	if h.holding == hold {
+		return
+	}
+	h.holding = hold
+	if g, ok := h.gpu.(frameHolder); ok {
+		g.HoldFrames(hold)
+	}
+	switch {
+	case hold:
+		h.framesHeld()
+	case h.detached:
+	case h.heldFrame || h.frameAsked:
+		h.heldFrame = false
+		h.requestFrame()
+	}
+}
+
+// takeNotices takes the notices waiting for what comes of the frame being
+// presented: done answers them, and again has them wait for the next
+// frame, which it asks for, as the frame was dropped for that one, which
+// shows what it would have; once the window closed, again answers them so.
+func (h *windowHost) takeNotices() (done func(platform.Presentation, error), again func()) {
+	notices := h.notices
+	h.notices = nil
+	done = func(p platform.Presentation, err error) {
+		for _, fn := range notices {
+			fn(p, err)
+		}
+	}
+	again = func() {
+		if h.detached {
+			done(platform.PresentClosed, nil)
+			return
+		}
+		h.notices = append(h.notices, notices...)
+		h.rt.changed()
+	}
+	return done, again
+}
+
+// framesHeld tells the notices waiting that the window holds its frames:
+// the frame they wait for draws nothing, or waits until some of the window
+// shows.
+func (h *windowHost) framesHeld() {
+	done, _ := h.takeNotices()
+	done(platform.PresentHeld, nil)
 }
 
 // ready tells the surface, after the first frame, that the frame reached
@@ -576,13 +725,20 @@ func (h *windowHost) screenWide() bool {
 	return ok && w.WideGamut()
 }
 
-// render draws s with the GPU renderer and reports whether it did. One
-// that fails gives way to another made at once, in case the GPU is back
-// already, or another, or Windows' software rasterizer, can draw; when
-// that fails too, frames are drawn in memory until a later try.
-func (h *windowHost) render(s *scene.Scene) bool {
+// render draws s with the GPU renderer and reports whether it did, then
+// gives done what came of the frame. One that fails gives way to another
+// made at once, in case the GPU is back already, or another, or Windows'
+// software rasterizer, can draw; when that fails too, frames are drawn in
+// memory until a later try. done and again go with the frame drawn in
+// place of one that failed (presentNotifier).
+func (h *windowHost) render(s *scene.Scene, done func(platform.Presentation, error), again func()) bool {
 	for try := 0; h.gpu != nil; try++ {
-		err := h.gpu.Render(s)
+		var err error
+		if n, ok := h.gpu.(presentNotifier); ok {
+			err = n.RenderNotice(s, done, again)
+		} else if err = h.gpu.Render(s); err == nil {
+			done(platform.Presented, nil)
+		}
 		if err == nil {
 			return true
 		}
@@ -643,6 +799,10 @@ func (h *windowHost) makeGPU() {
 		// Frames waiting for the display draw through the main thread.
 		p.SetPost(h.conn.Post)
 	}
+	if p, ok := r.(interface{ SetRefreshRate(func() float64) }); ok {
+		p.SetRefreshRate(func() float64 { return h.conn.Surface.RefreshRate() })
+	}
+	h.reportFrames()
 }
 
 // accelerated reports whether the frame draws on a GPU (Painter.Accelerated).
@@ -714,15 +874,23 @@ func (h *windowHost) fit() bool {
 
 func (h *windowHost) detach() {
 	h.detached = true
+	if h.content != nil {
+		h.content.hosts = slices.DeleteFunc(h.content.hosts, func(o *windowHost) bool { return o == h })
+	}
 	if h.idleTimer != nil {
 		h.idleTimer.Stop()
 	}
 	h.rt.close()
 	h.soft.Release()
 	if h.gpu != nil {
+		// A frame the renderer drops hands its notices on (again), which
+		// answers them so once the window closed.
 		h.gpu.Release()
 		h.gpu = nil
 	}
+	// No frame comes for the notices waiting.
+	done, _ := h.takeNotices()
+	done(platform.PresentClosed, nil)
 	// The last frame, and the bitmaps it drew, go with the window (#1281).
 	h.last = nil
 	h.placed, h.views, h.glassPlaced = nil, nil, nil
@@ -905,6 +1073,13 @@ func (h *windowHost) preferences() platform.Preferences {
 	return h.conn.Preferences()
 }
 
+func (h *windowHost) systemSymbol(name string, pointSize, scale float64) (image.Image, bool) {
+	if h.conn.SystemSymbol == nil {
+		return nil, false
+	}
+	return h.conn.SystemSymbol(name, pointSize, scale)
+}
+
 func (h *windowHost) locale() string {
 	if h.conn.Locale == nil {
 		return ""
@@ -954,18 +1129,25 @@ func (h *windowHost) nativeGlass() bool {
 	return ok && s.NativeGlassSupported()
 }
 
-// placeGlass gives the surface where the frame shows the system's glass,
-// unless it is where the last frame showed it.
-func (h *windowHost) placeGlass(places []platform.GlassPlacement) {
+// placeGlass gives the surface where the frame the surface asked for shows
+// the system's glass, unless it is where the last frame showed it. As
+// with web views, a change has the frame present with the transaction,
+// and a frame that does not present gives nothing.
+func (h *windowHost) placeGlass(places []platform.GlassPlacement) bool {
+	if !h.framing {
+		return false
+	}
 	s, ok := h.conn.Surface.(platform.GlassSurface)
 	if !ok {
-		return
+		return true
 	}
 	if slices.EqualFunc(places, h.glassPlaced, sameGlassPlacement) {
-		return
+		return true
 	}
+	h.transact = true
 	h.glassPlaced = append(h.glassPlaced[:0], places...)
 	s.PlaceGlass(places)
+	return true
 }
 
 // sameGlassPlacement reports whether a and b place the same glass.
@@ -977,28 +1159,63 @@ func sameGlassPlacement(a, b platform.GlassPlacement) bool {
 	return a.Tint == nil || *a.Tint == *b.Tint
 }
 
-// placeWebViews gives the surface where the frame shows the window's web
-// views, unless it is where the last frame showed them.
-func (h *windowHost) placeWebViews(views []placedWebView) {
+// samePlace reports whether a and b show the same web view in the same
+// place.
+func samePlace(a, b platform.WebViewPlacement) bool {
+	return a.WebView == b.WebView && a.Frame == b.Frame && a.Clip == b.Clip && a.Width == b.Width && a.Height == b.Height &&
+		a.Radii == b.Radii && slices.Equal(a.Covers, b.Covers)
+}
+
+// placeWebViews gives the surface where the frame the surface asked for
+// shows the window's web views, unless it is where the last frame showed
+// them, and the application where it shows its native view elements, as
+// they were or not. A frame built for something else, which does not
+// present, gives nothing. A change has the frame present with the
+// transaction (scene.Scene.Transact).
+func (h *windowHost) placeWebViews(views []placedWebView) bool {
+	if !h.framing {
+		return false
+	}
 	list := make([]platform.WebViewPlacement, 0, len(views))
-	natives := make([]NativeWebView, 0, len(views))
+	webs := make([]NativeWebView, 0, len(views))
+	var natives []platform.NativeViewPlacement
 	for _, v := range views {
-		if n := v.v.SurfaceWebView(h.conn); n != nil {
+		if n, ok := v.v.(nativeElement); ok {
+			natives = append(natives, platform.NativeViewPlacement{WebViewPlacement: v.placement(nil), View: n.view, KeyView: n.key})
+		} else if n := v.v.SurfaceWebView(h.conn); n != nil {
 			list = append(list, v.placement(n))
-			natives = append(natives, v.v)
+			webs = append(webs, v.v)
 		}
 	}
-	if slices.EqualFunc(list, h.placed, func(a, b platform.WebViewPlacement) bool {
-		return a.WebView == b.WebView && a.Frame == b.Frame && a.Clip == b.Clip && a.Width == b.Width && a.Height == b.Height &&
-			a.Radii == b.Radii && slices.Equal(a.Covers, b.Covers)
-	}) {
-		return
+	if !slices.EqualFunc(list, h.placed, samePlace) {
+		h.transact = true
+		h.placed, h.views = list, webs
+		if h.conn.PlaceWebViews != nil {
+			h.conn.PlaceWebViews(list)
+		} else {
+			h.conn.Surface.PlaceWebViews(list)
+		}
 	}
-	h.placed, h.views = list, natives
-	if h.conn.PlaceWebViews != nil {
-		h.conn.PlaceWebViews(list)
-	} else {
-		h.conn.Surface.PlaceWebViews(list)
+	if len(natives) > 0 || len(h.natives) > 0 {
+		h.placeNativeViews(natives)
+	}
+	return true
+}
+
+// placeNativeViews gives the application where the frame shows its native
+// view elements.
+func (h *windowHost) placeNativeViews(views []platform.NativeViewPlacement) {
+	if !slices.EqualFunc(views, h.natives, func(a, b platform.NativeViewPlacement) bool {
+		return a.View == b.View && a.KeyView == b.KeyView && samePlace(a.WebViewPlacement, b.WebViewPlacement)
+	}) {
+		h.transact = true
+	}
+	h.natives = views
+	if h.conn.PlaceNativeViews != nil {
+		h.conn.PlaceNativeViews(views)
+	} else if !h.misplaced {
+		h.misplaced = true
+		log.Print("mygo: a native view element in a window without a native view (Window.NewNativeView)")
 	}
 }
 
@@ -1007,6 +1224,12 @@ func (h *windowHost) platformWebView(v NativeWebView) platform.WebView {
 }
 
 func (h *windowHost) tabIntoWebView(v NativeWebView, back bool) {
+	if e, ok := v.(nativeElement); ok {
+		if h.conn.TabIntoNativeView != nil {
+			h.conn.TabIntoNativeView(e.key, back)
+		}
+		return
+	}
 	if n := v.SurfaceWebView(h.conn); n != nil {
 		n.TabInto(back)
 	}

@@ -7,9 +7,9 @@ import (
 	"sync"
 	"unicode/utf16"
 
-	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
 
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/platform"
 )
 
@@ -33,8 +33,11 @@ type accessElement struct {
 	node     platform.AccessNode
 	parent   id
 	children []uint64
-	// webView is the web view whose page is the first child.
+	// webView is the web view whose page is the first child, and adopted
+	// what is in the view of a native view element, the first children
+	// otherwise, retained.
 	webView *window
+	adopted []id
 	// chosen are the rows of a list or table that are chosen, and count
 	// its rows, built or not.
 	chosen []uint64
@@ -59,38 +62,46 @@ var (
 	postAccessNote uintptr // NSAccessibilityPostNotification
 	// postAccessInfo is NSAccessibilityPostNotificationWithUserInfo.
 	postAccessInfo uintptr
+	// unignoredChildren is NSAccessibilityUnignoredChildren.
+	unignoredChildren uintptr
 	// actionDescription is NSAccessibilityActionDescription.
 	actionDescription uintptr
-	msgPointToPoint   func(obj id, sel objc.SEL, p NSPoint) NSPoint
 )
+
+// msgPointToPoint sends a message that takes and returns an NSPoint on
+// the main thread (mainthread.Forward).
+func msgPointToPoint(obj id, sel objc.SEL, p NSPoint) NSPoint {
+	return mainthread.Forward[NSPoint](msgSendAddr, obj, sel, p)
+}
 
 func loadAccess() {
 	accessOnce.Do(func() {
 		postAccessNote = mustDlsym(libAppKit, "NSAccessibilityPostNotification")
 		postAccessInfo = mustDlsym(libAppKit, "NSAccessibilityPostNotificationWithUserInfo")
+		unignoredChildren = mustDlsym(libAppKit, "NSAccessibilityUnignoredChildren")
 		actionDescription = mustDlsym(libAppKit, "NSAccessibilityActionDescription")
-		purego.RegisterFunc(&msgPointToPoint, msgSendAddr)
 	})
 }
 
 // postNote posts an accessibility notification about obj.
 func postNote(obj id, name string) {
 	if obj != 0 {
-		purego.SyscallN(postAccessNote, uintptr(obj), uintptr(nsString(name)))
+		mainthread.Forward[struct{}](postAccessNote, obj, nsString(name))
 	}
 }
 
 // announce asks VoiceOver to read text out, after what it is reading, or
 // at once for an alert (NSAccessibilityAnnouncementRequestedNotification).
 func announce(app id, text string, alert bool) {
-	info := send(class("NSMutableDictionary"), "dictionary")
-	send(info, "setObject:forKey:", uintptr(nsString(text)), uintptr(nsString("AXAnnouncementKey")))
+	info := newDictionary()
+	defer release(info)
+	setObject(info, nsString(text), nsString("AXAnnouncementKey"))
 	priority := 50 // NSAccessibilityPriorityMedium
 	if alert {
 		priority = 90 // NSAccessibilityPriorityHigh, which interrupts
 	}
-	send(info, "setObject:forKey:", uintptr(nsNumberInt(priority)), uintptr(nsString("AXPriorityKey")))
-	purego.SyscallN(postAccessInfo, uintptr(app), uintptr(nsString("AXAnnouncementRequested")), uintptr(info))
+	setObject(info, nsNumberInt(priority), nsString("AXPriorityKey"))
+	mainthread.Forward[struct{}](postAccessInfo, app, nsString("AXAnnouncementRequested"), info)
 }
 
 // accessRoles are the roles and subroles of node roles.
@@ -596,12 +607,18 @@ func (s *surface) UpdateAccessibility(tree *platform.AccessTree) {
 				web, grafted[v] = v, true
 				v.accessParent = el.obj
 			}
-			if !slices.Equal(el.children, children[i]) || el.webView != web {
+			var adopted []id
+			if s.native != nil {
+				adopted = s.native.access(&tree.Nodes[i])
+			}
+			if !slices.Equal(el.children, children[i]) || el.webView != web || !slices.Equal(el.adopted, adopted) {
 				el.children, el.webView = children[i], web
+				s.adopt(el, adopted)
 				kids := childObjs[i]
 				if web != nil {
 					kids = append([]id{web.web}, kids...)
 				}
+				kids = append(adopted[:len(adopted):len(adopted)], kids...)
 				send(el.obj, "setAccessibilityChildren:", uintptr(nsArray(kids...)))
 				changed = true
 			}
@@ -742,6 +759,7 @@ func (s *surface) UpdateAccessibility(tree *platform.AccessTree) {
 		}
 		for nid, el := range s.elements {
 			if !live[nid] {
+				s.adopt(el, nil)
 				postNote(el.obj, "AXUIElementDestroyed")
 				delete(s.w.b.byAccess, el.obj)
 				release(el.obj)
@@ -798,11 +816,19 @@ func (s *surface) UpdateAccessibility(tree *platform.AccessTree) {
 }
 
 // destroyAccess releases the elements of a surface.
+// adopt has el take kids from the application's views.
+func (s *surface) adopt(el *accessElement, kids []id) {
+	if s.native != nil {
+		s.native.adopt(el, kids)
+	}
+}
+
 func (s *surface) destroyAccess() {
 	for _, v := range s.w.webViews {
 		v.accessParent = 0
 	}
 	for nid, el := range s.elements {
+		s.adopt(el, nil)
 		postNote(el.obj, "AXUIElementDestroyed")
 		delete(s.w.b.byAccess, el.obj)
 		release(el.obj)
@@ -906,27 +932,29 @@ func registerAccessClass() {
 			if el == nil {
 				return names
 			}
-			if el.node.States&platform.AccessInvalid != 0 {
-				names = send(names, "arrayByAddingObject:", uintptr(nsString("AXInvalid")))
+			invalid, mark := el.node.States&platform.AccessInvalid != 0, menuItem(el.node.Role)
+			all := sendHere(sendHere(class("NSMutableArray"), "alloc"), "initWithArray:", uintptr(names))
+			if invalid {
+				sendHere(all, "addObject:", uintptr(nsString("AXInvalid")))
 			}
 			// The elements holding its error, as WebKit's say
 			// aria-errormessage.
 			if errorMessages(el.node) {
-				names = send(names, "arrayByAddingObject:", uintptr(nsString("AXErrorMessageElements")))
+				sendHere(all, "addObject:", uintptr(nsString("AXErrorMessageElements")))
 			}
-			if menuItem(el.node.Role) {
-				names = send(names, "arrayByAddingObject:", uintptr(nsString("AXMenuItemMarkChar")))
+			if mark {
+				sendHere(all, "addObject:", uintptr(nsString("AXMenuItemMarkChar")))
 			}
 			// The kind of popup the element opens, as WebKit's say
 			// aria-haspopup.
 			if el.node.HasPopup != platform.PopupNone {
-				names = send(names, "arrayByAddingObject:", uintptr(nsString("AXPopupValue")))
+				sendHere(all, "addObject:", uintptr(nsString("AXPopupValue")))
 			}
-			names = send(names, "arrayByAddingObject:", uintptr(nsString("AXElementBusy")))
+			sendHere(all, "addObject:", uintptr(nsString("AXElementBusy")))
 			// Whether it can be used: the older API does not list or answer
 			// AXEnabled for what setAccessibilityEnabled: set, and VoiceOver
 			// would read every disabled control as available.
-			names = send(names, "arrayByAddingObject:", uintptr(nsString("AXEnabled")))
+			sendHere(all, "addObject:", uintptr(nsString("AXEnabled")))
 			// Where a cell is and whether it is chosen, and the cells a
 			// table has chosen, which AppKit's names of an AXCell and an
 			// AXTable leave out though their setters are called.
@@ -959,39 +987,39 @@ func registerAccessClass() {
 				more = append(more, "AXHelp")
 			}
 			for _, name := range more {
-				if a := nsString(name); !sendBool(names, "containsObject:", uintptr(a)) {
-					names = send(names, "arrayByAddingObject:", uintptr(a))
+				if a := nsString(name); byte(sendHere(all, "containsObject:", uintptr(a))) == 0 {
+					sendHere(all, "addObject:", uintptr(a))
 				}
 			}
 			if el.node.Current != platform.CurrentNone {
-				names = send(names, "arrayByAddingObject:", uintptr(nsString("AXARIACurrent")))
+				sendHere(all, "addObject:", uintptr(nsString("AXARIACurrent")))
 			}
 			if el.node.AutoComplete != platform.AutoCompleteNone {
-				names = send(names, "arrayByAddingObject:", uintptr(nsString("AXAutocompleteValue")))
+				sendHere(all, "addObject:", uintptr(nsString("AXAutocompleteValue")))
 			}
 			// How a live region is read, as WebKit's say aria-live,
 			// aria-atomic and aria-relevant.
 			if live, _ := el.node.Role.Live(); live != "" {
 				for _, name := range []string{"AXARIALive", "AXARIAAtomic", "AXARIARelevant"} {
-					names = send(names, "arrayByAddingObject:", uintptr(nsString(name)))
+					sendHere(all, "addObject:", uintptr(nsString(name)))
 				}
 			}
 			if valueText(el.node) {
-				names = send(names, "arrayByAddingObject:", uintptr(nsString("AXValueDescription")))
+				sendHere(all, "addObject:", uintptr(nsString("AXValueDescription")))
 			}
 			// The keys that press or focus it, as WebKit's elements say
 			// aria-keyshortcuts.
 			if el.node.KeyShortcuts != "" {
-				names = send(names, "arrayByAddingObject:", uintptr(nsString("AXKeyShortcutsValue")))
+				sendHere(all, "addObject:", uintptr(nsString("AXKeyShortcutsValue")))
 			}
 			// The size of a grid, and the place of its rows and cells, as
 			// WebKit's say aria-rowcount and the like.
 			for _, attr := range ariaGridAttrs {
 				if el.ariaGrid(attr) > 0 {
-					names = send(names, "arrayByAddingObject:", uintptr(nsString(attr)))
+					sendHere(all, "addObject:", uintptr(nsString(attr)))
 				}
 			}
-			return names
+			return autorelease(all)
 		}),
 		method("accessibilityAttributeValue:", func(self id, cmd objc.SEL, attr id) id {
 			if el := b().accessElementOf(self); el != nil {
@@ -1186,8 +1214,7 @@ func registerAccessClass() {
 			return nsArray(names...)
 		}),
 		method("accessibilityActionDescription:", func(self id, _ objc.SEL, action id) id {
-			r, _, _ := purego.SyscallN(actionDescription, uintptr(action))
-			return id(r)
+			return mainthread.Forward[id](actionDescription, action)
 		}),
 		method("accessibilityPerformAction:", func(self id, _ objc.SEL, action id) {
 			el := b().accessElementOf(self)

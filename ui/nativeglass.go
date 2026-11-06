@@ -60,8 +60,9 @@ func (rt *engine) placeNativeGlass() {
 	if len(rt.glassPlaces) == 0 && !rt.glassShown {
 		return
 	}
-	rt.glassShown = len(rt.glassPlaces) > 0
-	rt.host.placeGlass(rt.glassPlaces)
+	if rt.host.placeGlass(rt.glassPlaces) {
+		rt.glassShown = len(rt.glassPlaces) > 0
+	}
 }
 
 // NativeGlassSupported reports whether the window's surface draws the

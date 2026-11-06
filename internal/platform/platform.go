@@ -10,6 +10,7 @@ package platform
 import (
 	"context"
 	"errors"
+	"image"
 	"io"
 	"time"
 
@@ -52,12 +53,15 @@ type Backend interface {
 	// Name identifies the backend, for example "darwin/wkwebview".
 	Name() string
 
-	// Init prepares the native application. It is called once, on the main
-	// thread, before Run.
+	// Init prepares the native application. start of Run calls it once,
+	// where IsMainThread answers true.
 	Init(h AppHandler, opts AppOptions) error
-	// Run runs the native event loop until Quit is called. h.Ready is
-	// invoked once the application has finished launching.
-	Run() error
+	// Run runs the Go code of App.Run and the native event loop: start,
+	// then the event loop until Quit is called, then finish, each Go
+	// function where IsMainThread answers true. An error of start ends Run
+	// before the event loop. h.Ready is invoked once the application has
+	// finished launching. Main thread only, once.
+	Run(start func() error, finish func()) error
 	// Quit makes Run return.
 	Quit()
 
@@ -174,6 +178,23 @@ type AppOptions struct {
 	// DMABUFRenderer is "off" (or ""), "on" or "auto": whether WebKitGTK
 	// may draw with its DMA-BUF renderer. Only meaningful on Linux.
 	DMABUFRenderer string
+	// NoSelfActivation keeps the application from activating itself as it
+	// finishes launching, as Window.Show shows a window and as the
+	// activation policy changes to regular: the window becomes key and
+	// comes to the front without the application being activated. Only
+	// meaningful on macOS.
+	NoSelfActivation bool
+	// WindowShow, when set, does what Window.Show does to a window that
+	// shows as any window, in place of making it key and ordering it
+	// front. It receives the NSWindow on the main goroutine. Only
+	// meaningful on macOS.
+	WindowShow func(window uintptr)
+	// NoNotificationDelegate keeps the backend from setting the delegate of
+	// the notification center, which the application sets: the backend
+	// then neither shows notifications while the application is in front
+	// nor reports their clicks (AppHandler.NotificationClicked). Only
+	// meaningful on macOS.
+	NoNotificationDelegate bool
 }
 
 // AppHandler receives application level events from the backend.
@@ -475,6 +496,10 @@ type WindowOptions struct {
 	// itself fills, instead of a webview: Window.Surface returns it, the
 	// webview methods do nothing and the webview options are ignored.
 	Surface bool
+	// DrawWhileOccluded has the Surface give the frames the content asks
+	// for while nothing of the window shows, rather than wait until some
+	// of it does.
+	DrawWhileOccluded bool
 }
 
 // DataStoreOptions describe a website data store (AppController.NewDataStore).
@@ -798,6 +823,18 @@ type WebViewPlacement struct {
 	Covers []RectF
 }
 
+// NativeViewPlacement is where the content of a surface shows a native
+// view element (NativeViewSurface.PlaceNativeViews), in DIPs relative to
+// the surface. Of the placement, Frame is the box of the element, and
+// WebView is nil.
+type NativeViewPlacement struct {
+	WebViewPlacement
+	// View is the view the element names, inside the native view of the
+	// surface, and KeyView that view or a view inside it, which takes the
+	// keyboard as Tab enters the element.
+	View, KeyView uintptr
+}
+
 // Size returns the size the page lays out at, in its DIPs.
 func (p *WebViewPlacement) Size() (w, h float64) {
 	if p.Width <= 0 || p.Height <= 0 {
@@ -876,6 +913,13 @@ type WindowHandler interface {
 	// or context menu, even while the menu has focus instead of the window.
 	MenuItemClicked(id int)
 	Resized()
+	// ScaleChanged reports the new scale of the window's backing store: it
+	// moved to a display of another scale, or the scale of its display
+	// changed (macOS).
+	ScaleChanged(scale float64)
+	// OcclusionChanged reports that none of the window shows any more, or
+	// that some of it shows again (macOS).
+	OcclusionChanged(occluded bool)
 	Moved()
 	Minimized()
 	Restored()
@@ -1215,12 +1259,24 @@ type Theme interface {
 	Preferences() Preferences
 }
 
+// SymbolTheme is a Theme of a system with a library of symbols.
+type SymbolTheme interface {
+	// SystemSymbol returns the mask of the symbol name, at pointSize for a
+	// window of scale, and false when the system has no such symbol.
+	SystemSymbol(name string, pointSize, scale float64) (image.Image, bool)
+}
+
 // Preferences are settings of the desktop that the system's own controls
 // follow, and native UI with them.
 type Preferences struct {
 	// Accent is the accent color the user chose; A is 0 where the desktop
 	// has none.
 	Accent Color
+	// DarkFocusRing is the color of the keyboard focus ring in the dark
+	// appearance, whichever appearance the app has: what a web page of the
+	// dark color scheme rings a control with. A is 0 where the desktop has
+	// none.
+	DarkFocusRing Color
 	// ReduceMotion asks for less motion: macOS's Reduce Motion, Windows's
 	// animation effects and GNOME's animations turned off.
 	ReduceMotion bool

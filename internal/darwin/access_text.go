@@ -90,15 +90,15 @@ func accessFont(run platform.AccessTextRun) id {
 			font = send(send(class("NSFontManager"), "sharedFontManager"), "convertFont:toHaveTrait:", uintptr(font), 1)
 		}
 	}
-	d := send(class("NSMutableDictionary"), "dictionary")
+	d := newDictionary()
 	if font != 0 {
 		name := send(font, "fontName")
-		send(d, "setObject:forKey:", uintptr(name), uintptr(nsString("AXFontName")))
-		send(d, "setObject:forKey:", uintptr(send(font, "familyName")), uintptr(nsString("AXFontFamily")))
-		send(d, "setObject:forKey:", uintptr(send(font, "displayName")), uintptr(nsString("AXVisibleName")))
+		setObject(d, name, nsString("AXFontName"))
+		setObject(d, send(font, "familyName"), nsString("AXFontFamily"))
+		setObject(d, send(font, "displayName"), nsString("AXVisibleName"))
 	}
-	send(d, "setObject:forKey:", uintptr(msgFloatID(class("NSNumber"), sel("numberWithDouble:"), size)), uintptr(nsString("AXFontSize")))
-	return d
+	setObject(d, msgFloatID(class("NSNumber"), sel("numberWithDouble:"), size), nsString("AXFontSize"))
+	return autorelease(d)
 }
 
 // nsFontWeight returns the NSFontWeight of a CSS weight.

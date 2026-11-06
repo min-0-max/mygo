@@ -9,6 +9,8 @@ import (
 	"unsafe"
 
 	"github.com/ebitengine/purego"
+
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 )
 
 var (
@@ -24,11 +26,11 @@ func init() {
 	if err != nil {
 		panic(err)
 	}
-	purego.RegisterLibFunc(&procPidRusage, lib, "proc_pid_rusage")
-	purego.RegisterLibFunc(&procListAllPids, lib, "proc_listallpids")
-	purego.RegisterLibFunc(&procPidPath, lib, "proc_pidpath")
+	mainthread.Bind(&procPidRusage, lib, "proc_pid_rusage")
+	mainthread.Bind(&procListAllPids, lib, "proc_listallpids")
+	mainthread.Bind(&procPidPath, lib, "proc_pidpath")
 	if _, err := purego.Dlsym(lib, "responsibility_get_pid_responsible_for_pid"); err == nil {
-		purego.RegisterLibFunc(&responsibleFor, lib, "responsibility_get_pid_responsible_for_pid")
+		mainthread.Bind(&responsibleFor, lib, "responsibility_get_pid_responsible_for_pid")
 	}
 }
 

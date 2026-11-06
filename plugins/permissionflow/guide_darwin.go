@@ -14,6 +14,7 @@ import (
 	"github.com/ebitengine/purego/objc"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 )
 
 // Guide's panel is an NSPanel that never takes the focus, so that System
@@ -24,6 +25,12 @@ import (
 // in front. The card of the app is an NSView of a class of ours, the
 // source of the drag, whose item is a writer of ours putting the app on
 // the pasteboard as Finder does.
+//
+// Go runs on the worker (internal/darwin/mainthread). What mygo.RunOnMain
+// runs and the methods of these classes are its steps, whose messages run
+// on the main thread one by one, and the objects that those return live
+// until the step ends. What follows System Settings runs on a goroutine,
+// so it asks in one step (mainthread.RunOnMain).
 
 type nsPoint struct{ X, Y float64 }
 type nsSize struct{ Width, Height float64 }
@@ -121,7 +128,7 @@ func registerClasses() error {
 		if source != nil {
 			protocols = append(protocols, source)
 		}
-		_, classesErr = objc.RegisterClass("MyGoPermissionFlowDragView", objc.GetClass("NSView"), protocols, nil, []objc.MethodDef{
+		_, classesErr = mainthread.RegisterClass("MyGoPermissionFlowDragView", objc.GetClass("NSView"), protocols, nil, []objc.MethodDef{
 			{Cmd: sel("mouseDown:"), Fn: cardMouseDown},
 			{Cmd: sel("mouseDragged:"), Fn: cardMouseDragged},
 			{Cmd: sel("mouseUp:"), Fn: cardMouseUp},
@@ -138,14 +145,14 @@ func registerClasses() error {
 		if writing != nil {
 			protocols = append(protocols, writing)
 		}
-		_, classesErr = objc.RegisterClass("MyGoPermissionFlowAppWriter", objc.GetClass("NSObject"), protocols, nil, []objc.MethodDef{
+		_, classesErr = mainthread.RegisterClass("MyGoPermissionFlowAppWriter", objc.GetClass("NSObject"), protocols, nil, []objc.MethodDef{
 			{Cmd: sel("writableTypesForPasteboard:"), Fn: writerTypes},
 			{Cmd: sel("pasteboardPropertyListForType:"), Fn: writerPropertyList},
 		})
 		if classesErr != nil {
 			return
 		}
-		_, classesErr = objc.RegisterClass("MyGoPermissionFlowTarget", objc.GetClass("NSObject"), nil, nil, []objc.MethodDef{
+		_, classesErr = mainthread.RegisterClass("MyGoPermissionFlowTarget", objc.GetClass("NSObject"), nil, nil, []objc.MethodDef{
 			{Cmd: sel("close:"), Fn: func(objc.ID, objc.SEL, objc.ID) {
 				if active != nil {
 					active.close()
@@ -167,9 +174,9 @@ var appTypes = []string{
 }
 
 func writerTypes(_ objc.ID, _ objc.SEL, _ objc.ID) objc.ID {
-	arr := class("NSMutableArray").Send(sel("array"))
+	arr := send(class("NSMutableArray"), "array")
 	for _, t := range appTypes {
-		arr.Send(sel("addObject:"), nsString(t))
+		send(arr, "addObject:", nsString(t))
 	}
 	return arr
 }
@@ -181,10 +188,10 @@ func writerPropertyList(_ objc.ID, _ objc.SEL, typ objc.ID) objc.ID {
 	path := active.app
 	switch goString(typ) {
 	case "public.file-url", "public.url", "com.apple.pasteboard.promised-file-url":
-		u := class("NSURL").Send(sel("fileURLWithPath:"), nsString(path))
-		return u.Send(sel("absoluteString"))
+		u := send(class("NSURL"), "fileURLWithPath:", nsString(path))
+		return send(u, "absoluteString")
 	case "NSFilenamesPboardType":
-		return class("NSArray").Send(sel("arrayWithObject:"), nsString(path))
+		return send(class("NSArray"), "arrayWithObject:", nsString(path))
 	case "public.utf8-plain-text":
 		return nsString(path)
 	}
@@ -192,15 +199,15 @@ func writerPropertyList(_ objc.ID, _ objc.SEL, typ objc.ID) objc.ID {
 }
 
 func cardResetCursorRects(self objc.ID, _ objc.SEL) {
-	bounds := objc.Send[nsRect](self, sel("bounds"))
-	self.Send(sel("addCursorRect:cursor:"), bounds, class("NSCursor").Send(sel("openHandCursor")))
+	bounds := sendRect(self, "bounds")
+	send(self, "addCursorRect:cursor:", bounds, send(class("NSCursor"), "openHandCursor"))
 }
 
 func cardMouseDown(self objc.ID, _ objc.SEL, event objc.ID) {
 	if active == nil {
 		return
 	}
-	active.dragOrigin = objc.Send[nsPoint](event, sel("locationInWindow"))
+	active.dragOrigin = mainthread.Send[nsPoint](event, sel("locationInWindow"))
 	active.dragBegan = false
 }
 
@@ -215,26 +222,26 @@ func cardMouseDragged(self objc.ID, _ objc.SEL, event objc.ID) {
 	if f == nil || f.dragBegan {
 		return
 	}
-	at := objc.Send[nsPoint](event, sel("locationInWindow"))
+	at := mainthread.Send[nsPoint](event, sel("locationInWindow"))
 	if math.Hypot(at.X-f.dragOrigin.X, at.Y-f.dragOrigin.Y) <= 4 {
 		return
 	}
 	f.dragBegan = true
-	writer := class("MyGoPermissionFlowAppWriter").Send(sel("alloc")).Send(sel("init"))
-	item := class("NSDraggingItem").Send(sel("alloc")).Send(sel("initWithPasteboardWriter:"), writer)
-	icon := class("NSWorkspace").Send(sel("sharedWorkspace")).Send(sel("iconForFile:"), nsString(f.app))
-	icon.Send(sel("setSize:"), nsSize{dragIconSize, dragIconSize})
-	p := objc.Send[nsPoint](self, sel("convertPoint:fromView:"), at, objc.ID(0))
-	item.Send(sel("setDraggingFrame:contents:"), nsRect{nsPoint{p.X - dragIconSize/2, p.Y - dragIconSize/2}, nsSize{dragIconSize, dragIconSize}}, icon)
-	session := self.Send(sel("beginDraggingSessionWithItems:event:source:"), class("NSArray").Send(sel("arrayWithObject:"), item), event, self)
-	session.Send(sel("setAnimatesToStartingPositionsOnCancelOrFail:"), true)
-	session.Send(sel("setDraggingFormation:"), nsDraggingFormationNone)
-	item.Send(sel("release"))
-	writer.Send(sel("release"))
+	writer := send(send(class("MyGoPermissionFlowAppWriter"), "alloc"), "init")
+	item := send(send(class("NSDraggingItem"), "alloc"), "initWithPasteboardWriter:", writer)
+	icon := send(send(class("NSWorkspace"), "sharedWorkspace"), "iconForFile:", nsString(f.app))
+	send(icon, "setSize:", nsSize{dragIconSize, dragIconSize})
+	p := mainthread.Send[nsPoint](self, sel("convertPoint:fromView:"), at, objc.ID(0))
+	send(item, "setDraggingFrame:contents:", nsRect{nsPoint{p.X - dragIconSize/2, p.Y - dragIconSize/2}, nsSize{dragIconSize, dragIconSize}}, icon)
+	session := send(self, "beginDraggingSessionWithItems:event:source:", send(class("NSArray"), "arrayWithObject:", item), event, self)
+	send(session, "setAnimatesToStartingPositionsOnCancelOrFail:", true)
+	send(session, "setDraggingFormation:", nsDraggingFormationNone)
+	release(item)
+	release(writer)
 	// System Settings, under the pointer, takes the drop.
 	dragging.Store(true)
-	f.panel.Send(sel("setIgnoresMouseEvents:"), true)
-	f.panel.Send(sel("setAlphaValue:"), 0.72)
+	send(f.panel, "setIgnoresMouseEvents:", true)
+	send(f.panel, "setAlphaValue:", 0.72)
 }
 
 // endDrag restores the panel after a drag. Main thread.
@@ -242,15 +249,17 @@ func (f *flow) endDrag() {
 	dragging.Store(false)
 	f.dragBegan = false
 	if f.panel != 0 {
-		f.panel.Send(sel("setIgnoresMouseEvents:"), false)
-		f.panel.Send(sel("setAlphaValue:"), 1.0)
+		send(f.panel, "setIgnoresMouseEvents:", false)
+		send(f.panel, "setAlphaValue:", 1.0)
 	}
 }
 
 func defaultApp() string {
 	var path string
-	withPool(func() {
-		path = goString(class("NSBundle").Send(sel("mainBundle")).Send(sel("bundlePath")))
+	mainthread.RunOnMain(func() {
+		withPool(func() {
+			path = goString(send(send(class("NSBundle"), "mainBundle"), "bundlePath"))
+		})
 	})
 	if strings.HasSuffix(path, ".app") {
 		return path
@@ -349,15 +358,17 @@ func guide(ctx context.Context, p Permission, opts GuideOptions) (Status, error)
 // settingsProcess returns the process of System Settings, 0 when it isn't
 // running, and whether it is the app in front.
 func settingsProcess() (pid int32, frontmost bool) {
-	withPool(func() {
-		apps := class("NSRunningApplication").Send(sel("runningApplicationsWithBundleIdentifier:"), nsString(settingsBundleID))
-		if sendUint(apps, sel("count")) == 0 {
-			return
-		}
-		app := apps.Send(sel("firstObject"))
-		pid = int32(sendInt(app, sel("processIdentifier")))
-		front := class("NSWorkspace").Send(sel("sharedWorkspace")).Send(sel("frontmostApplication"))
-		frontmost = front != 0 && int32(sendInt(front, sel("processIdentifier"))) == pid
+	mainthread.RunOnMain(func() {
+		withPool(func() {
+			apps := send(class("NSRunningApplication"), "runningApplicationsWithBundleIdentifier:", nsString(settingsBundleID))
+			if mainthread.Send[uint](apps, sel("count")) == 0 {
+				return
+			}
+			app := send(apps, "firstObject")
+			pid = int32(mainthread.Send[int](app, sel("processIdentifier")))
+			front := send(send(class("NSWorkspace"), "sharedWorkspace"), "frontmostApplication")
+			frontmost = front != 0 && int32(mainthread.Send[int](front, sel("processIdentifier"))) == pid
+		})
 	})
 	return pid, frontmost
 }
@@ -365,47 +376,49 @@ func settingsProcess() (pid int32, frontmost bool) {
 // settingsFrame returns the bounds of System Settings' window, in the
 // window server's coordinates.
 func settingsFrame(pid int32) (r rect, ok bool) {
-	withPool(func() {
-		list := cgWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly|kCGWindowListExcludeDesktopElements, 0)
-		if list == 0 {
-			return
-		}
-		defer cfRelease(list)
-		var (
-			kPID    = nsString("kCGWindowOwnerPID")
-			kLayer  = nsString("kCGWindowLayer")
-			kAlpha  = nsString("kCGWindowAlpha")
-			kBounds = nsString("kCGWindowBounds")
-			windows []settingsWindow
-		)
-		n := sendUint(list, sel("count"))
-		for i := range n {
-			w := list.Send(sel("objectAtIndex:"), i)
-			if v := w.Send(sel("objectForKey:"), kPID); v == 0 || int32(sendInt(v, sel("integerValue"))) != pid {
-				continue
+	mainthread.RunOnMain(func() {
+		withPool(func() {
+			list := cgWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly|kCGWindowListExcludeDesktopElements, 0)
+			if list == 0 {
+				return
 			}
-			sw := settingsWindow{alpha: 1}
-			if v := w.Send(sel("objectForKey:"), kLayer); v != 0 {
-				sw.layer = sendInt(v, sel("integerValue"))
-			}
-			if v := w.Send(sel("objectForKey:"), kAlpha); v != 0 {
-				sw.alpha = sendFloat(v, sel("doubleValue"))
-			}
-			b := w.Send(sel("objectForKey:"), kBounds)
-			if b == 0 {
-				continue
-			}
-			num := func(k string) float64 {
-				v := b.Send(sel("objectForKey:"), nsString(k))
-				if v == 0 {
-					return 0
+			defer mainthread.ByReceiver(cfRelease, uintptr(list))
+			var (
+				kPID    = nsString("kCGWindowOwnerPID")
+				kLayer  = nsString("kCGWindowLayer")
+				kAlpha  = nsString("kCGWindowAlpha")
+				kBounds = nsString("kCGWindowBounds")
+				windows []settingsWindow
+			)
+			n := mainthread.Send[uint](list, sel("count"))
+			for i := range n {
+				w := send(list, "objectAtIndex:", i)
+				if v := send(w, "objectForKey:", kPID); v == 0 || int32(mainthread.Send[int](v, sel("integerValue"))) != pid {
+					continue
 				}
-				return sendFloat(v, sel("doubleValue"))
+				sw := settingsWindow{alpha: 1}
+				if v := send(w, "objectForKey:", kLayer); v != 0 {
+					sw.layer = mainthread.Send[int](v, sel("integerValue"))
+				}
+				if v := send(w, "objectForKey:", kAlpha); v != 0 {
+					sw.alpha = mainthread.Send[float64](v, sel("doubleValue"))
+				}
+				b := send(w, "objectForKey:", kBounds)
+				if b == 0 {
+					continue
+				}
+				num := func(k string) float64 {
+					v := send(b, "objectForKey:", nsString(k))
+					if v == 0 {
+						return 0
+					}
+					return mainthread.Send[float64](v, sel("doubleValue"))
+				}
+				sw.bounds = rect{num("X"), num("Y"), num("Width"), num("Height")}
+				windows = append(windows, sw)
 			}
-			sw.bounds = rect{num("X"), num("Y"), num("Width"), num("Height")}
-			windows = append(windows, sw)
-		}
-		r, ok = mainSettingsWindow(windows)
+			r, ok = mainSettingsWindow(windows)
+		})
 	})
 	return r, ok
 }
@@ -415,22 +428,22 @@ func settingsFrame(pid int32) (r rect, ok bool) {
 func (f *flow) place(frame rect, show bool) {
 	if !show {
 		if f.panel != 0 && f.shown {
-			f.panel.Send(sel("orderOut:"), objc.ID(0))
+			send(f.panel, "orderOut:", objc.ID(0))
 			f.shown = false
 		}
 		return
 	}
 	withPool(func() {
-		screens := class("NSScreen").Send(sel("screens"))
-		n := objc.Send[uint](screens, sel("count"))
+		screens := send(class("NSScreen"), "screens")
+		n := mainthread.Send[uint](screens, sel("count"))
 		if n == 0 {
 			return
 		}
-		mainHeight := objc.Send[nsRect](screens.Send(sel("objectAtIndex:"), uint(0)), sel("frame")).Size.Height
+		mainHeight := sendRect(send(screens, "objectAtIndex:", uint(0)), "frame").Size.Height
 		settings := flipRect(frame, mainHeight)
 		var visible []rect
 		for i := range n {
-			visible = append(visible, fromNS(objc.Send[nsRect](screens.Send(sel("objectAtIndex:"), i), sel("visibleFrame"))))
+			visible = append(visible, fromNS(sendRect(send(screens, "objectAtIndex:", i), "visibleFrame")))
 		}
 		screen := screenOf(settings, visible)
 		w := panelWidth(settings, screen)
@@ -440,10 +453,10 @@ func (f *flow) place(frame rect, show bool) {
 		f.layout(w)
 		h := panelPadding + f.labelH + 8 + cardHeight + panelPadding
 		target := panelFrame(settings, screen, h)
-		f.panel.Send(sel("setFrame:display:"), target.ns(), true)
-		f.panel.Send(sel("invalidateShadow"))
+		send(f.panel, "setFrame:display:", target.ns(), true)
+		send(f.panel, "invalidateShadow")
 		if !f.shown {
-			f.panel.Send(sel("orderFrontRegardless"))
+			send(f.panel, "orderFrontRegardless")
 			f.shown = true
 		}
 		active = f
@@ -451,104 +464,102 @@ func (f *flow) place(frame rect, show bool) {
 }
 
 func (f *flow) build(w float64) {
-	panel := class("NSPanel").Send(sel("alloc")).Send(sel("initWithContentRect:styleMask:backing:defer:"),
-		nsRect{Size: nsSize{w, 100}}, uint(nsWindowStyleMaskBorderless|nsWindowStyleMaskNonactivatingPanel), uint(nsBackingStoreBuffered), false)
-	panel.Send(sel("setLevel:"), nsFloatingWindowLevel)
-	panel.Send(sel("setReleasedWhenClosed:"), false)
-	panel.Send(sel("setOpaque:"), false)
-	panel.Send(sel("setBackgroundColor:"), class("NSColor").Send(sel("clearColor")))
-	panel.Send(sel("setHasShadow:"), true)
-	panel.Send(sel("setHidesOnDeactivate:"), false)
-	panel.Send(sel("setCollectionBehavior:"), uint(nsCollectionCanJoinAllSpaces|nsCollectionFullScreenAuxiliary))
-	panel.Send(sel("setMovableByWindowBackground:"), false)
+	panel := send(send(class("NSPanel"), "alloc"), "initWithContentRect:styleMask:backing:defer:", nsRect{Size: nsSize{w, 100}}, uint(nsWindowStyleMaskBorderless|nsWindowStyleMaskNonactivatingPanel), uint(nsBackingStoreBuffered), false)
+	send(panel, "setLevel:", nsFloatingWindowLevel)
+	send(panel, "setReleasedWhenClosed:", false)
+	send(panel, "setOpaque:", false)
+	send(panel, "setBackgroundColor:", send(class("NSColor"), "clearColor"))
+	send(panel, "setHasShadow:", true)
+	send(panel, "setHidesOnDeactivate:", false)
+	send(panel, "setCollectionBehavior:", uint(nsCollectionCanJoinAllSpaces|nsCollectionFullScreenAuxiliary))
+	send(panel, "setMovableByWindowBackground:", false)
 
-	effect := class("NSVisualEffectView").Send(sel("alloc")).Send(sel("initWithFrame:"), nsRect{})
-	effect.Send(sel("setMaterial:"), nsVisualEffectMaterialPopover)
-	effect.Send(sel("setBlendingMode:"), nsVisualEffectBlendingBehindWindow)
-	effect.Send(sel("setState:"), nsVisualEffectStateActive)
+	effect := send(send(class("NSVisualEffectView"), "alloc"), "initWithFrame:", nsRect{})
+	send(effect, "setMaterial:", nsVisualEffectMaterialPopover)
+	send(effect, "setBlendingMode:", nsVisualEffectBlendingBehindWindow)
+	send(effect, "setState:", nsVisualEffectStateActive)
 	// A layer's corner radius doesn't clip what the view blurs from behind
 	// the window: a mask does, and the window's shadow follows it.
 	mask := roundedMask(panelRadius)
-	effect.Send(sel("setMaskImage:"), mask)
-	mask.Send(sel("release"))
-	panel.Send(sel("setContentView:"), effect)
-	effect.Send(sel("release"))
+	send(effect, "setMaskImage:", mask)
+	release(mask)
+	send(panel, "setContentView:", effect)
+	release(effect)
 
-	color := func(name string) objc.ID { return class("NSColor").Send(sel(name)) }
+	color := func(name string) objc.ID { return send(class("NSColor"), name) }
 	v := &f.views
 	v.border = newBox(color("clearColor"), panelRadius)
-	effect.Send(sel("addSubview:"), v.border)
-	v.border.Send(sel("release"))
+	send(effect, "addSubview:", v.border)
+	release(v.border)
 
-	label := class("NSTextField").Send(sel("wrappingLabelWithString:"), nsString(""))
-	text := class("NSMutableAttributedString").Send(sel("alloc")).Send(sel("init"))
+	label := send(class("NSTextField"), "wrappingLabelWithString:", nsString(""))
+	text := send(send(class("NSMutableAttributedString"), "alloc"), "init")
 	for _, r := range panelText(f.name, f.p.Title()) {
-		font := class("NSFont").Send(sel("systemFontOfSize:"), 13.0)
+		font := send(class("NSFont"), "systemFontOfSize:", 13.0)
 		if r.bold {
-			font = class("NSFont").Send(sel("boldSystemFontOfSize:"), 13.0)
+			font = send(class("NSFont"), "boldSystemFontOfSize:", 13.0)
 		}
-		attrs := class("NSMutableDictionary").Send(sel("dictionary"))
-		attrs.Send(sel("setObject:forKey:"), font, nsString("NSFont"))
-		attrs.Send(sel("setObject:forKey:"), color("labelColor"), nsString("NSColor"))
-		part := class("NSAttributedString").Send(sel("alloc")).Send(sel("initWithString:attributes:"), nsString(r.text), attrs)
-		text.Send(sel("appendAttributedString:"), part)
-		part.Send(sel("release"))
+		attrs := send(class("NSMutableDictionary"), "dictionary")
+		send(attrs, "setObject:forKey:", font, nsString("NSFont"))
+		send(attrs, "setObject:forKey:", color("labelColor"), nsString("NSColor"))
+		part := send(send(class("NSAttributedString"), "alloc"), "initWithString:attributes:", nsString(r.text), attrs)
+		send(text, "appendAttributedString:", part)
+		release(part)
 	}
-	label.Send(sel("setAttributedStringValue:"), text)
-	text.Send(sel("release"))
-	effect.Send(sel("addSubview:"), label)
+	send(label, "setAttributedStringValue:", text)
+	release(text)
+	send(effect, "addSubview:", label)
 	v.label = label
 
-	closeButton := class("NSButton").Send(sel("alloc")).Send(sel("initWithFrame:"), nsRect{})
-	closeButton.Send(sel("setBordered:"), false)
-	closeButton.Send(sel("setImagePosition:"), nsImageOnly)
+	closeButton := send(send(class("NSButton"), "alloc"), "initWithFrame:", nsRect{})
+	send(closeButton, "setBordered:", false)
+	send(closeButton, "setImagePosition:", nsImageOnly)
 	if img := symbol("xmark.circle.fill", "Close"); img != 0 {
-		closeButton.Send(sel("setImage:"), img)
-		closeButton.Send(sel("setContentTintColor:"), color("secondaryLabelColor"))
+		send(closeButton, "setImage:", img)
+		send(closeButton, "setContentTintColor:", color("secondaryLabelColor"))
 	} else {
-		closeButton.Send(sel("setTitle:"), nsString("✕"))
+		send(closeButton, "setTitle:", nsString("✕"))
 	}
-	target := class("MyGoPermissionFlowTarget").Send(sel("alloc")).Send(sel("init")) // kept, as small as it is
-	closeButton.Send(sel("setTarget:"), target)
-	closeButton.Send(sel("setAction:"), sel("close:"))
-	effect.Send(sel("addSubview:"), closeButton)
-	closeButton.Send(sel("release"))
+	target := send(send(class("MyGoPermissionFlowTarget"), "alloc"), "init") // kept, as small as it is
+	send(closeButton, "setTarget:", target)
+	send(closeButton, "setAction:", sel("close:"))
+	send(effect, "addSubview:", closeButton)
+	release(closeButton)
 	v.close = closeButton
 
 	// The card: a box, the app's icon and name, a hint, and over them the
 	// view the drag starts from, which gets every click on the card.
-	cardBox := newBox(color("controlBackgroundColor").Send(sel("colorWithAlphaComponent:"), 0.65), 10)
-	effect.Send(sel("addSubview:"), cardBox)
-	cardBox.Send(sel("release"))
+	cardBox := newBox(send(color("controlBackgroundColor"), "colorWithAlphaComponent:", 0.65), 10)
+	send(effect, "addSubview:", cardBox)
+	release(cardBox)
 	v.cardBox = cardBox
 
-	icon := class("NSImageView").Send(sel("imageViewWithImage:"),
-		class("NSWorkspace").Send(sel("sharedWorkspace")).Send(sel("iconForFile:"), nsString(f.app)))
-	effect.Send(sel("addSubview:"), icon)
+	icon := send(class("NSImageView"), "imageViewWithImage:", send(send(class("NSWorkspace"), "sharedWorkspace"), "iconForFile:", nsString(f.app)))
+	send(effect, "addSubview:", icon)
 	v.icon = icon
 
-	name := class("NSTextField").Send(sel("labelWithString:"), nsString(f.name))
-	name.Send(sel("setFont:"), class("NSFont").Send(sel("systemFontOfSize:"), 15.0))
-	effect.Send(sel("addSubview:"), name)
+	name := send(class("NSTextField"), "labelWithString:", nsString(f.name))
+	send(name, "setFont:", send(class("NSFont"), "systemFontOfSize:", 15.0))
+	send(effect, "addSubview:", name)
 	v.name = name
 
-	hint := class("NSTextField").Send(sel("labelWithString:"), nsString("Drag"))
-	hint.Send(sel("setFont:"), class("NSFont").Send(sel("systemFontOfSize:"), 9.0))
-	hint.Send(sel("setTextColor:"), color("secondaryLabelColor"))
-	hint.Send(sel("setAlignment:"), nsTextAlignmentCenter)
-	effect.Send(sel("addSubview:"), hint)
+	hint := send(class("NSTextField"), "labelWithString:", nsString("Drag"))
+	send(hint, "setFont:", send(class("NSFont"), "systemFontOfSize:", 9.0))
+	send(hint, "setTextColor:", color("secondaryLabelColor"))
+	send(hint, "setAlignment:", nsTextAlignmentCenter)
+	send(effect, "addSubview:", hint)
 	v.hint = hint
 
 	if img := symbol("hand.draw", "Drag"); img != 0 {
-		hand := class("NSImageView").Send(sel("imageViewWithImage:"), img)
-		hand.Send(sel("setContentTintColor:"), color("secondaryLabelColor"))
-		effect.Send(sel("addSubview:"), hand)
+		hand := send(class("NSImageView"), "imageViewWithImage:", img)
+		send(hand, "setContentTintColor:", color("secondaryLabelColor"))
+		send(effect, "addSubview:", hand)
 		v.hand = hand
 	}
 
-	card := class("MyGoPermissionFlowDragView").Send(sel("alloc")).Send(sel("initWithFrame:"), nsRect{})
-	effect.Send(sel("addSubview:"), card)
-	card.Send(sel("release"))
+	card := send(send(class("MyGoPermissionFlowDragView"), "alloc"), "initWithFrame:", nsRect{})
+	send(effect, "addSubview:", card)
+	release(card)
 	v.card = card
 	f.panel = panel
 }
@@ -557,48 +568,48 @@ func (f *flow) build(w float64) {
 // any size, keeping its corners, for NSVisualEffectView's maskImage.
 func roundedMask(radius float64) objc.ID {
 	side := 2*radius + 1
-	img := class("NSImage").Send(sel("alloc")).Send(sel("initWithSize:"), nsSize{side, side})
-	img.Send(sel("lockFocus"))
-	class("NSColor").Send(sel("blackColor")).Send(sel("set"))
-	class("NSBezierPath").Send(sel("bezierPathWithRoundedRect:xRadius:yRadius:"), nsRect{Size: nsSize{side, side}}, radius, radius).Send(sel("fill"))
-	img.Send(sel("unlockFocus"))
+	img := send(send(class("NSImage"), "alloc"), "initWithSize:", nsSize{side, side})
+	send(img, "lockFocus")
+	send(send(class("NSColor"), "blackColor"), "set")
+	send(send(class("NSBezierPath"), "bezierPathWithRoundedRect:xRadius:yRadius:", nsRect{Size: nsSize{side, side}}, radius, radius), "fill")
+	send(img, "unlockFocus")
 	type nsEdgeInsets struct{ Top, Left, Bottom, Right float64 }
-	img.Send(sel("setCapInsets:"), nsEdgeInsets{radius, radius, radius, radius})
-	img.Send(sel("setResizingMode:"), nsImageResizingModeStretch)
+	send(img, "setCapInsets:", nsEdgeInsets{radius, radius, radius, radius})
+	send(img, "setResizingMode:", nsImageResizingModeStretch)
 	return img
 }
 
 // newBox returns a rounded box with the separator's border, filled.
 func newBox(fill objc.ID, radius float64) objc.ID {
-	box := class("NSBox").Send(sel("alloc")).Send(sel("initWithFrame:"), nsRect{})
-	box.Send(sel("setBoxType:"), nsBoxCustom)
-	box.Send(sel("setTitlePosition:"), nsNoTitle)
-	box.Send(sel("setBorderWidth:"), 1.0)
-	box.Send(sel("setCornerRadius:"), radius)
-	box.Send(sel("setBorderColor:"), class("NSColor").Send(sel("separatorColor")))
-	box.Send(sel("setFillColor:"), fill)
+	box := send(send(class("NSBox"), "alloc"), "initWithFrame:", nsRect{})
+	send(box, "setBoxType:", nsBoxCustom)
+	send(box, "setTitlePosition:", nsNoTitle)
+	send(box, "setBorderWidth:", 1.0)
+	send(box, "setCornerRadius:", radius)
+	send(box, "setBorderColor:", send(class("NSColor"), "separatorColor"))
+	send(box, "setFillColor:", fill)
 	return box
 }
 
 // symbol returns an SF Symbol, which macOS 11 and later have, or 0.
 func symbol(name, description string) objc.ID {
 	img := class("NSImage")
-	if !objc.Send[bool](img, sel("respondsToSelector:"), sel("imageWithSystemSymbolName:accessibilityDescription:")) {
+	if !mainthread.Send[bool](img, sel("respondsToSelector:"), sel("imageWithSystemSymbolName:accessibilityDescription:")) {
 		return 0
 	}
-	return img.Send(sel("imageWithSystemSymbolName:accessibilityDescription:"), nsString(name), nsString(description))
+	return send(img, "imageWithSystemSymbolName:accessibilityDescription:", nsString(name), nsString(description))
 }
 
 // layout lays the panel out for the width, and measures its text.
 func (f *flow) layout(w float64) {
 	v := &f.views
 	textW := w - 2*panelPadding - closeSize - 6
-	v.label.Send(sel("setPreferredMaxLayoutWidth:"), textW)
-	f.labelH = math.Ceil(objc.Send[nsSize](v.label, sel("fittingSize")).Height)
+	send(v.label, "setPreferredMaxLayoutWidth:", textW)
+	f.labelH = math.Ceil(mainthread.Send[nsSize](v.label, sel("fittingSize")).Height)
 	h := panelPadding + f.labelH + 8 + cardHeight + panelPadding
 	set := func(view objc.ID, r rect) {
 		if view != 0 {
-			view.Send(sel("setFrame:"), r.ns())
+			send(view, "setFrame:", r.ns())
 		}
 	}
 	card := rect{panelPadding, panelPadding, w - 2*panelPadding, cardHeight}
@@ -611,7 +622,7 @@ func (f *flow) layout(w float64) {
 	set(v.hand, rect{card.maxX() - 38, card.Y + 20, 24, 18})
 	set(v.hint, rect{card.maxX() - 44, card.Y + 6, 36, 12})
 	set(v.card, card)
-	f.panel.Send(sel("invalidateCursorRectsForView:"), v.card)
+	send(f.panel, "invalidateCursorRectsForView:", v.card)
 }
 
 // destroy closes the panel. Main thread.
@@ -623,8 +634,8 @@ func (f *flow) destroy() {
 	if f.panel == 0 {
 		return
 	}
-	f.panel.Send(sel("orderOut:"), objc.ID(0))
-	f.panel.Send(sel("close"))
-	f.panel.Send(sel("release"))
+	send(f.panel, "orderOut:", objc.ID(0))
+	send(f.panel, "close")
+	release(f.panel)
 	f.panel, f.views = 0, panelViews{}
 }

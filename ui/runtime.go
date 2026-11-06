@@ -1,12 +1,14 @@
 package ui
 
 import (
+	"image"
 	"slices"
 	"sync"
 	"time"
 	"weak"
 
 	"github.com/egoist/mygo/i18n"
+	"github.com/egoist/mygo/internal/gpu"
 	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/internal/scene"
 	"github.com/egoist/mygo/internal/text"
@@ -23,7 +25,15 @@ type host interface {
 	// occluded reports whether nothing of the window shows, as when other
 	// windows cover it.
 	occluded() bool
+	// framesHeld tells that the window holds the frame asked for, as
+	// nothing of it shows: what waits for that frame (Window.AfterPresent)
+	// hears so.
+	framesHeld()
 	present(s *scene.Scene)
+	// frameFacts tells what came of the frame presented last, and frameAsks
+	// whether a frame was asked for that has not come (FrameRecord).
+	frameFacts() gpu.FrameFacts
+	frameAsks() bool
 	requestFrame()
 	// setFrameRate tells the surface how many frames a second come while
 	// only drawings move, 0 for one each refresh (engine.pace).
@@ -62,6 +72,9 @@ type host interface {
 	escape()
 	isDark() bool
 	preferences() platform.Preferences
+	// systemSymbol returns the mask of a symbol of the system, and false
+	// when it has none.
+	systemSymbol(name string, pointSize, scale float64) (image.Image, bool)
 	// locale returns the language the app shows, and region the user's
 	// regional formats; they cost nothing.
 	locale() string
@@ -84,14 +97,17 @@ type host interface {
 	// popupMenu shows a context menu at (x, y) after the event being
 	// handled; chosen receives the ID of the item chosen.
 	popupMenu(m *platform.Menu, x, y float32, chosen func(id int))
-	// placeWebViews shows the web views where the frame shows them, and
-	// hides the others.
-	placeWebViews(views []placedWebView)
+	// placeWebViews shows the web views and the native view elements
+	// where the frame about to present shows them, and hides the others,
+	// and reports whether it took them: a frame not presenting tells
+	// nothing.
+	placeWebViews(views []placedWebView) bool
 	// nativeGlass reports whether the surface draws the system's glass.
 	nativeGlass() bool
-	// placeGlass shows the system's glass where the frame shows it, and
-	// hides the rest.
-	placeGlass(places []platform.GlassPlacement)
+	// placeGlass shows the system's glass where the frame about to present
+	// shows it, and hides the rest, and reports whether it took them, as
+	// placeWebViews.
+	placeGlass(places []platform.GlassPlacement) bool
 	// tabIntoWebView gives the page of v the keyboard as Tab does, from
 	// its end when back (platform.WebView.TabInto).
 	tabIntoWebView(v NativeWebView, back bool)
@@ -495,6 +511,16 @@ type engine struct {
 	live liveState
 	// stats measures frames for MYGO_FRAME_STATS, nil when it is unset.
 	stats *frameStats
+	// recorder hears the frames (FrameRecord), and record is the record of
+	// the frame being drawn. recordAsked is when it asked to present, as
+	// recordPresent tells it did; nodes are the elements of the last build
+	// pass, and afterArmed tells that the timer of After is armed.
+	recorder      *FrameRecorder
+	record        FrameRecord
+	recordAsked   uint64
+	recordPresent bool
+	nodes         int
+	afterArmed    bool
 	// dropOver is the element files are dragged over; access is true once
 	// assistive technology asked for the content, and accessNodes is how
 	// many nodes the last frame's tree had.
@@ -506,7 +532,9 @@ type engine struct {
 	dark        bool
 	darkKnown   bool
 	// prefs are the desktop's preferences, read once until they change.
-	prefs      Preferences
+	prefs Preferences
+	// symbols holds what the system answered for each symbol asked of it.
+	symbols    map[symbolKey]Symbol
 	prefsKnown bool
 	// lang is the language the app shows, read as each frame starts.
 	lang string
@@ -651,6 +679,7 @@ func (rt *engine) runFrame() {
 	rt.frame++
 	rt.input = false
 	rt.focusRead, rt.activeRead, rt.withinRead, rt.keysRead = false, false, false, false
+	rt.beginRecord()
 	rt.stats.begin(rt)
 	now := rt.frameTime()
 	rt.zoomChanged = false
@@ -760,6 +789,7 @@ func (rt *engine) runFrame() {
 	if rt.stats != nil {
 		rt.stats.passes = rt.pass + 1
 	}
+	rt.nodes = rt.c.used
 	root := rt.c.root
 	if rt.insp.open {
 		// What the inspector's Styles tab changed, over what the view built.
@@ -801,9 +831,11 @@ func (rt *engine) runFrame() {
 	}
 	rt.stats.lap(phasePaint)
 	rt.insp.lap(2)
-	rt.host.present(&rt.scene)
+	// Before the frame presents, which shows them with it.
 	rt.placeWebViews()
 	rt.placeNativeGlass()
+	rt.askPresent()
+	rt.host.present(&rt.scene)
 	// The window hit-tests its maximize button in its own DIPs.
 	if r := rt.windowRect(rt.maxButton); r != rt.maxSent {
 		rt.maxSent = r
@@ -878,6 +910,7 @@ func (rt *engine) next() {
 	switch {
 	case moving && rt.host.occluded():
 		rt.held = true
+		rt.host.framesHeld()
 	case rt.animating:
 		rt.pace(0)
 		rt.host.requestFrame()
@@ -999,6 +1032,7 @@ func (rt *engine) holdFrame() bool {
 		return false
 	}
 	rt.held = true
+	rt.host.framesHeld()
 	rt.redraw, rt.repaintDue = false, time.Time{}
 	// The time the display asked for this frame at, as one waiting for
 	// the GPU renderer (windowHost.waitDisplay), is not that of the frame
@@ -1016,6 +1050,7 @@ func (rt *engine) holdFrame() bool {
 func (rt *engine) repaintFrame(w, h, scale float32) {
 	rt.inFrame = true
 	defer rt.endFrame()
+	rt.beginRecord()
 	rt.stats.begin(rt)
 	start := time.Now()
 	rt.c.now = rt.frameTime()
@@ -1036,6 +1071,9 @@ func (rt *engine) repaintFrame(w, h, scale float32) {
 	}
 	rt.stats.lap(phasePaint)
 	rt.insp.repainted(time.Since(start))
+	rt.placeWebViews()
+	rt.placeNativeGlass()
+	rt.askPresent()
 	rt.host.present(&rt.scene)
 	rt.stats.lap(phasePresent)
 	rt.text.EndFrame()
@@ -1211,6 +1249,7 @@ func (rt *engine) armTimer() {
 	at := rt.wakeAt
 	rt.wakeAt = time.Time{}
 	rt.wakeMu.Unlock()
+	rt.afterArmed = !at.IsZero()
 	rt.host.afterTimer(at)
 }
 
@@ -1294,6 +1333,7 @@ func (rt *engine) endFrame() {
 	} else if len(rt.dropped) > 0 {
 		rt.closeDropped()
 	}
+	rt.reportFrame()
 }
 
 // commit records the laid out frame in the elements' states: their
@@ -1358,6 +1398,7 @@ func (rt *engine) commitElement(e *node, clip Rect, hidden bool) {
 	}
 	s.selfClip, s.selfRadius, s.selfClips = e.selfClip()
 	s.hitFn = e.hitFn
+	s.hitOutset = e.hitOutset
 	if len(rt.liftHits) > 0 && (e == e.c.overlay || e.parent != nil && e.parent == e.c.overlay) {
 		// The elements flying in the layer before, the window's content
 		// or an overlay, go over it, under this one.

@@ -661,6 +661,18 @@ func (t *innerTexts) add(s string) {
 
 // accessTree describes the last frame for assistive technology.
 func (rt *engine) accessTree() *platform.AccessTree {
+	return rt.describeFrame(rt.dialogOnTop())
+}
+
+// dialogOnTop reports whether what is behind a dialog is inert in the last
+// frame.
+func (rt *engine) dialogOnTop() bool {
+	return rt.modal != 0 && rt.modalLayer != 0 && rt.c.overlay != nil
+}
+
+// describeFrame describes the last frame: from the dialog on top alone when
+// inDialog is set, as what is behind it is inert, and whole otherwise.
+func (rt *engine) describeFrame(inDialog bool) *platform.AccessTree {
 	// As many nodes as the last frame's, which the next is usually close
 	// to: growing the slice from empty would copy it again and again.
 	t := &platform.AccessTree{Nodes: make([]platform.AccessNode, 0, rt.accessNodes)}
@@ -668,7 +680,7 @@ func (rt *engine) accessTree() *platform.AccessTree {
 	var focused *node
 	switch root := rt.c.root; {
 	case root == nil:
-	case rt.modal != 0 && rt.modalLayer != 0 && rt.c.overlay != nil:
+	case inDialog:
 		// What is behind a dialog is inert: the dialog on top and what
 		// shows above it alone.
 		on := false
@@ -769,19 +781,24 @@ func (rt *engine) accessElement(t *platform.AccessTree, e *node, parent int, scr
 			rt.accessInline(t, e, parent)
 			return
 		}
-		if leafRole(role) {
+		if leafRole(role) && e.webView == nil {
 			return
 		}
 	}
 	if e.webView != nil {
 		// Its page first, as it paints, in a node of its own that the
 		// platform's elements of the page are inside.
-		if v := rt.host.platformWebView(e.webView); v != nil {
-			b := e.contentBox()
-			t.Nodes = append(t.Nodes, platform.AccessNode{
-				ID: e.id ^ pageNodeID, Parent: parent, Role: platform.RoleGroup, WebView: v,
-				Bounds: platform.RectF{X: float64(b.X), Y: float64(b.Y), W: float64(b.W), H: float64(b.H)},
-			})
+		b := e.contentBox()
+		n := platform.AccessNode{
+			ID: e.id ^ pageNodeID, Parent: parent, Role: platform.RoleGroup,
+			Bounds: platform.RectF{X: float64(b.X), Y: float64(b.Y), W: float64(b.W), H: float64(b.H)},
+		}
+		if native, ok := e.webView.(nativeElement); ok {
+			n.View, n.KeyView = native.view, native.key
+			t.Nodes = append(t.Nodes, n)
+		} else if v := rt.host.platformWebView(e.webView); v != nil {
+			n.WebView = v
+			t.Nodes = append(t.Nodes, n)
 		}
 	}
 	// Children in flow first, absolute ones above them, as they paint.

@@ -19,6 +19,7 @@ import (
 
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/scene"
 	"github.com/go-text/typesetting/segmenter"
 )
@@ -193,7 +194,7 @@ func loadCoreText() error {
 			missing = append(missing, name)
 			return
 		}
-		purego.RegisterFunc(fn, sym)
+		mainthread.BindAddr(fn, sym, name)
 	}
 	// Constants are pointers to CFStringRefs, or callback structs.
 	addr := func(lib uintptr, name string) uintptr {
@@ -296,10 +297,10 @@ func loadCoreText() error {
 	initDelegates(text, optional)
 	// Optional: adding fonts from memory (macOS 10.13), sRGB by name.
 	if sym, err := purego.Dlsym(text, "CTFontManagerCreateFontDescriptorsFromData"); err == nil && sym != 0 {
-		purego.RegisterFunc(&ct.descriptorsFromData, sym)
+		mainthread.BindAddr(&ct.descriptorsFromData, sym, "CTFontManagerCreateFontDescriptorsFromData")
 	}
 	if sym, err := purego.Dlsym(cg, "CGColorSpaceCreateWithName"); err == nil && sym != 0 {
-		purego.RegisterFunc(&ct.colorSpaceWithName, sym)
+		mainthread.BindAddr(&ct.colorSpaceWithName, sym, "CGColorSpaceCreateWithName")
 		if p, err := purego.Dlsym(cg, "kCGColorSpaceSRGB"); err == nil && p != 0 {
 			ct.srgbName = **(**uintptr)(unsafe.Pointer(&p))
 		}
@@ -314,9 +315,12 @@ func loadCoreText() error {
 // integer registers and returns in the first two on arm64 and amd64, as
 // SyscallN's r1 and r2.
 func bindDirect(cf, text uintptr, addr func(lib uintptr, name string) uintptr) {
+	// CFRelease and CFRetain run on the calling thread for the strings,
+	// the collections and the Core Text objects of a layout, and on the
+	// main thread for any other object (mainthread.ByReceiver).
 	release, retain := addr(cf, "CFRelease"), addr(cf, "CFRetain")
-	ct.release = func(obj uintptr) { purego.SyscallN(release, obj) }
-	ct.retain = func(obj uintptr) uintptr { r, _, _ := purego.SyscallN(retain, obj); return r }
+	ct.release = func(obj uintptr) { mainthread.ByReceiver(release, obj) }
+	ct.retain = func(obj uintptr) uintptr { return mainthread.ByReceiver(retain, obj) }
 	hash, equal := addr(cf, "CFHash"), addr(cf, "CFEqual")
 	ct.hash = func(obj uintptr) uint { r, _, _ := purego.SyscallN(hash, obj); return uint(r) }
 	ct.equal = func(a, b uintptr) bool { r, _, _ := purego.SyscallN(equal, a, b); return uint8(r) != 0 }
@@ -390,6 +394,17 @@ func bindDirect(cf, text uintptr, addr func(lib uintptr, name string) uintptr) {
 	ct.runGetStringIndices = func(run uintptr, r cfRange, out *int) {
 		purego.SyscallN(runGetStringIndices, run, uintptr(r.location), uintptr(r.length), uintptr(unsafe.Pointer(out)))
 	}
+	mainthread.Check(&ct.hash, "CFHash")
+	mainthread.Check(&ct.equal, "CFEqual")
+	mainthread.Check(&ct.stringWithCharacters, "CFStringCreateWithCharacters")
+	mainthread.Check(&ct.dictionaryCreate, "CFDictionaryCreate")
+	mainthread.Check(&ct.dictionaryGetValue, "CFDictionaryGetValue")
+	mainthread.Check(&ct.arrayGetCount, "CFArrayGetCount")
+	mainthread.Check(&ct.arrayGetValueAtIndex, "CFArrayGetValueAtIndex")
+	mainthread.Check(&ct.numberCreate, "CFNumberCreate")
+	mainthread.Check(&ct.attributedString, "CFAttributedStringCreate")
+	mainthread.Check(&ct.attributedMutable, "CFAttributedStringCreateMutableCopy")
+	mainthread.Check(&ct.attributedSet, "CFAttributedStringSetAttribute")
 }
 
 type coreText struct {
@@ -520,13 +535,14 @@ func fontSmoothing() bool {
 	if cls == 0 {
 		return true
 	}
-	defaults := cls.Send(objc.RegisterName("standardUserDefaults"))
+	// The user defaults run on the main thread.
+	defaults := mainthread.Send[objc.ID](cls, objc.RegisterName("standardUserDefaults"))
 	key := cfString("AppleFontSmoothing")
 	defer ct.release(key)
-	if defaults.Send(objc.RegisterName("objectForKey:"), key) == 0 {
+	if mainthread.Send[objc.ID](defaults, objc.RegisterName("objectForKey:"), key) == 0 {
 		return true
 	}
-	return objc.Send[int](defaults, objc.RegisterName("integerForKey:"), key) != 0
+	return mainthread.Send[int](defaults, objc.RegisterName("integerForKey:"), key) != 0
 }
 
 func cfString(s string) uintptr {
@@ -588,10 +604,14 @@ func (e *coreText) systemFont(size float32, weight int, italic, mono bool) uintp
 		sel = "monospacedSystemFontOfSize:weight:"
 	}
 	var font uintptr
-	if cls := objc.ID(objc.GetClass("NSFont")); cls != 0 && objc.Send[bool](cls, objc.RegisterName("respondsToSelector:"), objc.RegisterName(sel)) {
-		if font = uintptr(cls.Send(objc.RegisterName(sel), float64(size), nsWeight(weight))); font != 0 {
-			ct.retain(font)
-		}
+	cls := objc.ID(objc.GetClass("NSFont"))
+	if cls != 0 {
+		mainthread.CheckSend(uintptr(cls), uintptr(objc.RegisterName("respondsToSelector:")))
+	}
+	if cls != 0 && objc.Send[bool](cls, objc.RegisterName("respondsToSelector:"), objc.RegisterName(sel)) {
+		// NSFont runs on the main thread, which takes this reference to
+		// the font before its autorelease pool drains.
+		font = uintptr(mainthread.SendRetained(cls, objc.RegisterName(sel), float64(size), nsWeight(weight)))
 	}
 	if font == 0 {
 		if mono {
@@ -1538,7 +1558,7 @@ type cgPathElement struct {
 // segments. The text system's lock serializes its callers.
 func glyphOutline(font uintptr, glyph uint16) [][4]float64 {
 	outlineOnce.Do(func() {
-		outlineFn = purego.NewCallback(func(_ uintptr, el *cgPathElement) uintptr {
+		outlineFn = mainthread.Callback(purego.NewCallback(func(_ uintptr, el *cgPathElement) uintptr {
 			pt := func(i int) [2]float64 {
 				p := unsafe.Slice(el.points, i+1)[i]
 				return [2]float64{p.x, p.y}
@@ -1567,7 +1587,7 @@ func glyphOutline(font uintptr, glyph uint16) [][4]float64 {
 				line(outlineFrom)
 			}
 			return 0
-		})
+		}))
 	})
 	outlineSegs = outlineSegs[:0]
 	path := ct.fontCreatePath(font, glyph, 0)

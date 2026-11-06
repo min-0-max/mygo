@@ -78,17 +78,19 @@ func (p *Painter) paintEffect(e *node) bool {
 	grown := func(r Rect) Rect { return Rect{r.X - m.X, r.Y - m.Y, r.W + 2*m.X, r.H + 2*m.Y} }
 	box := Rect{e.x, e.y, e.w, e.h}
 	// What the layer holds: the box for an effect, which draws over it;
-	// for a blur or a Cache, what the element paints, as far as it
+	// for a blur, what the element paints, its shadows and focus ring
+	// beyond its box and the children it does not clip, as far as it
 	// painted the last time too (inkArea), blurred as far as the blur
-	// shows.
+	// shows: the same area whether it is kept (Cache) or drawn anew, so
+	// that both show the same pixels.
 	content, view := box, Rect{}
 	if e.effect == nil {
 		// Out of view, but for what the blur brings into it, nothing
 		// shows; but a kept layer holds what it holds wherever it shows,
 		// so as not to be drawn again as it moves.
-		view = grown(p.clipIn(e))
+		content, view = keptLayer{}.area(e), grown(p.clipIn(e))
 		if e.cache != nil {
-			content, view = e.cache.area(e), everywhere
+			view = everywhere
 		}
 		content = p.inkArea(e, content)
 	}

@@ -5,7 +5,7 @@ package darwin
 import (
 	"sync"
 
-	"github.com/ebitengine/purego"
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 )
 
 var (
@@ -29,9 +29,9 @@ func RadicalIdeographs(font string, radicals []rune) map[rune]rune {
 	load()
 	coreTextOnce.Do(func() {
 		lib := mustDlopen("/System/Library/Frameworks/CoreText.framework/CoreText")
-		purego.RegisterLibFunc(&ctFontCreateWithName, lib, "CTFontCreateWithName")
-		purego.RegisterLibFunc(&ctFontCopyPostScriptName, lib, "CTFontCopyPostScriptName")
-		purego.RegisterLibFunc(&ctFontGetGlyphsForCharacters, lib, "CTFontGetGlyphsForCharacters")
+		mainthread.Bind(&ctFontCreateWithName, lib, "CTFontCreateWithName")
+		mainthread.Bind(&ctFontCopyPostScriptName, lib, "CTFontCopyPostScriptName")
+		mainthread.Bind(&ctFontGetGlyphsForCharacters, lib, "CTFontGetGlyphsForCharacters")
 	})
 	var found map[rune]rune
 	withPool(func() {

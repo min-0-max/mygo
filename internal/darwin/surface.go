@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"image"
 	pngenc "image/png"
-	"runtime"
 	"slices"
 	"strings"
 	"structs"
@@ -18,6 +17,7 @@ import (
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
 
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/transfer"
 )
@@ -43,21 +43,18 @@ type cgRect struct {
 const nsNotFound = uint(1<<63 - 1)
 
 var (
-	surfaceOnce        sync.Once
-	msgConvertRectView func(obj id, sel objc.SEL, r NSRect, view id) NSRect
-	msgInitTracking    func(obj id, sel objc.SEL, r NSRect, options uint, owner, info id) id
-	msgTimer           func(cls id, sel objc.SEL, interval float64, target id, selector objc.SEL, info id, repeats bool) id
-	cgColorSpaceSRGB   uintptr
-	cgImageCreate      uintptr
-	cgImageRelease     uintptr
-	cgProviderCreate   uintptr
-	cgProviderRelease  uintptr
-	cfDataCreate       uintptr
+	surfaceOnce       sync.Once
+	cgColorSpaceSRGB  uintptr
+	cgImageCreate     uintptr
+	cgImageRelease    uintptr
+	cgProviderCreate  uintptr
+	cgProviderRelease uintptr
+	cfDataCreate      func(alloc uintptr, bytes unsafe.Pointer, length int) uintptr
 	// Read the keyboard type from each event, so an external ISO keyboard
 	// does not inherit the built-in keyboard's ANSI mapping.
 	cgEventGetIntegerValueField func(event uintptr, field uint32) int64
-	kbGetLayoutType             func(keyboardType int16) uint32
-	lmGetKbdType                func() uint8
+	kbGetLayoutTypeFn           uintptr
+	lmGetKbdTypeFn              uintptr
 
 	// caPass counts the passes of the main run loop, past Core Animation's
 	// commit of each: frames drawn in the same pass go into the same
@@ -83,34 +80,47 @@ const (
 
 func loadSurface() {
 	surfaceOnce.Do(func() {
-		stret := msgSendAddr
-		if runtime.GOARCH == "amd64" {
-			stret = mustDlsym(libObjC, "objc_msgSend_stret")
-		}
-		purego.RegisterFunc(&msgConvertRectView, stret)
-		purego.RegisterFunc(&msgInitTracking, msgSendAddr)
-		purego.RegisterFunc(&msgTimer, msgSendAddr)
 		cgImageCreate = mustDlsym(libCG, "CGImageCreate")
 		cgImageRelease = mustDlsym(libCG, "CGImageRelease")
 		cgProviderCreate = mustDlsym(libCG, "CGDataProviderCreateWithCFData")
 		cgProviderRelease = mustDlsym(libCG, "CGDataProviderRelease")
-		cfDataCreate = mustDlsym(libCF, "CFDataCreate")
-		purego.RegisterLibFunc(&cgEventGetIntegerValueField, libCG, "CGEventGetIntegerValueField")
-		purego.RegisterLibFunc(&kbGetLayoutType, libCarbon, "KBGetLayoutType")
-		purego.RegisterLibFunc(&lmGetKbdType, libCarbon, "LMGetKbdType")
+		mainthread.Bind(&cfDataCreate, libCF, "CFDataCreate")
+		mainthread.Bind(&cgEventGetIntegerValueField, libCG, "CGEventGetIntegerValueField")
+		kbGetLayoutTypeFn = mustDlsym(libCarbon, "KBGetLayoutType")
+		lmGetKbdTypeFn = mustDlsym(libCarbon, "LMGetKbdType")
 		p := mustDlsym(libCG, "kCGColorSpaceSRGB")
 		name := **(**uintptr)(unsafe.Pointer(&p))
 		cgColorSpaceSRGB, _, _ = purego.SyscallN(mustDlsym(libCG, "CGColorSpaceCreateWithName"), name)
 		// An observer after Core Animation's counts the transactions it
 		// committed (armPass).
-		purego.RegisterLibFunc(&observerCreate, libCF, "CFRunLoopObserverCreate")
-		purego.RegisterLibFunc(&addObserver, libCF, "CFRunLoopAddObserver")
-		caPassCallout = purego.NewCallback(func(observer, activity, info uintptr) {
+		mainthread.Bind(&observerCreate, libCF, "CFRunLoopObserverCreate")
+		mainthread.Bind(&addObserver, libCF, "CFRunLoopAddObserver")
+		caPassCallout = mainthread.Callback(purego.NewCallback(func(observer, activity, info uintptr) {
 			caPass++
 			caPassArmed = false
-		})
+		}))
 	})
 }
+
+// The messages and functions of the surface that take or return floats
+// or structs, which run on the main thread (mainthread.Forward).
+func msgConvertRectView(obj id, sel objc.SEL, r NSRect, view id) NSRect {
+	return mainthread.Forward[NSRect](msgSendStretAddr, obj, sel, r, view)
+}
+
+func msgInitTracking(obj id, sel objc.SEL, r NSRect, options uint, owner, info id) id {
+	return mainthread.Forward[id](msgSendAddr, obj, sel, r, options, owner, info)
+}
+
+func msgTimer(cls id, sel objc.SEL, interval float64, target id, selector objc.SEL, info id, repeats bool) id {
+	return mainthread.Forward[id](msgSendAddr, cls, sel, interval, target, selector, info, repeats)
+}
+
+func kbGetLayoutType(keyboardType int16) uint32 {
+	return mainthread.Forward[uint32](kbGetLayoutTypeFn, keyboardType)
+}
+
+func lmGetKbdType() uint8 { return mainthread.Forward[uint8](lmGetKbdTypeFn) }
 
 // armPass has the end of this pass of the main run loop counted (caPass),
 // once: a frame drawn in it calls it.
@@ -150,6 +160,9 @@ type surface struct {
 	// the view changed size or scale since.
 	linkRunning bool
 	due         bool
+	// leftToDisplay tells that the last tick left the frame due to AppKit's
+	// display of the view (tick).
+	leftToDisplay bool
 	// deferred tells that the content left the last paced frame to draw
 	// later (FrameNow): the link keeps running meanwhile. soon tells that
 	// a frame waits for the backend's queue (drawSoon), asked for after
@@ -161,6 +174,9 @@ type surface struct {
 	drawn     bool
 	resized   bool
 	lastFrame time.Time
+	// firings counts the ticks of the display link and the firings of
+	// the timer (TestFrameFirings).
+	firings   int
 	soonAfter time.Time
 	framePass uint64
 	// A frame asks for the view's size, the window's scale and the
@@ -172,8 +188,8 @@ type surface struct {
 	sized         bool
 	width, height float64
 	backing, rate float64
-	cursor    platform.Cursor
-	inside    bool
+	cursor        platform.Cursor
+	inside        bool
 	// secondaryClick is set while the primary button is down for a secondary
 	// click: a Control-click, or a press of the secondary button that an event
 	// tap posted again as a primary one.
@@ -201,6 +217,9 @@ type surface struct {
 	// placed are where the content shows the window's web views, under
 	// it (webview.go).
 	placed []platform.WebViewPlacement
+	// native holds the native view of the window and where the content
+	// shows views inside it (native_view.go), nil without one.
+	native nativeHost
 	// glass are the system's glass views by element, under the content
 	// and above the web views; glassShown is their order, bottom to top.
 	glass      map[uint64]id
@@ -221,7 +240,7 @@ func (w *window) createSurface(content NSRect) {
 	s.tracking = msgInitTracking(send(class("NSTrackingArea"), "alloc"), sel("initWithRect:options:owner:userInfo:"), NSRect{}, options, s.view, 0)
 	send(s.view, "addTrackingArea:", uintptr(s.tracking))
 	if respondsTo(s.view, "displayLinkWithTarget:selector:") {
-		s.link = retain(send(s.view, "displayLinkWithTarget:selector:", uintptr(s.view), uintptr(sel("mygoTick:"))))
+		s.link = sendRetained(s.view, "displayLinkWithTarget:selector:", uintptr(s.view), uintptr(sel("mygoTick:")))
 		send(s.link, "setPaused:", 1)
 		send(s.link, "addToRunLoop:forMode:", uintptr(send(class("NSRunLoop"), "mainRunLoop")), kCFRunLoopCommonModes)
 	}
@@ -420,7 +439,9 @@ func (s *surface) RequestFrame() {
 	if s.w.closed {
 		return
 	}
-	if s.link != 0 {
+	// The link of a window out of sight does not tick: a window drawing
+	// its frames there (DrawWhileOccluded) paces them with the timer.
+	if s.link != 0 && !(s.w.opts.DrawWhileOccluded && !s.visible()) {
 		switch {
 		case s.linkRunning:
 			s.due = true
@@ -445,12 +466,15 @@ func (s *surface) RequestFrame() {
 	if s.timing {
 		return
 	}
-	// One refresh after the last frame, or at once after a pause.
+	// One refresh after the last frame began, or at once after a pause:
+	// without a link from the backend's queue, with one through the timer,
+	// so that each frame follows a tick or a firing.
 	delay := s.refresh() - time.Since(s.lastFrame)
-	if delay <= 0 {
+	if delay <= 0 && s.link == 0 {
 		s.drawSoon()
 		return
 	}
+	delay = max(delay, 0)
 	s.timing = true
 	withPool(func() {
 		t := msgTimer(class("NSTimer"), sel("timerWithTimeInterval:target:selector:userInfo:repeats:"), delay.Seconds(), s.view, sel("mygoTimer:"), 0, false)
@@ -515,6 +539,29 @@ func (s *surface) SetFrameRate(fps float64) {
 	msgSetRateRange(s.link, sel("setPreferredFrameRateRange:"), r)
 }
 
+// tick draws the frame due at a tick of the display link, and reports
+// whether the link keeps running.
+func (s *surface) tick(displays func() bool) bool {
+	if !s.due && !s.deferred {
+		// No frame was asked for since the last refresh, nor does the
+		// content wait to draw the last one.
+		s.linkRunning = false
+		return false
+	}
+	if !s.leftToDisplay && displays() {
+		// AppKit displays the view in this pass, as after a resize (the
+		// view's needsDisplay tells nothing): the frame shows with the
+		// window's changes then. The frame stays due: a layer marked to
+		// display waits for a commit of Core Animation, which nothing need
+		// start, and what waits for the frame would wait as long. The next
+		// tick draws it when AppKit displayed nothing.
+		s.leftToDisplay = true
+		return true
+	}
+	s.frameNow(true)
+	return true
+}
+
 // FrameNow draws a frame at once, for one the display link's tick left to
 // draw until the renderer had a drawable.
 func (s *surface) FrameNow() {
@@ -536,6 +583,7 @@ func (s *surface) FrameNow() {
 // more: deferred holds only while the last frame sent was left.
 func (s *surface) frameNow(paced bool) {
 	s.resized = false
+	s.due, s.leftToDisplay = false, false
 	s.framePass = caPass
 	armPass()
 	s.lastFrame = time.Now()
@@ -608,7 +656,7 @@ func (s *surface) PresentPixels(pix []byte, stride, width, height int) {
 	if len(pix) < stride*height || width == 0 || height == 0 {
 		return
 	}
-	data, _, _ := purego.SyscallN(cfDataCreate, 0, uintptr(unsafe.Pointer(&pix[0])), uintptr(stride*height))
+	data := cfDataCreate(0, unsafe.Pointer(&pix[0]), stride*height)
 	provider, _, _ := purego.SyscallN(cgProviderCreate, data)
 	const bitmapInfo = 2 | 2<<12 // premultiplied alpha first, 32-bit little endian: BGRA
 	img, _, _ := purego.SyscallN(cgImageCreate, uintptr(width), uintptr(height), 8, 32, uintptr(stride), cgColorSpaceSRGB, bitmapInfo, provider, 0, 0, 0)
@@ -665,17 +713,25 @@ var cursorFallbacks = map[platform.Cursor]string{
 }
 
 // applyCursor sets the content's cursor, unless the pointer is over a
-// web view, whose page sets its own.
+// web view, whose page sets its own, or where the native view takes it,
+// which sets its own too.
 func (s *surface) applyCursor() {
-	if len(s.placed) > 0 {
+	if len(s.placed) > 0 || s.native != nil {
 		p := msgPoint(class("NSEvent"), sel("mouseLocation"))
 		inWindow := msgRectToRect(s.w.win, sel("convertRectFromScreen:"), NSRect{Origin: p})
-		local := msgPointFromView(s.view, sel("convertPoint:fromView:"), inWindow.Origin, 0)
-		if s.webViewAt(local.X, local.Y) != nil {
+		if s.leavesCursor(inWindow.Origin) {
 			return
 		}
 	}
 	send(nsCursor(s.cursor), "set")
+}
+
+// leavesCursor reports whether a web view or the native view takes the
+// pointer at p in the window.
+func (s *surface) leavesCursor(p NSPoint) bool {
+	local := msgPointFromView(s.view, sel("convertPoint:fromView:"), p, 0)
+	return s.webViewAt(local.X, local.Y) != nil ||
+		s.native != nil && s.native.takes(local.X, local.Y, msgPointFromView(send(s.view, "superview"), sel("convertPoint:fromView:"), p, 0))
 }
 
 // nsCursor returns the NSCursor of c. The diagonal resize cursors are the
@@ -726,11 +782,9 @@ func hasCursor(cls id, name string) bool {
 		var copyMethods func(cls uintptr, n *uint32) unsafe.Pointer
 		var methodName func(m uintptr) objc.SEL
 		var getClass func(obj id) uintptr
-		var free func(p unsafe.Pointer)
-		purego.RegisterLibFunc(&copyMethods, libObjC, "class_copyMethodList")
-		purego.RegisterLibFunc(&methodName, libObjC, "method_getName")
-		purego.RegisterLibFunc(&getClass, libObjC, "object_getClass")
-		purego.RegisterLibFunc(&free, purego.RTLD_DEFAULT, "free")
+		mainthread.Bind(&copyMethods, libObjC, "class_copyMethodList")
+		mainthread.Bind(&methodName, libObjC, "method_getName")
+		mainthread.Bind(&getClass, libObjC, "object_getClass")
 		var n uint32
 		list := copyMethods(getClass(cls), &n)
 		if list == nil {
@@ -740,7 +794,7 @@ func hasCursor(cls id, name string) bool {
 		for _, m := range unsafe.Slice((*uintptr)(list), n) {
 			ownCursors[methodName(m)] = true
 		}
-		free(list)
+		mainthread.Forward[struct{}](mustDlsym(purego.RTLD_DEFAULT, "free"), uintptr(list))
 	})
 	return ownCursors[sel(name)]
 }
@@ -1160,6 +1214,7 @@ func registerSurfaceClass() {
 		}
 		return s.nativeDataOperation(info)
 	}
+	moved := mouse(platform.PointerMove, 0)
 	methods := []objc.MethodDef{
 		// Files dragged from other apps.
 		method("draggingEntered:", dragged),
@@ -1181,11 +1236,12 @@ func registerSurfaceClass() {
 	classDef("MyGoSurfaceView", "NSView", []string{"NSTextInputClient"}, append(append(methods, accessViewMethods()...), []objc.MethodDef{
 		method("isFlipped", func(self id, _ objc.SEL) bool { return true }),
 		// The pointer goes through to the web views under the surface
-		// where the content shows them (webview.go).
+		// where the content shows them (webview.go), and to the native
+		// view where a view inside it takes it (native_view.go).
 		method("hitTest:", func(self id, cmd objc.SEL, p NSPoint) id {
-			if s := b().surfaceOf(self); s != nil && len(s.placed) > 0 {
+			if s := b().surfaceOf(self); s != nil && (len(s.placed) > 0 || s.native != nil) {
 				local := msgPointFromView(self, sel("convertPoint:fromView:"), p, send(self, "superview"))
-				if s.webViewAt(local.X, local.Y) != nil {
+				if s.webViewAt(local.X, local.Y) != nil || s.native != nil && s.native.takes(local.X, local.Y, p) {
 					return 0
 				}
 			}
@@ -1234,27 +1290,20 @@ func registerSurfaceClass() {
 		}),
 		method("mygoTick:", func(self id, _ objc.SEL, link id) {
 			s := b().surfaceOf(self)
-			if s == nil || !s.due && !s.deferred {
-				// No frame was asked for since the last refresh, nor
-				// does the content wait to draw the last one.
+			if s == nil {
 				send(link, "setPaused:", 1)
-				if s != nil {
-					s.linkRunning = false
-				}
 				return
 			}
-			s.due = false
-			if sendBool(send(self, "layer"), "needsDisplay") {
-				// AppKit displays the view in this pass, as after a
-				// resize (the view's needsDisplay tells nothing): the
-				// frame shows with the window's changes then.
-				return
+			s.firings++
+			displays := func() bool { return sendBool(send(self, "layer"), "needsDisplay") }
+			if !s.tick(displays) {
+				send(link, "setPaused:", 1)
 			}
-			s.frameNow(true)
 		}),
 		method("mygoTimer:", func(self id, _ objc.SEL, timer id) {
 			// A closed window's view lives until its timer fires.
 			if s := b().surfaceOf(self); s != nil {
+				s.firings++
 				s.timing = false
 				s.frameNow(false)
 			}
@@ -1274,6 +1323,7 @@ func registerSurfaceClass() {
 				s.resized = true
 				s.send(platform.SurfaceEvent{Kind: platform.SurfaceResize})
 				send(self, "setNeedsDisplay:", 1)
+				s.w.backingChanged()
 			}
 		}),
 		method("becomeFirstResponder", func(self id, _ objc.SEL) bool {
@@ -1297,7 +1347,12 @@ func registerSurfaceClass() {
 		method("otherMouseDown:", mouse(platform.PointerDown, 2)),
 		method("otherMouseUp:", mouse(platform.PointerUp, 2)),
 		method("otherMouseDragged:", mouse(platform.PointerMove, 2)),
-		method("mouseMoved:", mouse(platform.PointerMove, 0)),
+		method("mouseMoved:", func(self id, cmd objc.SEL, ev id) {
+			moved(self, cmd, ev)
+			if s := b().surfaceOf(self); s != nil && s.native != nil {
+				s.native.moved(ev)
+			}
+		}),
 		method("tabletPoint:", func(self id, _ objc.SEL, ev id) {
 			if s := b().surfaceOf(self); s != nil {
 				s.tabletPoint(ev)

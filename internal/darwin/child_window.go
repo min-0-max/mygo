@@ -60,6 +60,8 @@ func (w *window) showAboveParent(key bool) {
 		if key {
 			send(w.win, "makeKeyWindow")
 		}
+	case key && w.b.windowShow != nil:
+		w.b.windowShow(uintptr(w.win))
 	case key:
 		send(w.win, "makeKeyAndOrderFront:", 0)
 	default:

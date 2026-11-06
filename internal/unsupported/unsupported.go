@@ -21,12 +21,20 @@ var errUnsupported = errors.New("mygo: " + runtime.GOOS + "/" + runtime.GOARCH +
 
 func (*Backend) Name() string                                        { return "unsupported" }
 func (*Backend) Init(platform.AppHandler, platform.AppOptions) error { return errUnsupported }
-func (*Backend) Run() error                                          { return errUnsupported }
 func (*Backend) Quit()                                               {}
 func (*Backend) IsMainThread() bool                                  { return true }
 func (*Backend) Signal()                                             {}
 func (*Backend) Step()                                               {}
 func (*Backend) Wake()                                               {}
+
+// Run runs start, whose Init fails.
+func (*Backend) Run(start func() error, _ func()) error {
+	if err := start(); err != nil {
+		return err
+	}
+	return errUnsupported
+}
+
 func (*Backend) NewWindow(*platform.WindowOptions, platform.WindowHandler) (platform.Window, error) {
 	return nil, errUnsupported
 }

@@ -292,7 +292,7 @@ func macClipboardReadItem(item id, formats []transfer.Format) ([]transfer.Repres
 				if rep == 0 {
 					return nil, errors.New("mygo: cannot convert clipboard image")
 				}
-				b = goBytes(send(rep, "representationUsingType:properties:", 4, uintptr(send(class("NSDictionary"), "dictionary"))))
+				b = goBytes(send(rep, "representationUsingType:properties:", 4, uintptr(emptyDictionary())))
 			}
 			found = true
 			break

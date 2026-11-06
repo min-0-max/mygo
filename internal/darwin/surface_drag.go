@@ -12,15 +12,13 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/transfer"
 )
 
 var (
-	msgDraggingFrame func(id, objc.SEL, NSRect, id)
-	msgDragKeyEvent  func(id, objc.SEL, uint, NSPoint, uint, float64, int, id, id, id, bool, uint16) id
 	macDragSources   = map[id]*macDataSource{}
 	macDragProviders = map[id]*macDataProvider{}
 	macDragTypes     = map[transfer.Format]string{}
@@ -43,9 +41,17 @@ type macDataProvider struct {
 	item transfer.Item
 }
 
+// msgDraggingFrame and msgDragKeyEvent send messages that take structs or
+// floats on the main thread (mainthread.Forward).
+func msgDraggingFrame(obj id, s objc.SEL, frame NSRect, contents id) {
+	mainthread.Forward[struct{}](msgSendAddr, obj, s, frame, contents)
+}
+
+func msgDragKeyEvent(cls id, s objc.SEL, typ uint, loc NSPoint, flags uint, ts float64, wn int, ctx, chars, charsIgnoring id, repeat bool, keyCode uint16) id {
+	return mainthread.Forward[id](msgSendAddr, cls, s, typ, loc, flags, ts, wn, ctx, chars, charsIgnoring, repeat, keyCode)
+}
+
 func registerDataDragClasses() {
-	purego.RegisterFunc(&msgDraggingFrame, msgSendAddr)
-	purego.RegisterFunc(&msgDragKeyEvent, msgSendAddr)
 	classDef("MyGoDragSource", "NSObject", []string{"NSDraggingSource"}, []objc.MethodDef{
 		method("draggingSession:sourceOperationMaskForDraggingContext:", func(self id, _ objc.SEL, session id, context int) uint {
 			if src := macDragSources[self]; src != nil {
@@ -219,7 +225,7 @@ func (s *surface) StartDataDrag(r platform.DragRequest) {
 			msgDraggingFrame(di, sel("setDraggingFrame:contents:"), frame, img)
 			dragging = append(dragging, di)
 		}
-		src.session = retain(send(s.view, "beginDraggingSessionWithItems:event:source:", uintptr(nsArray(dragging...)), uintptr(s.w.lastMouseDown), uintptr(src.obj)))
+		src.session = sendRetained(s.view, "beginDraggingSessionWithItems:event:source:", uintptr(nsArray(dragging...)), uintptr(s.w.lastMouseDown), uintptr(src.obj))
 		if src.session == 0 {
 			src.err = errors.New("mygo: AppKit failed to start drag")
 			src.end = screen{}.CursorPoint()

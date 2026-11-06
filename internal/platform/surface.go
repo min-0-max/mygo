@@ -55,6 +55,27 @@ type Surface interface {
 	PlaceWebViews(views []WebViewPlacement)
 }
 
+// NativeViewSurface is a Surface that holds a view of the application
+// under it, the native view of the window, inside which its content shows
+// views as native view elements (macOS's). Its methods run on the main
+// thread.
+type NativeViewSurface interface {
+	// NewNativeView places view, which the application made, under the
+	// surface and its web views, filling the content of the window, and
+	// keeps it there until the window closes. A window takes one.
+	NewNativeView(view uintptr) error
+	// PlaceNativeViews notes where the frame shows the native view
+	// elements, in the order it painted them, and calls apply, which
+	// gives them to the application, before the frame presents. Once
+	// apply returns, the keyboard leaves the views of the elements the
+	// frame no longer shows, for the surface.
+	PlaceNativeViews(views []NativeViewPlacement, apply func())
+	// TabIntoNativeView gives the view key the keyboard as Tab does, from
+	// its end when back. Tab past the other end comes back as
+	// WebViewTabOut.
+	TabIntoNativeView(key uintptr, back bool)
+}
+
 // DamageSurface is a Surface that shows a frame drawn in memory by what
 // changed since the last one: Linux's, whose toolkit then repaints, and
 // the compositor takes, only that.
@@ -73,6 +94,32 @@ type OccludableSurface interface {
 	// SurfaceShown once some of it shows again.
 	Occluded() bool
 }
+
+// Presentation is what came of the frame that was to show a scene of a
+// window's content (surface.Conn.AfterPresent): it presented, or why it
+// presented nothing. A frame dropped for one drawn after it, which shows
+// what it would have, answers nothing: the frame after it does.
+type Presentation uint8
+
+const (
+	// Presented tells that the present of the frame ran.
+	Presented Presentation = iota
+	// PresentNoDamage tells that the scene changed nothing of the frame
+	// before, and no frame presented.
+	PresentNoDamage
+	// PresentNoDrawable tells that the frame found no drawable to draw
+	// into, as when the display held them all past the wait for one.
+	PresentNoDrawable
+	// PresentHeld tells that the window holds its frames, as while
+	// nothing of it shows.
+	PresentHeld
+	// PresentClosed tells that the window closed before the frame
+	// presented.
+	PresentClosed
+	// PresentFailed tells that drawing the frame failed, with the error
+	// that came with it.
+	PresentFailed
+)
 
 // WideGamutSurface is a Surface that tells whether its window's screen
 // shows colors outside the sRGB gamut (macOS's).
@@ -349,14 +396,16 @@ const (
 	// frames once it has web views: the content makes its renderer again.
 	SurfaceRenew
 	// WebViewPress reports that Button went down at X, Y on a web view
-	// the content shows there (Surface.PlaceWebViews), which takes the
-	// press and what follows: the content notes it, as popovers close for
-	// a press outside them, but handles none of it.
+	// the content shows there (Surface.PlaceWebViews), or on a native view
+	// element (NativeViewSurface.PlaceNativeViews), which takes the press
+	// and what follows: the content notes it, as popovers close for a
+	// press outside them, but handles none of it.
 	WebViewPress
 	// WebViewTabOut reports that Tab moved the keyboard out of WebView
-	// past its page's last element, or Shift+Tab (Mods) past its first:
-	// the surface has the keyboard again, and the content moves the focus
-	// on from the web view's element.
+	// past its page's last element, or Shift+Tab (Mods) past its first, or
+	// out of the key view of the native view element naming View: the
+	// surface has the keyboard again, and the content moves the focus on
+	// from the element.
 	WebViewTabOut
 	// WebViewKey reports Key with Mods, pressed in the page of WebView,
 	// which has the keyboard, and which the page left unhandled: it did
@@ -423,6 +472,8 @@ type SurfaceEvent struct {
 	Action AccessActionKind
 	// WebView is WebViewTabOut's and WebViewKey's.
 	WebView WebView
+	// View is WebViewTabOut's, the view the native view element names.
+	View uintptr
 	// Paced marks a SurfaceFrame of frames following each other at the
 	// display's refreshes (PacedSurface): the content may draw it later,
 	// once the display can take it, which it tells by returning true from

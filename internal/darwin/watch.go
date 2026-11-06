@@ -12,6 +12,7 @@ import (
 
 	"github.com/ebitengine/purego"
 
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/internal/watchdriver"
 )
@@ -71,14 +72,10 @@ const (
 	fseFramework = "/System/Library/Frameworks/CoreServices.framework/Frameworks/FSEvents.framework/FSEvents"
 )
 
-// The FSEvents API, bound once.
+// The FSEvents API, resolved once; its functions run on the main thread
+// (mainthread.Forward).
 var (
-	fseStreamCreate     func(alloc, callback uintptr, context *fseContext, paths uintptr, sinceWhen uint64, latency float64, flags uint32) uintptr
-	fseStreamStart      func(stream uintptr) uint8
-	fseStreamStop       func(stream uintptr)
-	fseStreamInvalidate func(stream uintptr)
-	fseStreamRelease    func(stream uintptr)
-	fseStreamSetQueue   func(stream, queue uintptr)
+	fseFns [6]uintptr
 
 	cfStringCreateWithCString func(alloc uintptr, s *byte, encoding uint32) uintptr
 	cfArrayCreate             func(alloc uintptr, values *uintptr, n int, callbacks uintptr) uintptr
@@ -88,9 +85,11 @@ var (
 	dispatchSyncF    func(queue, context, work uintptr)
 	libcRealpath     func(path, resolved *byte) uintptr
 
-	// fseCallback is the process's one FSEventStreamCallback, and fseFlush
-	// what dispatch_sync_f runs to wait for the callbacks already queued:
-	// created with the first watch and never freed.
+	// fseCallback is the process's one FSEventStreamCallback, created with
+	// the first watch and never freed. fseFlush is what dispatch_sync_f
+	// runs to wait for the callbacks already queued: free, which is given
+	// NULL and does nothing, as the purpose of the call is the flush of
+	// the queue.
 	fseCallback, fseFlush uintptr
 
 	// fseQueue is the one serial queue every stream delivers on, off the
@@ -112,29 +111,55 @@ func loadFSEvents() {
 		if h, err := purego.Dlopen(fseFramework, purego.RTLD_GLOBAL|purego.RTLD_NOW); err == nil {
 			lib = h
 		}
-		purego.RegisterLibFunc(&fseStreamCreate, lib, "FSEventStreamCreate")
-		purego.RegisterLibFunc(&fseStreamStart, lib, "FSEventStreamStart")
-		purego.RegisterLibFunc(&fseStreamStop, lib, "FSEventStreamStop")
-		purego.RegisterLibFunc(&fseStreamInvalidate, lib, "FSEventStreamInvalidate")
-		purego.RegisterLibFunc(&fseStreamRelease, lib, "FSEventStreamRelease")
-		purego.RegisterLibFunc(&fseStreamSetQueue, lib, "FSEventStreamSetDispatchQueue")
-		purego.RegisterLibFunc(&cfStringCreateWithCString, libCF, "CFStringCreateWithCString")
-		purego.RegisterLibFunc(&cfArrayCreate, libCF, "CFArrayCreate")
+		for i, name := range []string{
+			"FSEventStreamCreate", "FSEventStreamStart", "FSEventStreamStop",
+			"FSEventStreamInvalidate", "FSEventStreamRelease", "FSEventStreamSetDispatchQueue",
+		} {
+			fseFns[i] = mustDlsym(lib, name)
+		}
+		mainthread.Bind(&cfStringCreateWithCString, libCF, "CFStringCreateWithCString")
+		mainthread.Bind(&cfArrayCreate, libCF, "CFArrayCreate")
 		kCFTypeArrayCallBacks = mustDlsym(libCF, "kCFTypeArrayCallBacks")
-		purego.RegisterLibFunc(&watchQueueCreate, purego.RTLD_DEFAULT, "dispatch_queue_create")
-		purego.RegisterLibFunc(&dispatchSyncF, purego.RTLD_DEFAULT, "dispatch_sync_f")
+		mainthread.Bind(&watchQueueCreate, purego.RTLD_DEFAULT, "dispatch_queue_create")
+		mainthread.Bind(&dispatchSyncF, purego.RTLD_DEFAULT, "dispatch_sync_f")
 		// The UNIX03 realpath on Intel; Apple silicon has only one.
 		realpath := "realpath$DARWIN_EXTSN"
 		if _, err := purego.Dlsym(purego.RTLD_DEFAULT, realpath); err != nil {
 			realpath = "realpath"
 		}
-		purego.RegisterLibFunc(&libcRealpath, purego.RTLD_DEFAULT, realpath)
-		fseCallback = purego.NewCallback(fseEvents)
+		mainthread.Bind(&libcRealpath, purego.RTLD_DEFAULT, realpath)
+		fseCallback = mainthread.Callback(purego.NewCallback(fseEvents))
 		// Our callback never blocks, so waiting for it cannot deadlock.
-		fseFlush = purego.NewCallback(func() {})
+		fseFlush = mustDlsym(purego.RTLD_DEFAULT, "free")
 		label := []byte("mygo.watch\x00")
 		fseQueue = watchQueueCreate(&label[0], 0)
 	})
+}
+
+// The functions of FSEvents, in fseFns.
+const (
+	fseCreate = iota
+	fseStart
+	fseStop
+	fseInvalidate
+	fseRelease
+	fseSetQueue
+)
+
+func fseStreamCreate(alloc, callback uintptr, context *fseContext, paths uintptr, sinceWhen uint64, latency float64, flags uint32) uintptr {
+	return mainthread.Forward[uintptr](fseFns[fseCreate], alloc, callback, context, paths, sinceWhen, latency, flags)
+}
+
+func fseStreamStart(stream uintptr) uint8 { return mainthread.Forward[uint8](fseFns[fseStart], stream) }
+
+func fseStreamStop(stream uintptr) { mainthread.Forward[struct{}](fseFns[fseStop], stream) }
+
+func fseStreamInvalidate(stream uintptr) { mainthread.Forward[struct{}](fseFns[fseInvalidate], stream) }
+
+func fseStreamRelease(stream uintptr) { mainthread.Forward[struct{}](fseFns[fseRelease], stream) }
+
+func fseStreamSetQueue(stream, queue uintptr) {
+	mainthread.Forward[struct{}](fseFns[fseSetQueue], stream, queue)
 }
 
 // fseContext mirrors FSEventStreamContext. FSEvents copies it, and hands
@@ -268,9 +293,23 @@ func (s *fseStream) deliver(n platform.FileWatchNotice) {
 	d.Wake()
 }
 
-// stop stops and releases the stream. Only the goroutine of the watch calls
-// it, but a callback may be running: dispatch_sync_f waits for the queue,
-// after which nothing touches s.
+// stopStreams stops and releases streams in one step
+// (mainthread.RunOnMain), whose calls of FSEvents run on the main thread:
+// the goroutine of the watch calls it.
+func stopStreams(streams []*fseStream) {
+	if len(streams) == 0 {
+		return
+	}
+	mainthread.RunOnMain(func() {
+		for _, s := range streams {
+			s.stop()
+		}
+	})
+}
+
+// stop stops and releases the stream, in a step. A callback may
+// be running on the queue: dispatch_sync_f waits for it, after which
+// nothing touches s.
 func (s *fseStream) stop() {
 	if s.stream == 0 {
 		return
@@ -385,30 +424,41 @@ func (d *fseWatch) Add(t platform.FileWatchTarget) error {
 	}
 	s := &fseStream{id: t.ID, path: streamPath, subtree: t.Subtree, driver: d}
 	s.context.info = uintptr(unsafe.Pointer(s))
-	// kFSEventStreamEventIdSinceNow: the core's snapshot is taken already.
-	stream := fseStreamCreate(0, fseCallback, &s.context, cfPaths, ^uint64(0), fseLatency, fseNoDefer|fseFileEvents|fseWatchRoot)
+	// The stream is made, scheduled and started in one step
+	// (mainthread.RunOnMain), whose calls of FSEvents run on the main
+	// thread.
+	var startErr error
+	mainthread.RunOnMain(func() {
+		// kFSEventStreamEventIdSinceNow: the core's snapshot is taken
+		// already.
+		s.stream = fseStreamCreate(0, fseCallback, &s.context, cfPaths, ^uint64(0), fseLatency, fseNoDefer|fseFileEvents|fseWatchRoot)
+		if s.stream == 0 {
+			startErr = errors.New("cannot create an FSEventStream")
+			return
+		}
+		fseStreams.Lock()
+		fseStreams.m[s.context.info] = s
+		fseStreams.Unlock()
+		fseStreamSetQueue(s.stream, fseQueue)
+		if fseStreamStart(s.stream) == 0 {
+			s.stop()
+			startErr = errors.New("cannot start an FSEventStream")
+			return
+		}
+		s.started = true
+	})
 	cfRelease(cfPaths)
 	cfRelease(cfPath)
-	if stream == 0 {
-		return errors.New("cannot create an FSEventStream")
+	if startErr != nil {
+		return startErr
 	}
-	s.stream = stream
-	fseStreams.Lock()
-	fseStreams.m[s.context.info] = s
-	fseStreams.Unlock()
-	fseStreamSetQueue(stream, fseQueue)
-	if fseStreamStart(stream) == 0 {
-		s.stop()
-		return errors.New("cannot start an FSEventStream")
-	}
-	s.started = true
 	d.streams[t.ID] = s
 	return nil
 }
 
 func (d *fseWatch) Remove(id uint64) {
 	if s := d.streams[id]; s != nil {
-		s.stop()
+		stopStreams([]*fseStream{s})
 		delete(d.streams, id)
 	}
 }
@@ -438,8 +488,10 @@ func (d *fseWatch) Wake() {
 }
 
 func (d *fseWatch) Close() {
+	streams := make([]*fseStream, 0, len(d.streams))
 	for id, s := range d.streams {
-		s.stop()
+		streams = append(streams, s)
 		delete(d.streams, id)
 	}
+	stopStreams(streams)
 }

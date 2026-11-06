@@ -440,9 +440,9 @@ term, err := terminal.New(terminal.Options{Font: terminal.Font{
   system's monospaced font when empty. Characters the fonts lack come
   from the system's fallback fonts, by the character alone for a wide
   one: what is before it and its color do not change its font. A font
-  the app carries, rather than
-  one the user installed, is added with `ui.RegisterFont`, its styles
-  under one family so that bold and italic text take them:
+  the app carries, rather than one the user installed, is added with
+  `ui.RegisterFont`, its styles under one family so that bold and italic
+  text take them:
 
   ```go
   //go:embed fonts

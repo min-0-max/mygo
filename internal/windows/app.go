@@ -250,7 +250,18 @@ func sanitize(name string) string {
 	return string(out)
 }
 
-func (b *Backend) Run() error {
+// Run runs start, then the event loop until Quit, then finish, all on the
+// main thread; an error of start ends it before the event loop.
+func (b *Backend) Run(start func() error, finish func()) error {
+	if err := start(); err != nil {
+		return err
+	}
+	err := b.runLoop()
+	finish()
+	return err
+}
+
+func (b *Backend) runLoop() error {
 	b.running = true
 	postMessage(b.appHwnd, wmAppReady, 0, 0)
 	var m msg

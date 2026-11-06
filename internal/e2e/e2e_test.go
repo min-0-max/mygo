@@ -138,6 +138,10 @@ func TestMain(m *testing.M) {
 		automationApp()
 		return
 	}
+	if mode := os.Getenv("MYGO_E2E_ACTIVATION_APP"); mode != "" {
+		activationApp(mode)
+		return
+	}
 	mygo.Bind(Greeter{}, probe, streams, Bench{})
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

@@ -31,6 +31,10 @@ func appDirs() []string {
 // at the link, which FileIcon draws without the badge of links. Each has the
 // name Finder shows (localized, without .app) and its bundle identifier,
 // or its path without one.
+//
+// It runs on the calling thread, reading the disk off the main thread:
+// what the bundles and the file manager return is autoreleased in a pool
+// of this thread, which it outlives until it is copied.
 func (b *Backend) Applications() ([]platform.Application, error) {
 	var paths []string
 	seen := map[string]bool{}
@@ -67,18 +71,18 @@ func (b *Backend) Applications() ([]platform.Application, error) {
 
 	apps := make([]platform.Application, 0, len(paths))
 	withPool(func() {
-		fm := send(class("NSFileManager"), "defaultManager")
+		fm := sendHere(class("NSFileManager"), "defaultManager")
 		for _, p := range paths {
 			ns := nsString(p)
-			bundle := send(class("NSBundle"), "bundleWithPath:", uintptr(ns))
+			bundle := sendHere(class("NSBundle"), "bundleWithPath:", uintptr(ns))
 			if bundle == 0 {
 				continue
 			}
 			a := platform.Application{
 				// Finder shows .app where the user has it show all
 				// extensions; Launchpad and Spotlight never do.
-				Name: strings.TrimSuffix(goString(send(fm, "displayNameAtPath:", uintptr(ns))), ".app"),
-				ID:   goString(send(bundle, "bundleIdentifier")),
+				Name: strings.TrimSuffix(goString(sendHere(fm, "displayNameAtPath:", uintptr(ns))), ".app"),
+				ID:   goString(sendHere(bundle, "bundleIdentifier")),
 				Path: p,
 			}
 			if a.ID == "" {

@@ -13,8 +13,17 @@ import (
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
 
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/ui"
 )
+
+// Any goroutine draws a symbol while Go runs on the worker
+// (internal/darwin/mainthread), so what asks AppKit is one step
+// (mainthread.RunOnMain), whose calls the main thread runs before it
+// drains a pool: the objects of two calls forwarded from another thread
+// would live in pools of the main thread that drain between them. AppKit's
+// messages go to the main thread, and the bitmap contexts are drawn on the
+// calling thread, as the rest of CoreGraphics is.
 
 var (
 	selSymbolImage = objc.RegisterName("imageWithSystemSymbolName:accessibilityDescription:")
@@ -45,10 +54,9 @@ var cg struct {
 	width        func(img uintptr) uintptr
 	height       func(img uintptr) uintptr
 
-	// poolPush and poolPop are libobjc's autorelease pools; size sends a
-	// message that returns an NSSize.
-	poolPush, poolPop uintptr
-	size              func(obj objc.ID, sel objc.SEL) nsSize
+	// poolPush and poolPop are libobjc's autorelease pools, and msgSend is
+	// objc_msgSend, which mainthread.ByReceiver takes.
+	poolPush, poolPop, msgSend uintptr
 }
 
 // nsSize is NSSize, which -[NSImage size] returns by value.
@@ -83,13 +91,13 @@ func loadCG() bool {
 		if err != nil {
 			return
 		}
-		purego.RegisterLibFunc(&cg.space, lib, "CGColorSpaceCreateDeviceRGB")
-		purego.RegisterLibFunc(&cg.releaseSpace, lib, "CGColorSpaceRelease")
-		purego.RegisterLibFunc(&cg.bitmap, lib, "CGBitmapContextCreate")
-		purego.RegisterLibFunc(&cg.releaseCtx, lib, "CGContextRelease")
-		purego.RegisterLibFunc(&cg.draw, lib, "CGContextDrawImage")
-		purego.RegisterLibFunc(&cg.width, lib, "CGImageGetWidth")
-		purego.RegisterLibFunc(&cg.height, lib, "CGImageGetHeight")
+		mainthread.Bind(&cg.space, lib, "CGColorSpaceCreateDeviceRGB")
+		mainthread.Bind(&cg.releaseSpace, lib, "CGColorSpaceRelease")
+		mainthread.Bind(&cg.bitmap, lib, "CGBitmapContextCreate")
+		mainthread.Bind(&cg.releaseCtx, lib, "CGContextRelease")
+		mainthread.Bind(&cg.draw, lib, "CGContextDrawImage")
+		mainthread.Bind(&cg.width, lib, "CGImageGetWidth")
+		mainthread.Bind(&cg.height, lib, "CGImageGetHeight")
 		libobjc, err := purego.Dlopen("/usr/lib/libobjc.A.dylib", purego.RTLD_NOW|purego.RTLD_GLOBAL)
 		if err != nil {
 			return
@@ -100,11 +108,9 @@ func loadCG() bool {
 		if cg.poolPop, err = purego.Dlsym(libobjc, "objc_autoreleasePoolPop"); err != nil {
 			return
 		}
-		msgSend, err := purego.Dlsym(libobjc, "objc_msgSend")
-		if err != nil {
+		if cg.msgSend, err = purego.Dlsym(libobjc, "objc_msgSend"); err != nil {
 			return
 		}
-		purego.RegisterFunc(&cg.size, msgSend)
 		cg.ok = true
 	})
 	return cg.ok
@@ -149,7 +155,9 @@ var (
 // Image returns the SF Symbol named name (as "gearshape"), drawn px pixels
 // square in col, or false where the system has no such symbol: on another
 // OS, or a macOS without it. px is limited to 8 through 512. The result is
-// cached, and Image is safe to call from any goroutine.
+// cached, and Image is safe to call from any goroutine: outside a handler
+// it draws through the main run loop, so a handler that waits for that
+// goroutine without running the loop waits for good.
 func Image(name string, px int, col ui.Color, o Options) (ui.ImageSource, bool) {
 	if !loadCG() {
 		return nil, false
@@ -212,12 +220,16 @@ func rasterize(name string, px int, natural bool, weight Weight) (out *image.RGB
 	if !loadCG() {
 		return nil, false, false
 	}
-	withPool(func() { out, ok, absent = draw(name, px, natural, weight) })
+	mainthread.RunOnMain(func() {
+		withPool(func() { out, ok, absent = draw(name, px, natural, weight) })
+	})
 	return out, ok, absent
 }
 
-// withPool runs fn in an autorelease pool, for AppKit's temporary objects.
-// A pool belongs to its thread: the goroutine stays on one until it pops.
+// withPool runs fn in an autorelease pool, for the temporary objects of
+// the calls that run on the calling thread, which is all of them while
+// the worker does not run. A pool belongs to its thread: the goroutine
+// stays on one until it pops.
 func withPool(fn func()) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -230,20 +242,20 @@ func withPool(fn func()) {
 // the name; other failures leave it false.
 func draw(name string, px int, natural bool, weight Weight) (out *image.RGBA, ok, absent bool) {
 	str := nsString(name)
-	defer objc.Send[objc.ID](str, selRelease)
-	img := objc.Send[objc.ID](objc.ID(objc.GetClass("NSImage")), selSymbolImage, str, objc.ID(0))
+	defer release(str)
+	img := mainthread.Send[objc.ID](objc.ID(objc.GetClass("NSImage")), selSymbolImage, str, objc.ID(0))
 	if img == 0 {
 		return nil, false, true
 	}
 	// A point size of px renders at the main screen's scale, 2× on a
 	// Retina screen: the canvas below scales it down, never up.
-	cfg := objc.Send[objc.ID](objc.ID(objc.GetClass("NSImageSymbolConfiguration")), selSymbolConfg, float64(px), weight.fontWeight())
-	img = objc.Send[objc.ID](img, selSymbolApply, cfg)
+	cfg := mainthread.Send[objc.ID](objc.ID(objc.GetClass("NSImageSymbolConfiguration")), selSymbolConfg, float64(px), weight.fontWeight())
+	img = mainthread.Send[objc.ID](img, selSymbolApply, cfg)
 	if img == 0 {
 		return nil, false, false
 	}
-	points := cg.size(img, selSize)
-	cgImage := objc.Send[objc.ID](img, selCGImage, uintptr(0), uintptr(0), uintptr(0))
+	points := mainthread.Send[nsSize](img, selSize)
+	cgImage := mainthread.Send[objc.ID](img, selCGImage, uintptr(0), uintptr(0), uintptr(0))
 	if cgImage == 0 {
 		return nil, false, false
 	}
@@ -328,8 +340,21 @@ func tint(coverage *image.RGBA, col ui.Color) *image.RGBA {
 // copies the bytes, which stay alive until the message returns.
 func nsString(s string) objc.ID {
 	b := append([]byte(s), 0)
-	str := objc.Send[objc.ID](objc.Send[objc.ID](objc.ID(objc.GetClass("NSString")), selAlloc), selInitBytes,
+	str := sendHere[objc.ID](sendHere[objc.ID](objc.ID(objc.GetClass("NSString")), selAlloc), selInitBytes,
 		unsafe.Pointer(&b[0]), uintptr(len(s)), uintptr(nsUTF8StringEncoding))
 	runtime.KeepAlive(b)
 	return str
+}
+
+// sendHere sends a message on the calling thread: one that
+// mainthread.CallingThreadReceivers runs there, to a string, a collection
+// that this package made or any object for isKindOfClass:.
+func sendHere[R any](obj objc.ID, sel objc.SEL, args ...any) R {
+	mainthread.CheckSend(uintptr(obj), uintptr(sel))
+	return objc.Send[R](obj, sel, args...)
+}
+
+// release releases obj through mainthread.ByReceiver.
+func release(obj objc.ID) {
+	mainthread.ByReceiver(cg.msgSend, uintptr(obj), uintptr(selRelease))
 }

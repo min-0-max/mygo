@@ -106,6 +106,11 @@ type Params struct {
 	// NoBreakWords only breaks lines between words, letting a long word
 	// overflow the width instead of breaking it.
 	NoBreakWords bool
+	// KeepAll breaks no line between two letters or digits, Hangul, Han
+	// and kana among them, as CSS's word-break: keep-all: a line of them
+	// breaks where a space or punctuation allows it. A word wider than
+	// the line still breaks, or overflows with NoBreakWords.
+	KeepAll bool
 	// Indent moves the first line of the text this many DIPs from the
 	// start of its paragraph's direction, the left or the right, and
 	// wraps it that much narrower, as CSS's text-indent; 0 or less is
@@ -457,6 +462,17 @@ type System struct {
 	subpixel bool
 	// rooms counts MakeRoom calls during the frame.
 	rooms int
+	// drawn is the room each atlas gives what the frame drew. reviewed is
+	// the frame Review last looked through the atlases in, reviewing tells
+	// that it asked for the MakeRoom to come, reviewer is the window it
+	// last closed a frame of, sharedAt the frame that changed it, and
+	// unshrunk the generation of an atlas that would not pack smaller.
+	drawn     [2]int
+	reviewed  uint64
+	reviewing bool
+	reviewer  uintptr
+	sharedAt  uint64
+	unshrunk  [2]uint64
 	// Buffers layouts reuse: the first runes of clusters (line), and the
 	// advances and text of a line ending with an ellipsis (ellipsize).
 	starts     []int
@@ -469,7 +485,7 @@ type System struct {
 	justify func(line *Line, runes []rune, width float32) (left float32, ok bool)
 	// pretty is prettyLines once UsePretty was called, so that apps that
 	// never ask for it do not link it.
-	pretty func(s *System, text []rune, p Params, spans []Span, width, indent float32, rtl bool, hy *hyphens, shaped []shapedLine) []shapedLine
+	pretty func(s *System, text []rune, p Params, spans []Span, width, indent float32, rtl bool, keep []bool, hy *hyphens, shaped []shapedLine) []shapedLine
 	// tabs is tabStop once UseTabSize was called, so that apps that never
 	// set a tab size do not link it.
 	tabs func(s *System, style Style) float32
@@ -761,6 +777,7 @@ func (s *System) EndFrame() {
 		}
 	}
 	s.frame++
+	s.drawn = [2]int{}
 	if k, ok := s.eng.(shapingKeeper); ok {
 		k.endFrame()
 	}
@@ -1270,11 +1287,15 @@ func (s *System) paragraph(out []Line, p Params, spans []Span, runes []rune, sta
 		if p.NoWrap {
 			width = 0
 		}
-		shaped = s.breakLines(text, p.Style, spans, width, indent, rtl, p.NoBreakWords, hy)
+		var keep []bool
+		if p.KeepAll && width > 0 {
+			keep = keepAllBreaks(text)
+		}
+		shaped = s.breakLines(text, p.Style, spans, width, indent, rtl, p.NoBreakWords, keep, hy)
 		if p.Balance && width > 0 && len(shaped) > 1 && !(maxLines > 0 && len(shaped) > maxLines) {
-			shaped = s.balance(text, p, spans, width, indent, rtl, hy, shaped)
+			shaped = s.balance(text, p, spans, width, indent, rtl, keep, hy, shaped)
 		} else if p.Pretty && s.pretty != nil && width > 0 && len(shaped) > 1 && !(maxLines > 0 && len(shaped) > maxLines) {
-			shaped = s.pretty(s, text, p, spans, width, indent, rtl, hy, shaped)
+			shaped = s.pretty(s, text, p, spans, width, indent, rtl, keep, hy, shaped)
 		}
 	}
 	if len(shaped) == 0 {
@@ -1336,7 +1357,7 @@ const balanceStep = 0.25
 // wrapped at the narrowest width that keeps them as many, found by
 // bisection: about ten layouts of the paragraph, once, as its layout is
 // kept (Params.Balance).
-func (s *System) balance(text []rune, p Params, spans []Span, width, indent float32, rtl bool, hy *hyphens, shaped []shapedLine) []shapedLine {
+func (s *System) balance(text []rune, p Params, spans []Span, width, indent float32, rtl bool, keep []bool, hy *hyphens, shaped []shapedLine) []shapedLine {
 	n := len(shaped)
 	// The lines hold all the glyphs, whose advances, but for those of
 	// the whitespace ending lines, take no more room than n lines do.
@@ -1351,7 +1372,7 @@ func (s *System) balance(text []rune, p Params, spans []Span, width, indent floa
 	lo, hi := min(total/float32(n)/2, width), width
 	for hi-lo > balanceStep {
 		mid := (lo + hi) / 2
-		lines := s.breakLines(text, p.Style, spans, mid, indent, rtl, p.NoBreakWords, hy)
+		lines := s.breakLines(text, p.Style, spans, mid, indent, rtl, p.NoBreakWords, keep, hy)
 		if len(lines) <= n {
 			hi, shaped = mid, lines
 		} else {
@@ -1366,7 +1387,7 @@ func (s *System) balance(text []rune, p Params, spans []Span, width, indent floa
 // it one: those two lines wrapped again at the widest width at which the
 // last holds more, found by bisection, as for balance, as long as they
 // stay two; the lines before them stay as they are (Params.Pretty).
-func (s *System) prettyLines(text []rune, p Params, spans []Span, width, indent float32, rtl bool, hy *hyphens, shaped []shapedLine) []shapedLine {
+func (s *System) prettyLines(text []rune, p Params, spans []Span, width, indent float32, rtl bool, keep []bool, hy *hyphens, shaped []shapedLine) []shapedLine {
 	n := len(shaped)
 	if lineWords(text, shaped[n-1]) > 1 {
 		return shaped
@@ -1380,13 +1401,17 @@ func (s *System) prettyLines(text []rune, p Params, spans []Span, width, indent 
 	if hy != nil {
 		restHy = &hyphens{e: hy.e, style: hy.style, spans: restSpans}
 	}
+	var restKeep []bool
+	if keep != nil {
+		restKeep = keep[from:]
+	}
 	// Narrower, the line before gives the last its words, until the two
 	// take three lines: the widest width at which either happened.
 	var best []shapedLine
 	lo, hi := float32(1), width
 	for hi-lo > balanceStep {
 		mid := (lo + hi) / 2
-		lines := s.breakLines(rest, p.Style, restSpans, mid, indent, rtl, p.NoBreakWords, restHy)
+		lines := s.breakLines(rest, p.Style, restSpans, mid, indent, rtl, p.NoBreakWords, restKeep, restHy)
 		if len(lines) == 0 {
 			break
 		}

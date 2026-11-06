@@ -135,6 +135,7 @@ func (s *System) BeginFrame() {
 func (s *System) forgetLeftOut() {
 	s.full, s.want = [2]bool{}, [2]int{}
 	s.wantSize = [2]image.Point{}
+	s.reviewing = false
 	clear(s.outGlyphs)
 	clear(s.outRuns)
 	clear(s.outMasks)
@@ -158,24 +159,137 @@ func (s *System) Full() bool {
 	return s.full[0] || s.full[1]
 }
 
+// Atlas review: nothing but a full atlas evicts, and an atlas never fills
+// again after what made it large is gone. So a frame painted in full
+// reviews the atlases as it ends: the last before the window settles,
+// which no other will follow, and among frames that keep moving one in
+// atlasReviewFrames.
+const (
+	atlasReviewFrames = 120
+	// atlasLiveFrames is how recently a window that takes turns with others
+	// drew what it still shows.
+	atlasLiveFrames = 8
+	// An atlas with a sixteenth of it in use halves. What it holds then
+	// takes at most a quarter, which leaves it room before it must grow.
+	atlasShrinkFill = 16
+	atlasSmallest   = 256
+)
+
+// touch notes that the frame draws e.
+func (s *System) touch(e *atlasEntry) {
+	if e.used == s.frame {
+		return
+	}
+	e.used = s.frame
+	s.draws(e.inColor(), e.W, e.H)
+}
+
+// draws adds a w×h bitmap to the room the frame draws from an atlas.
+func (s *System) draws(color bool, w, h uint16) {
+	i := 0
+	if color {
+		i = 1
+	}
+	s.drawn[i] += (int(w) + 1) * (int(h) + 1)
+}
+
+// Review closes a frame window painted in full, which has drawn what the
+// window shows and is the last before it settles when settled: an atlas
+// that holds far more room than the frames use reports full, so that
+// MakeRoom lets go of what no frame draws any more and of the memory it
+// took, with no frame more. A frame painted in part drew too little to
+// tell.
+func (s *System) Review(window uintptr, settled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if window != s.reviewer {
+		s.reviewer, s.sharedAt = window, s.frame
+	}
+	if s.rooms > 0 || !settled && s.frame-s.reviewed < atlasReviewFrames {
+		return
+	}
+	atlases := [2]*scene.Atlas{s.MaskAtlas, s.ColorAtlas}
+	large := func(i int, used int) bool {
+		a := atlases[i]
+		return min(a.W, a.H) >= 2*atlasSmallest && used*atlasShrinkFill <= a.W*a.H && a.Generation() != s.unshrunk[i]
+	}
+	// Most frames end here: what they drew alone fills the atlas enough.
+	if !large(0, s.drawn[0]) && !large(1, s.drawn[1]) {
+		return
+	}
+	s.reviewed = s.frame
+	since := s.liveSince()
+	var used [2]int
+	var side [2]int
+	add := func(color bool, g GlyphImage) {
+		i := 0
+		if color {
+			i = 1
+		}
+		used[i] += (int(g.W) + 1) * (int(g.H) + 1)
+		side[i] = max(side[i], int(g.W)+1, int(g.H)+1)
+	}
+	for _, e := range s.masks {
+		if e.used >= since {
+			add(false, e.GlyphImage)
+		}
+	}
+	for _, e := range s.glyphs {
+		if e.OK && e.used >= since {
+			add(e.inColor(), e.GlyphImage)
+		}
+	}
+	for _, e := range s.runs {
+		if e.used >= since {
+			add(e.inColor(), e.GlyphImage)
+		}
+	}
+	for _, g := range s.transient {
+		add(false, g)
+	}
+	for i, a := range atlases {
+		// A bitmap too large for half the atlas keeps it from halving.
+		if large(i, used[i]) && side[i] <= min(a.W, a.H)/2 {
+			s.full[i], s.reviewing = true, true
+		}
+	}
+}
+
+// liveSince returns the first frame whose drawing an atlas review keeps:
+// the window's own, unless other windows took turns with it of late.
+func (s *System) liveSince() uint64 {
+	if s.frame-s.sharedAt >= atlasLiveFrames {
+		return s.frame
+	}
+	if s.frame < atlasLiveFrames {
+		return 0
+	}
+	return s.frame - atlasLiveFrames + 1
+}
+
 // MakeRoom makes room in the atlases that filled up: it keeps what the
 // frame being painted drew, growing the atlas when that and what the frame
 // still needs take much of it, or when room made for the frame before did
-// not suffice, and forgets everything else. Everything kept moves, so the
-// frame must be painted again.
+// not suffice, shrinking it when they take little of it, and forgets
+// everything else. Everything kept moves, so the frame must be painted
+// again.
 func (s *System) MakeRoom() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rooms++
+	since := s.frame
+	if s.reviewing {
+		since = s.liveSince()
+	}
 	for i, color := range [2]bool{false, true} {
 		if s.full[i] {
-			s.makeRoom(color, s.want[i], s.wantSize[i], s.rooms > 1)
+			s.makeRoom(color, s.want[i], s.wantSize[i], s.rooms > 1, since)
 		}
 	}
 	s.forgetLeftOut()
 }
 
-func (s *System) makeRoom(color bool, want int, size image.Point, grow bool) {
+func (s *System) makeRoom(color bool, want int, size image.Point, grow bool, since uint64) {
 	a := s.MaskAtlas
 	if color {
 		a = s.ColorAtlas
@@ -189,7 +303,7 @@ func (s *System) makeRoom(color bool, want int, size image.Point, grow bool) {
 		clear(s.transient)
 		a.ResetTransient()
 		for k, e := range s.masks {
-			if e.used != s.frame {
+			if e.used < since {
 				delete(s.masks, k)
 				continue
 			}
@@ -200,7 +314,7 @@ func (s *System) makeRoom(color bool, want int, size image.Point, grow bool) {
 		if !e.OK || e.inColor() != color {
 			continue // blank glyphs take no room
 		}
-		if e.used != s.frame {
+		if e.used < since {
 			delete(s.glyphs, k)
 			continue
 		}
@@ -210,7 +324,7 @@ func (s *System) makeRoom(color bool, want int, size image.Point, grow bool) {
 		if e.inColor() != color {
 			continue
 		}
-		if e.used != s.frame {
+		if e.used < since {
 			delete(s.runs, k)
 			continue
 		}
@@ -227,7 +341,22 @@ func (s *System) makeRoom(color bool, want int, size image.Point, grow bool) {
 	}
 	for (need*2 > a.W*a.H || size.X > a.W || size.Y > a.H) && a.Grow() {
 	}
-	pos, ok := a.Repack(rects)
+	w, h := a.W, a.H
+	for !grow && min(w, h) >= 2*atlasSmallest && need*atlasShrinkFill <= w*h && max(size.X, size.Y) <= min(w, h)/2 {
+		w, h = w/2, h/2
+	}
+	pos, ok := a.RepackTo(w, h, rects)
+	if !ok {
+		// The bitmaps do not pack into the smaller atlas, though they would
+		// take little of it: reviews leave this one alone until it changes.
+		if pos, ok = a.Repack(rects); ok {
+			i := 0
+			if color {
+				i = 1
+			}
+			s.unshrunk[i] = a.Generation()
+		}
+	}
 	if !ok {
 		a.Reset()
 		for k, e := range s.glyphs {
@@ -310,7 +439,7 @@ func (s *System) glyph(f *Font, id uint32, scale, x float32, shade Shade, opaque
 		default:
 			g = s.rasterize(f, id, scale, float32(q)/float32(n), key.shade, key.subpixel)
 		}
-		e = &atlasEntry{g, s.frame}
+		e = &atlasEntry{GlyphImage: g, used: s.frame - 1}
 		if s.failed == failed { // not left out of a full atlas
 			s.glyphs[key] = e
 		} else {
@@ -320,7 +449,7 @@ func (s *System) glyph(f *Font, id uint32, scale, x float32, shade Shade, opaque
 			s.outGlyphs[key] = struct{}{}
 		}
 	}
-	e.used = s.frame
+	s.touch(e)
 	g := e.GlyphImage
 	g.Left += carry
 	return g
@@ -479,7 +608,7 @@ func (s *System) Mask(key uint64, draw func() (w, h int, pix []byte)) GlyphImage
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if e, ok := s.masks[key]; ok {
-		e.used = s.frame
+		s.touch(e)
 		return e.GlyphImage
 	}
 	if g, ok := s.transient[key]; ok {
@@ -514,9 +643,12 @@ func (s *System) Mask(key uint64, draw func() (w, h int, pix []byte)) GlyphImage
 	g := GlyphImage{OK: true, X: uint16(x), Y: uint16(y), W: uint16(w), H: uint16(h)}
 	if lasting {
 		delete(s.recent, key)
-		s.masks[key] = &atlasEntry{g, s.frame}
+		e := &atlasEntry{GlyphImage: g, used: s.frame - 1}
+		s.touch(e)
+		s.masks[key] = e
 	} else {
 		s.transient[key] = g
+		s.draws(false, g.W, g.H)
 		s.recent[key] = s.frame
 		s.transientUses++
 	}

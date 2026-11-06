@@ -443,6 +443,9 @@ func textStyles(ts *textStyle, set uint32) []inspDecl {
 	if set&setTabSize != 0 {
 		add("tab-size", num(ts.tabSize))
 	}
+	if set&setKeepAll != 0 {
+		add("word-break", "keep-all")
+	}
 	if set&setShadow != 0 {
 		sh := ts.shadow
 		ds = append(ds, inspDecl{name: "text-shadow", value: pxText(sh.x) + " " + pxText(sh.y) + " " + pxText(sh.blur) + " " + colorText(sh.color), color: sh.color, swatch: true})

@@ -109,6 +109,39 @@ panics where the second key was given, as apps only log it.
   }
   ```
 
+## The element tree
+
+`tt.ElementTree()` returns the elements of the last frame as assistive
+technology reads them, each an `ui.ElementNode`: its `Key`, `Role`,
+`Label`, `Bounds` in the window's DIPs, `Actions` (`ui.ActionPress`,
+`ui.ActionSetValue`, …) and `Children`. A test walks it to check what
+the view gives every element, as a key on each control that acts:
+
+```go
+var walk func(nodes []ui.ElementNode)
+walk = func(nodes []ui.ElementNode) {
+	for _, n := range nodes {
+		if n.Actions&ui.ActionPress != 0 && n.Key == nil {
+			t.Errorf("%q acts without a key", n.Label)
+		}
+		walk(n.Children)
+	}
+}
+walk(tt.ElementTree())
+```
+
+In the app, `Content.ElementTree` reads the same of the window the content
+shows in, on the main thread and outside the view function, in every build,
+the release builds without the inspector too. Reading it builds no frame
+and does not describe the frames that follow for assistive technology. It
+fails for content that shows in several windows: give each window a
+`Content` of its own.
+
+`tt.ActElement(node.ID, ui.ActionPress, "")` performs one action on an element of
+the last frame, as assistive technology does, and `ui.ActionSetValue` replaces
+its text. An element refuses an action it does not take. In the app,
+`Content.ActElement` does the same on the main thread.
+
 ## What assistive technology sees
 
 `tt.AccessByRole(role, name)` returns what screen readers get of the

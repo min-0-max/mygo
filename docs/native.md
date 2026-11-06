@@ -134,6 +134,12 @@ mygo.NewNotification(mygo.NotificationOptions{
 }).Show()
 ```
 
+On macOS the clicks reach MyGo through the delegate that it gives the
+notification center as the app launches, which also shows notifications
+while the app is in front. An app that sets that delegate itself calls
+`App.SetNotificationDelegate(false)` before `Run`; MyGo then reports no
+click.
+
 `Image` shows an image with the notification, the bytes of a PNG or JPEG,
 such as the cover of the track that started playing. macOS attaches it,
 as a thumbnail that grows as the notification expands; Linux gives the

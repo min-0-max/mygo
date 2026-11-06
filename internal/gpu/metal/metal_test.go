@@ -17,6 +17,7 @@ import (
 
 	"github.com/egoist/mygo/internal/gpu"
 	"github.com/egoist/mygo/internal/gpu/gputest"
+	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/internal/scene"
 )
 
@@ -37,6 +38,9 @@ func init() {
 	// make the pipelines they need first (TestFramesNeverWaitForACompile
 	// tests the other way).
 	syncPipelines = true
+	// However long a frame takes here, the next follows it
+	// (TestAFrameAloneFetchesNoDrawable tests a frame that does not).
+	followRefreshes = 1 << 20
 }
 
 func TestDrawsAsTheCPURenderer(t *testing.T) {
@@ -138,14 +142,14 @@ func TestShaderLibrary(t *testing.T) {
 	pool(func() { release(&lib) })
 }
 
-// TestTrimDrawables checks that a renderer keeps three drawables, and that
+// TestTrimDrawables checks that a renderer starts with two drawables, and that
 // trimming them shrinks them until the next frame.
 func TestTrimDrawables(t *testing.T) {
 	if err := load(); err != nil {
 		t.Skip("no Metal:", err)
 	}
 	var layer id
-	pool(func() { layer = send(class("CALayer"), "new") })
+	pool(func() { layer = sendMain(class("CALayer"), "new") })
 	if layer == 0 {
 		t.Skip("no Core Animation")
 	}
@@ -157,8 +161,8 @@ func TestTrimDrawables(t *testing.T) {
 	defer r.Release()
 	pool(func() {
 		r.fit(800, 600, 1)
-		if n := send(r.layer, "maximumDrawableCount"); n != 3 {
-			t.Errorf("drawable count = %d, want 3", n)
+		if n := sendMain(r.layer, "maximumDrawableCount"); n != 2 {
+			t.Errorf("drawable count = %d, want 2", n)
 		}
 		r.trim()
 		if !r.trimmed {
@@ -169,6 +173,33 @@ func TestTrimDrawables(t *testing.T) {
 			t.Error("next frame did not restore the drawables")
 		}
 	})
+}
+
+// TestTrimCommandQueue checks that a trimmed renderer holds no command queue,
+// whose memory of frames the driver keeps as long as it lives, and that the
+// next frame makes another without making the rest of what drawing needs again.
+func TestTrimCommandQueue(t *testing.T) {
+	r := layerRenderer(t)
+	var drawn noticed
+	render(t, r, squareAt(0), &drawn)
+	drawn.want(t, "before the trim", platform.Presented)
+	sampler, empty := r.sampler, r.empty
+	r.trim()
+	if r.queue != 0 {
+		t.Fatal("the trimmed renderer holds its command queue")
+	}
+	if r.sampler != sampler || r.empty != empty {
+		t.Fatal("the trim let go of what a window keeps until it closes")
+	}
+	drawn = noticed{}
+	render(t, r, squareAt(1), &drawn)
+	drawn.want(t, "after the trim", platform.Presented)
+	if r.queue == 0 {
+		t.Fatal("the frame after the trim has no command queue")
+	}
+	if r.sampler != sampler || r.empty != empty {
+		t.Fatal("the frame after the trim made the sampler and the empty texture again")
+	}
 }
 
 // TestChangedSince checks what frames drawn in memory copy into the

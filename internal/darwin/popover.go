@@ -118,7 +118,7 @@ func (w *window) showPopover() {
 	if w.flyout.Tray != nil {
 		// The popover of a menu bar app takes the keyboard of an app the
 		// user did not activate, as AppKit's own status items' do.
-		send(w.b.app, "activateIgnoringOtherApps:", 1)
+		w.b.selfActivate()
 	}
 	msgSetSize(w.popover, sel("setContentSize:"), NSSize{float64(w.flyoutSize.Width), float64(w.flyoutSize.Height)})
 	msgRectIDUint(w.popover, sel("showRelativeToRect:ofView:preferredEdge:"), r, view, edge)

@@ -77,3 +77,16 @@ func TestOwnThemeIgnoresPreferences(t *testing.T) {
 		t.Errorf("a theme of the app's took the desktop's accent: %v", accent)
 	}
 }
+
+func TestSetPreferencesGivesTheDarkFocusRing(t *testing.T) {
+	var prefs Preferences
+	tt := coreNewTester(func(c *context) { prefs = c.Preferences() }, 200, 100)
+	if prefs.DarkFocusRing.A != 0 {
+		t.Fatalf("without a ring of the desktop: %v", prefs.DarkFocusRing)
+	}
+	ring := Color{R: 26, G: 169, B: 255, A: 127}
+	tt.SetPreferences(Preferences{DarkFocusRing: ring})
+	if prefs.DarkFocusRing != ring {
+		t.Errorf("the ring is %v, not %v", prefs.DarkFocusRing, ring)
+	}
+}
