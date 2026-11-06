@@ -580,6 +580,19 @@ func properties(rt *engine, e *node) []inspSection {
 	if e.current != CurrentNone {
 		acc.rows = append(acc.rows, inspDecl{name: "current", value: platform.AccessCurrent(e.current).String()})
 	}
+	if e.chooseMany {
+		acc.rows = append(acc.rows, inspDecl{name: "multiselectable", value: "true"})
+	}
+	for i, name := range [...]string{"rowcount", "colcount", "rowindex", "colindex"} {
+		if v := e.accGrid[i]; v > 0 {
+			acc.rows = append(acc.rows, inspDecl{name: name, value: strconv.Itoa(int(v))})
+		}
+	}
+	for i, name := range [...]string{"posinset", "setsize"} {
+		if v := e.accSet[i]; v > 0 {
+			acc.rows = append(acc.rows, inspDecl{name: name, value: strconv.Itoa(int(v))})
+		}
+	}
 	if e.autoComplete != AutoCompleteNone {
 		acc.rows = append(acc.rows, inspDecl{name: "autocomplete", value: platform.AccessAutoComplete(e.autoComplete).String()})
 	}
@@ -591,6 +604,21 @@ func properties(rt *engine, e *node) []inspSection {
 	}
 	if len(e.controls) > 0 {
 		acc.rows = append(acc.rows, inspDecl{name: "controls", value: strconv.Itoa(len(e.controls)) + " elements"})
+	}
+	if len(e.describedBy) > 0 {
+		acc.rows = append(acc.rows, inspDecl{name: "describedby", value: strconv.Itoa(len(e.describedBy)) + " elements"})
+	}
+	if e.invalid {
+		acc.rows = append(acc.rows, inspDecl{name: "invalid", value: "true"})
+	}
+	if len(e.errorMessage) > 0 {
+		acc.rows = append(acc.rows, inspDecl{name: "errormessage", value: strconv.Itoa(len(e.errorMessage)) + " elements"})
+	}
+	switch e.orient {
+	case Horizontal:
+		acc.rows = append(acc.rows, inspDecl{name: "orientation", value: "horizontal"})
+	case Vertical:
+		acc.rows = append(acc.rows, inspDecl{name: "orientation", value: "vertical"})
 	}
 	return []inspSection{el, state, acc}
 }

@@ -158,6 +158,9 @@ type engine struct {
 	// zoomChanged tells that it changed since the frame's size was read.
 	contentZoom float32
 	zoomChanged bool
+	// menuPresentation is how the window shows its popup menus
+	// (Context.SetMenuPresentation).
+	menuPresentation MenuPresentation
 
 	// building counts the public constructors under way: input queued
 	// while more were under way than now belongs to controls built since,
@@ -350,10 +353,10 @@ type engine struct {
 	pressLost              func(InputEvent) bool
 	pressLostX, pressLostY float32
 	// downing counts the presses pointerDown is handling, and ups holds the
-	// releases (button, clicks) that came meanwhile, through a main loop
-	// a handler ran nested, for it to apply once the press is recorded.
+	// releases and cancels that came meanwhile, through a main loop a
+	// handler ran nested, for it to apply once the press is recorded.
 	downing int
-	ups     [][2]int
+	ups     []pendingUp
 	// listMenu and listDrag are the parts of lists a right-click and a
 	// drag reach, set as the first list builds, and cellClick and
 	// cellInBlock the parts of tables choosing cells a click and a press
@@ -400,16 +403,14 @@ type engine struct {
 	withinRead bool
 	// toasts are the toasts the window holds, oldest first, and
 	// toastList those showing, as ToastViewportBase gives them; their time
-	// stops while toastsPaused, as the user holds them, and, but for those
-	// that RunInBackground, while toastsBackground. A viewport of them was
-	// built in the pass toastPass of the frame toastFrame.
-	toasts           []toast
-	nextToast        uint64
-	toastList        []Toast
-	toastsPaused     bool
-	toastsBackground bool
-	toastFrame       uint64
-	toastPass        int
+	// stops while toastsPaused, as the user holds them. A viewport of them
+	// was built in the pass toastPass of the frame toastFrame.
+	toasts       []toast
+	nextToast    uint64
+	toastList    []Toast
+	toastsPaused bool
+	toastFrame   uint64
+	toastPass    int
 	// mods are the modifiers of the last pointer event.
 	mods Modifiers
 
@@ -740,6 +741,9 @@ func (rt *engine) runFrame() {
 			return
 		}
 		rt.buildToasts(&rt.c)
+		if d := rt.menu.drawn; d != nil && d.edit && rt.drawsMenus() {
+			menusInWindow.drawEditMenu(rt)
+		}
 		if rt.overlayExits {
 			// Copies of the elements gone from the layer leave in it
 			// (animateExits), empty as it is otherwise: it lets the
@@ -1117,7 +1121,7 @@ func (rt *engine) forgetInput() {
 		s.clicks, s.rightClicks, s.doubleClicks = 0, 0, 0
 		s.pressPending = false
 		s.dragX, s.dragY = 0, 0
-		s.released = false
+		s.released, s.canceled = false, false
 		s.dropped = nil
 		s.droppedValue, s.hasDropped = nil, false
 		s.dragMissed = false
@@ -1426,6 +1430,10 @@ func (rt *engine) commitElement(e *node, clip Rect, hidden bool) {
 	s.ignoreInput = e.ignoreInput || e.parent != nil && e.parent.st.ignoreInput
 	s.accessHidden = e.accessHidden || e.flags&flagInert != 0 || e.parent != nil && e.parent.st.accessHidden
 	s.accessDisabled = e.accessDisabled || e.parent != nil && e.parent.st.accessDisabled
+	s.activeDescendant = 0
+	if d := e.activeDescendant; d != nil {
+		s.activeDescendant = d.id
+	}
 	s.cursor, s.tip = e.cursor, e.tip
 	s.webView = e.webView
 	s.role, s.focusHighlights = e.role, e.focusHighlights

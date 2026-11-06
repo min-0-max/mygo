@@ -48,9 +48,9 @@ type accessElement struct {
 	linked      []id
 	// cellRow says a row is chosen as it holds a chosen cell, and at
 	// where a cell is in its table, its row and column from 1, 0 where
-	// unknown.
+	// unknown, and how many rows and columns it covers.
 	cellRow bool
-	at      [2]int
+	at      [4]int
 	// headers are the column headers of a table, and header that of a
 	// cell's column (AXColumnHeaderUIElements).
 	headers []uint64
@@ -163,6 +163,31 @@ var accessRoles = map[platform.AccessRole][2]string{
 	platform.RoleAlert:     {"AXGroup", "AXApplicationAlert"},
 	platform.RoleSeparator: {"AXSplitter", ""},
 	platform.RoleRowHeader: {"AXCell", ""},
+	// Grids and tree grids are tables, as WebKit's.
+	platform.RoleGrid:     {"AXTable", ""},
+	platform.RoleTreeGrid: {"AXTable", ""},
+	// Content removed and added, as WebKit's del and ins.
+	platform.RoleDeletion:  {"AXGroup", "AXDeleteStyleGroup"},
+	platform.RoleInsertion: {"AXGroup", "AXInsertStyleGroup"},
+}
+
+// orientation returns the NSAccessibilityOrientation of a node, as
+// aria-orientation: Vertical (1) or Horizontal (2) where the node says,
+// else Horizontal for a slider or a rule, Unknown (0) for others.
+func orientation(n platform.AccessNode) int {
+	switch {
+	case n.States&platform.AccessVertical != 0:
+		return 1
+	case n.States&platform.AccessHorizontal != 0, n.Role == platform.RoleSlider || n.Role == platform.RoleSeparator:
+		return 2
+	}
+	return 0
+}
+
+// errorMessages reports whether a node points at the elements holding its
+// error (AXErrorMessageElements, aria-errormessage): only while invalid.
+func errorMessages(n platform.AccessNode) bool {
+	return len(n.ErrorMessage) > 0 && n.States&platform.AccessInvalid != 0
 }
 
 // menuItem reports whether nodes of a role are items of a menu.
@@ -208,33 +233,92 @@ func cell(r platform.AccessRole) bool {
 
 // placeCells tells the cells of a table's row where they are, the row
 // from 1 or 0 for its header, as NSTableView's cells say
-// (AXRowIndexRange, AXColumnIndexRange), and the header of their column
-// among headers, and reports whether one of them is chosen.
+// (AXRowIndexRange, AXColumnIndexRange), the ranges as long as the rows
+// and columns they cover (aria-rowspan, aria-colspan), and the header of
+// their column among headers, and reports whether one of them is chosen.
+// A cell is in the column the app gave it (aria-colindex), else in the
+// one after those the cell before it covers.
 func (s *surface) placeCells(row *accessElement, index int, headers []uint64) (chosen bool) {
-	col := 0
+	col := 1
 	for _, cid := range row.children {
 		c := s.elements[cid]
 		if c == nil || !cell(c.node.Role) {
 			continue
 		}
-		col++
-		c.header = 0
-		if col <= len(headers) && c.node.Role != platform.RoleColumnHeader {
-			c.header = headers[col-1]
+		if c.node.ColIndex > 0 {
+			col = c.node.ColIndex
 		}
-		if at := [2]int{index, col}; c.at != at {
-			if index > 0 && c.at[0] != index {
-				send(c.obj, "setAccessibilityRowIndexRange:", uintptr(index-1), 1)
+		r := index
+		if c.node.RowIndex > 0 && index > 0 {
+			r = c.node.RowIndex
+		}
+		c.header = 0
+		if c.node.Role != platform.RoleColumnHeader {
+			for _, h := range headers {
+				if hc := s.elements[h]; hc != nil && hc.at[1] > 0 && hc.at[1] <= col && col < hc.at[1]+hc.at[3] {
+					c.header = h
+					break
+				}
 			}
-			if c.at[1] != col {
-				send(c.obj, "setAccessibilityColumnIndexRange:", uintptr(col-1), 1)
+		}
+		if at := [4]int{r, col, max(c.node.RowSpan, 1), max(c.node.ColSpan, 1)}; c.at != at {
+			if r > 0 && (c.at[0] != r || c.at[2] != at[2]) {
+				send(c.obj, "setAccessibilityRowIndexRange:", uintptr(r-1), uintptr(at[2]))
+			}
+			if c.at[1] != col || c.at[3] != at[3] {
+				send(c.obj, "setAccessibilityColumnIndexRange:", uintptr(col-1), uintptr(at[3]))
 			}
 			c.at = at
 		}
+		col += c.at[3]
 		chosen = chosen || chooses(c.node) && c.node.States&platform.AccessChecked != 0
 	}
 	return chosen
 }
+
+// rowRole reports whether nodes of a role are rows of a list, a table or
+// an outline.
+func rowRole(r platform.AccessRole) bool {
+	return r == platform.RoleRow || r == platform.RoleListItem || r == platform.RoleTreeItem
+}
+
+// ariaGrid returns the value of an attribute of a table's size or a row's
+// or a cell's place in it that the app gave (aria-rowcount and the like),
+// as WebKit gives them, 0 for none: a cell's row index is its row's unless
+// it has one of its own.
+func (el *accessElement) ariaGrid(attr string) int {
+	n := &el.node
+	switch attr {
+	case "AXARIARowCount":
+		if n.Role.Tabular() {
+			return n.RowCount
+		}
+	case "AXARIAColumnCount":
+		if n.Role.Tabular() {
+			return n.ColCount
+		}
+	case "AXARIARowIndex":
+		switch {
+		case n.Role == platform.RoleRow:
+			return n.RowIndex
+		case cell(n.Role):
+			if n.RowIndex > 0 {
+				return n.RowIndex
+			}
+			if row := el.s.w.b.byAccess[el.parent]; row != nil && row.node.Role == platform.RoleRow {
+				return row.node.RowIndex
+			}
+		}
+	case "AXARIAColumnIndex":
+		if cell(n.Role) {
+			return n.ColIndex
+		}
+	}
+	return 0
+}
+
+// ariaGridAttrs are the attributes ariaGrid answers.
+var ariaGridAttrs = [...]string{"AXARIARowCount", "AXARIAColumnCount", "AXARIARowIndex", "AXARIAColumnIndex"}
 
 func roleOf(n platform.AccessNode) (role, subrole string) {
 	r := accessRoles[n.Role]
@@ -371,12 +455,7 @@ func (el *accessElement) apply(n platform.AccessNode, fresh bool) (valueChanged 
 			send(obj, "setAccessibilityExpanded:", boolArg(n.States&platform.AccessExpanded != 0))
 		}
 	}
-	if (n.Role == platform.RoleSlider || n.Role == platform.RoleSeparator) && (fresh || n.Role != o.Role || n.States&platform.AccessVertical != o.States&platform.AccessVertical) {
-		// NSAccessibilityOrientationVertical or Horizontal.
-		orient := 2
-		if n.States&platform.AccessVertical != 0 {
-			orient = 1
-		}
+	if orient := orientation(n); orient != 0 && fresh || !fresh && orient != orientation(o) {
 		send(obj, "setAccessibilityOrientation:", uintptr(orient))
 	}
 	if n.Role.Ranged() {
@@ -403,6 +482,10 @@ func (el *accessElement) apply(n platform.AccessNode, fresh bool) (valueChanged 
 	}
 	if n.PosInSet > 0 && (fresh || n.PosInSet != o.PosInSet) {
 		send(obj, "setAccessibilityIndex:", uintptr(n.PosInSet-1))
+	} else if n.PosInSet == 0 && n.RowIndex > 0 && rowRole(n.Role) && (fresh || n.RowIndex != o.RowIndex || o.PosInSet != 0) {
+		// The row of a grid built only where it shows, which says which
+		// of all it is (aria-rowindex).
+		send(obj, "setAccessibilityIndex:", uintptr(n.RowIndex-1))
 	}
 	if chooses(n) && (fresh || !chooses(o) || n.States&platform.AccessChecked != o.States&platform.AccessChecked) {
 		send(obj, "setAccessibilitySelected:", boolArg(n.States&platform.AccessChecked != 0))
@@ -545,13 +628,15 @@ func (s *surface) UpdateAccessibility(tree *platform.AccessTree) {
 				v.accessParent = 0
 			}
 		}
-		// Lists and tables: their rows, those that show, those chosen, and
-		// how many they have, built or not. A list's own rows say where
-		// they are among all; the rows of other tables, where among those.
+		// Lists, tables and grids: their rows, those that show, those
+		// chosen, and how many they have, built or not. A list's own rows
+		// say where they are among all, as do those of a grid the app
+		// says (aria-rowindex); the rows of other tables, where among
+		// those.
 		var selectionChanged, cellsChanged []*accessElement
 		var chosenNews []string
 		for i, n := range tree.Nodes {
-			if n.Role != platform.RoleList && n.Role != platform.RoleTable && n.Role != platform.RoleTree {
+			if n.Role != platform.RoleList && n.Role != platform.RoleTree && !n.Role.Tabular() {
 				continue
 			}
 			el := s.elements[n.ID]
@@ -571,21 +656,30 @@ func (s *surface) UpdateAccessibility(tree *platform.AccessTree) {
 			el.headers = headers
 			var rows, shown, chosen []id
 			var chosenIDs []uint64
+			itemsSet := 0
 			for _, cid := range children[i] {
 				c := s.elements[cid]
-				header := n.SetSize > 0 && c.node.PosInSet == 0
-				if r := c.node.Role; r != platform.RoleRow && r != platform.RoleListItem && r != platform.RoleTreeItem || header {
-					if r == platform.RoleRow {
+				if !rowRole(c.node.Role) || n.SetSize > 0 && c.node.PosInSet == 0 && c.node.RowIndex == 0 {
+					if c.node.Role == platform.RoleRow {
 						s.placeCells(c, 0, nil)
 					}
 					continue // a table's header
 				}
 				index := c.node.PosInSet - 1
-				if c.node.PosInSet == 0 {
+				switch {
+				case c.node.PosInSet > 0:
+				case c.node.RowIndex > 0:
+					index = c.node.RowIndex - 1 // set with the row (aria-rowindex)
+				default:
 					index = len(rows)
 					send(c.obj, "setAccessibilityIndex:", uintptr(index))
 				}
 				rows = append(rows, c.obj)
+				if n.Role == platform.RoleList {
+					// The set the items of a list of the app's own say
+					// they are in (aria-setsize).
+					itemsSet = max(itemsSet, c.node.SetSize)
+				}
 				if c.node.States&platform.AccessOffscreen == 0 {
 					shown = append(shown, c.obj)
 				}
@@ -604,7 +698,10 @@ func (s *surface) UpdateAccessibility(tree *platform.AccessTree) {
 			}
 			count := n.SetSize
 			if count == 0 {
-				count = len(rows)
+				count = n.RowCount
+			}
+			if count == 0 {
+				count = max(itemsSet, len(rows))
 			}
 			if count != el.count {
 				el.count = count
@@ -840,6 +937,11 @@ func registerAccessClass() {
 			if invalid {
 				sendHere(all, "addObject:", uintptr(nsString("AXInvalid")))
 			}
+			// The elements holding its error, as WebKit's say
+			// aria-errormessage.
+			if errorMessages(el.node) {
+				sendHere(all, "addObject:", uintptr(nsString("AXErrorMessageElements")))
+			}
 			if mark {
 				sendHere(all, "addObject:", uintptr(nsString("AXMenuItemMarkChar")))
 			}
@@ -869,7 +971,7 @@ func registerAccessClass() {
 				if r != platform.RoleCell {
 					more = append(more, "AXSortDirection") // as WebKit's headers
 				}
-			case r == platform.RoleTable:
+			case r.Tabular():
 				more = []string{"AXSelectedRows", "AXSelectedCells"}
 				if el.headers != nil {
 					more = append(more, "AXColumnHeaderUIElements")
@@ -877,6 +979,12 @@ func registerAccessClass() {
 			}
 			if el.node.RoleDescription != "" {
 				more = append(more, "AXRoleDescription")
+			}
+			// What describes it (Description, DescribedBy, ErrorMessage),
+			// which the older API neither lists nor answers for what
+			// setAccessibilityHelp: set, as it does AXEnabled.
+			if el.node.Description != "" {
+				more = append(more, "AXHelp")
 			}
 			for _, name := range more {
 				if a := nsString(name); byte(sendHere(all, "containsObject:", uintptr(a))) == 0 {
@@ -904,6 +1012,13 @@ func registerAccessClass() {
 			if el.node.KeyShortcuts != "" {
 				sendHere(all, "addObject:", uintptr(nsString("AXKeyShortcutsValue")))
 			}
+			// The size of a grid, and the place of its rows and cells, as
+			// WebKit's say aria-rowcount and the like.
+			for _, attr := range ariaGridAttrs {
+				if el.ariaGrid(attr) > 0 {
+					sendHere(all, "addObject:", uintptr(nsString(attr)))
+				}
+			}
 			return autorelease(all)
 		}),
 		method("accessibilityAttributeValue:", func(self id, cmd objc.SEL, attr id) id {
@@ -912,6 +1027,16 @@ func registerAccessClass() {
 				case "AXInvalid":
 					if el.node.States&platform.AccessInvalid != 0 {
 						return nsString("true")
+					}
+				case "AXErrorMessageElements":
+					if errorMessages(el.node) {
+						objs := make([]id, 0, len(el.node.ErrorMessage))
+						for _, mid := range el.node.ErrorMessage {
+							if m := el.s.elements[mid]; m != nil {
+								objs = append(objs, m.obj)
+							}
+						}
+						return nsArray(objs...)
 					}
 				case "AXMenuItemMarkChar":
 					if m := markChar(el.node); m != "" {
@@ -928,9 +1053,17 @@ func registerAccessClass() {
 					return nsBool(el.node.States&platform.AccessBusy != 0)
 				case "AXEnabled":
 					return nsBool(el.node.States&platform.AccessDisabled == 0)
+				// What describes it, as the newer API's accessibilityHelp:
+				// its error first while invalid, then its description, a
+				// line each.
+				case "AXHelp":
+					if el.node.Description != "" {
+						return nsString(el.node.Description)
+					}
+					return 0
 				// The role and subrole the newer API was given, so that
 				// both APIs agree: AppKit's answer here missed a header
-				// made a sort button.
+				// made a sort button, and a grid's table.
 				case "AXRole", "AXSubrole":
 					role, subrole := roleOf(el.node)
 					if stringOf(attr) == "AXRole" {
@@ -955,21 +1088,21 @@ func registerAccessClass() {
 						return nsBool(true)
 					}
 				case "AXRowIndexRange", "AXColumnIndexRange":
-					i := el.at[0]
+					i, n := el.at[0], el.at[2]
 					if stringOf(attr) == "AXColumnIndexRange" {
-						i = el.at[1]
+						i, n = el.at[1], el.at[3]
 					}
 					if cell(el.node.Role) && i > 0 {
-						return send(class("NSValue"), "valueWithRange:", uintptr(i-1), 1)
+						return send(class("NSValue"), "valueWithRange:", uintptr(i-1), uintptr(n))
 					}
 				case "AXSelectedCells", "AXSelectedRows", "AXColumnHeaderUIElements":
 					var ids []uint64
 					switch {
-					case el.node.Role == platform.RoleTable && stringOf(attr) == "AXSelectedCells":
+					case el.node.Role.Tabular() && stringOf(attr) == "AXSelectedCells":
 						ids = el.chosenCells
-					case el.node.Role == platform.RoleTable && stringOf(attr) == "AXSelectedRows":
+					case el.node.Role.Tabular() && stringOf(attr) == "AXSelectedRows":
 						ids = el.chosen
-					case el.node.Role == platform.RoleTable:
+					case el.node.Role.Tabular():
 						ids = el.headers
 					case cell(el.node.Role) && el.header != 0:
 						ids = []uint64{el.header}
@@ -1018,6 +1151,10 @@ func registerAccessClass() {
 				case "AXKeyShortcutsValue":
 					if el.node.KeyShortcuts != "" {
 						return nsString(el.node.KeyShortcuts)
+					}
+				case "AXARIARowCount", "AXARIAColumnCount", "AXARIARowIndex", "AXARIAColumnIndex":
+					if v := el.ariaGrid(stringOf(attr)); v > 0 {
+						return nsNumberInt(v)
 					}
 				}
 			}

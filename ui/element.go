@@ -509,8 +509,10 @@ type node struct {
 	busy         bool
 	current      Current
 	autoComplete AutoComplete
-	// vertical marks a slider going up (Vertical).
-	vertical bool
+	// orient is the way the element runs for assistive technology:
+	// Vertical for a slider going up (Vertical), or what Orientation
+	// says; 0 to find it from the element.
+	orient Orientation
 	// tip marks an element with a tooltip (TooltipBase).
 	tip bool
 	// highlighted is set on the option of a select the pointer or the
@@ -532,6 +534,11 @@ type node struct {
 	// keyShortcuts are the keys that press or focus the element, as the
 	// platform writes them (KeyShortcuts).
 	keyShortcuts string
+	// accGrid is the element's RowCount, ColumnCount, RowIndex and
+	// ColumnIndex, and accSet its place in its set and the set's size
+	// (PositionInSet), 0 for those not given.
+	accGrid [4]int32
+	accSet  [2]int32
 
 	// Layout results, in DIPs relative to the window.
 	x, y, w, h float32
@@ -600,9 +607,14 @@ type node struct {
 	choosesItems    bool
 	search          bool
 	// description tells assistive technology more than the name, and
-	// invalid marks a value that is not valid (Description, Error).
-	description string
-	invalid     bool
+	// invalid marks a value that is not valid (Description, Error,
+	// Invalid). describedBy are the elements whose text describes it too
+	// (DescribedBy), and errorMessage those holding its error, read while
+	// it is invalid (ErrorMessage).
+	description  string
+	invalid      bool
+	describedBy  []*node
+	errorMessage []*node
 	// field is set on a Field, form on a Form, whose layout makes its
 	// labels as wide as the widest.
 	field *fieldParts
@@ -621,8 +633,9 @@ type node struct {
 	// marks one with children.
 	level      int
 	expandable bool
-	// chooseMany marks a GridView choosing several items, and gridFit is
-	// how many columns its items took.
+	// chooseMany marks a GridView choosing several items, or an element
+	// whose items are (Multiselectable), and gridFit is how many columns
+	// a GridView's items took.
 	chooseMany bool
 	gridFit    *gridFit
 	// roleDescription names the element's role to assistive technology
@@ -645,12 +658,17 @@ type node struct {
 	// attach is where Attach puts the element, 0 for nowhere, and placed
 	// where AttachTo put it as this frame laid it out, on whichever side
 	// of its target, flips the sides it went to (flipAcross, flipDown).
-	leaving uint8
-	ghosts  bool
-	lift    bool
-	attach  attachment
-	placed  attachment
-	flips   uint8
+	leaving       uint8
+	ghosts        bool
+	lift          bool
+	attach        attachment
+	placed        attachment
+	flips         uint8
+	edgeMarginSet bool
+	// edgeMargin, when edgeMarginSet, is how far AttachTo keeps the
+	// element from the window's edges (AttachEdgeMargin), in place of
+	// windowMargin.
+	edgeMargin float32
 	// zIndex orders the element's painting and its hits among its
 	// siblings (ZIndex); zOrder is set on an element with a child having
 	// one, which paints and commits its children in that order alone
@@ -1254,6 +1272,18 @@ func (e *node) AttachedAnchors() (at, self Anchor) {
 		return AnchorTopLeft, AnchorTopLeft
 	}
 	return a.anchors()
+}
+
+// AttachEdgeMargin sets how far an element placed with AttachTo stays
+// from the window's edges, v DIPs on each side, where it is 4 unless set:
+// a panel that must not touch the edges of a small window keeps 12 from
+// them, as the inset-modified containing block of CSS Anchor Positioning
+// keeps a positioned box inside the insets given to it. It is the room
+// the element flips and moves to stay in, and that one scrolling is
+// limited to.
+func (e *node) AttachEdgeMargin(v float32) *node {
+	e.edgeMargin, e.edgeMarginSet = max(v, 0), true
+	return e
 }
 
 // AttachedOrigin sets the transform origin on the element's own point

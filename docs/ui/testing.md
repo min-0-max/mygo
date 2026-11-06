@@ -37,7 +37,8 @@ panics where the second key was given, as apps only log it.
 - **Pointer.** `tt.Click`, `tt.ClickAt`, `tt.ClickWith(ui.Shift, "Row 3")`,
   `tt.Press`, `tt.Move` and `tt.Release`, `tt.PressButton` and
   `tt.ReleaseButton` for another button, as `tt.PressButton(1, x, y)` for
-  a right-button drag, `tt.Scroll`, which scrolls at
+  a right-button drag, `tt.CancelPress`, which ends the press as the
+  system cancels one, with no click, `tt.Scroll`, which scrolls at
   once as a touchpad does, and `tt.Wheel`, a notch of a mouse wheel, which
   glides there as the clock advances (`tt.Advance`).
   `tt.UsePointer(ui.PointerPen, 0.6)` has the presses and moves after it
@@ -49,7 +50,10 @@ panics where the second key was given, as apps only log it.
   `tt.Command` performs an edit command of the menus, such as `"copy"`, and
   `tt.TextCaret` returns where input methods would compose.
 - **Menus.** `tt.RightClick` opens a context menu, which `tt.Menu` lists and
-  `tt.ChooseMenuItem("Move to", "Archive")` chooses from.
+  `tt.ChooseMenuItem("Move to", "Archive")` chooses from, and `tt.CloseMenu`
+  closes: the system's, or one [drawn in the
+  window](context-menu.md#drawn-in-the-window), so a test passes with
+  either.
 - **The window.** `tt.SetSize`, `tt.SetScale`, `tt.SetZoom` (the content's
   [zoom](windows.md#zoom), as `Context.SetZoom`; the tester's coordinates,
   of `Find`, `ClickAt`, `Move` and `TextCaret`, stay the window's), `tt.SetDark`,
@@ -148,14 +152,21 @@ whatever its role. The `ui.AccessInfo` they return has the role, the
 name, the value, the description and the `RoleDescription`, and the
 states, as [accessibility](accessibility.md#states) lists them:
 `Checked` and `Mixed` (`aria-checked`, `aria-pressed`), `Selected`
-(`aria-selected`, the tab, tree item, row or grid cell chosen),
+(`aria-selected`, the tab, tree item, row or grid cell chosen, with
+`Selected` or `AccessSelected`),
 `Expanded`, `HasPopup`, `Busy`, `Current`,
 `AutoComplete` (`aria-autocomplete`), `Sort` (a column header's
 `ui.SortDirection`), `Disabled`, `Invalid`, `Focused` (the element or
 option the focus is on, `ActiveDescendant` included), `Controls` (the
-names of the elements it controls, which `Access` finds), `Level`,
-`PosInSet` and `SetSize`, `Min`, `Max` and `Now` of a range, and its
-`Bounds`. So a test checks
+names of the elements it controls, which `Access` finds), `DescribedBy`
+and `ErrorMessage` (the names of the elements describing it and holding
+its error), `Vertical` and `Horizontal` (`aria-orientation`), `Level`,
+`PosInSet` and `SetSize` (`aria-posinset`, `aria-setsize`, as
+`PositionInSet` gives them), `Multiselectable`, `RowCount`,
+`ColumnCount`, `RowIndex` and `ColumnIndex` (of a
+[grid](accessibility.md#grids)), `RowSpan` and `ColumnSpan` (of its
+cells), `Min`, `Max` and `Now` of a range, and its `Bounds`. So a test
+checks
 that a state reaches assistive technology, not only that the view set
 it:
 

@@ -22,7 +22,10 @@ import (
 // sliders and progress bars, Value text fields and pop-up buttons, which
 // ExpandCollapse opens; ScrollItem scrolls what is in scroll containers
 // into view. Rows say which of all of their list's they are
-// (PositionInSet, SizeOfSet), as a list builds only those in view.
+// (PositionInSet, SizeOfSet), as a list builds only those in view. Tables
+// and grids have the Grid and Table patterns, their cells and column
+// headers GridItem and TableItem, which say where the cells are among all
+// the rows and columns, built or not.
 //
 // Two methods take doubles, which Go callbacks cannot read: thunks in
 // assembly move their bits to integer registers first (uia_*.s).
@@ -77,6 +80,10 @@ const (
 	ifaceScrollItem
 	ifaceHwndOverride
 	ifaceText
+	ifaceGrid
+	ifaceGridItem
+	ifaceTable
+	ifaceTableItem
 	uiaIfaces
 )
 
@@ -94,11 +101,16 @@ var uiaIIDs = [uiaIfaces]GUID{
 	guid("2360c714-4bf1-4b26-ba65-9b21316127eb"), // IScrollItemProvider
 	guid("1d5df27c-8947-4425-b8d9-79787bb460b8"), // IRawElementProviderHwndOverride
 	guid("3589c92c-63f3-4367-99bb-ada653b77cf2"), // ITextProvider
+	guid("b17d6187-0907-464b-a168-0ef17a1572b1"), // IGridProvider
+	guid("d02541f1-fb81-4d64-ae32-f520f8a6dbd1"), // IGridItemProvider
+	guid("9c860395-97b3-490a-b52a-858cc22af166"), // ITableProvider
+	guid("b9734fa6-771f-4d78-9c90-2517999349cd"), // ITableItemProvider
 }
 
 // Pattern identifiers of UI Automation, by interface.
 var uiaPatterns = map[uintptr]int{10000: ifaceInvoke, 10001: ifaceSelection, 10002: ifaceValue, 10003: ifaceRangeValue,
-	10005: ifaceExpandCollapse, 10010: ifaceSelectionItem, 10014: ifaceText, 10015: ifaceToggle, 10017: ifaceScrollItem}
+	10005: ifaceExpandCollapse, 10006: ifaceGrid, 10007: ifaceGridItem, 10010: ifaceSelectionItem, 10012: ifaceTable,
+	10013: ifaceTableItem, 10014: ifaceText, 10015: ifaceToggle, 10017: ifaceScrollItem}
 
 const (
 	uiaRootObjectID  = -25
@@ -137,6 +149,7 @@ const (
 	uiaLandmarkTypeProperty     = 30157
 	uiaLocalizedLandmarkType    = 30158
 	uiaControllerForProperty    = 30104
+	uiaDescribedByProperty      = 30105
 
 	uiaFocusChangedEvent                = 20005
 	uiaElementAddedToSelectionEvent     = 20010
@@ -180,7 +193,8 @@ var uiaControlTypes = map[platform.AccessRole]int32{
 	platform.RoleMenuItemRadio: 50011, platform.RoleHeading: 50020, platform.RoleNavigation: 50026,
 	platform.RoleRegion: 50026, platform.RoleLog: 50026, platform.RoleTimer: 50026, platform.RoleAlert: 50026,
 	platform.RoleSeparator: 50038, platform.RoleRowHeader: 50035, platform.RoleSearch: 50026,
-	platform.RoleArticle: 50026,
+	platform.RoleArticle: 50026, platform.RoleGrid: 50028, platform.RoleTreeGrid: 50028, // DataGrid
+	platform.RoleDeletion: 50020, platform.RoleInsertion: 50020,
 }
 
 // ariaRoles are the ARIA roles of nodes whose control type does not say
@@ -190,6 +204,8 @@ var ariaRoles = map[platform.AccessRole]string{
 	platform.RoleNavigation: "navigation", platform.RoleRegion: "region", platform.RoleLog: "log",
 	platform.RoleTimer: "timer", platform.RoleAlert: "alert", platform.RoleSeparator: "separator",
 	platform.RoleRowHeader: "rowheader", platform.RoleSearch: "search", platform.RoleArticle: "article",
+	platform.RoleGrid: "grid", platform.RoleTreeGrid: "treegrid",
+	platform.RoleDeletion: "deletion", platform.RoleInsertion: "insertion",
 }
 
 // variant is VARIANT, with the value of the types used here.
@@ -315,8 +331,12 @@ func (e *uiaElement) supports(i int) bool {
 		}
 		return false
 	case ifaceSelection:
-		// A list or table choosing its rows.
-		return (n.Role == platform.RoleList || n.Role == platform.RoleTable || n.Role == platform.RoleTree) && n.States&platform.AccessSelectable != 0
+		// A list, table or grid choosing its rows.
+		return (n.Role == platform.RoleList || n.Role == platform.RoleTree || n.Role.Tabular()) && n.States&platform.AccessSelectable != 0
+	case ifaceGrid, ifaceTable:
+		return n.Role.Tabular()
+	case ifaceGridItem, ifaceTableItem:
+		return cellOf(n.Role) && e.grid() != nil
 	case ifaceScrollItem:
 		return n.Actions&platform.ActionScrollIntoView != 0
 	case ifaceRangeValue:
@@ -629,6 +649,14 @@ func (e *uiaElement) notifyChanges(prev platform.AccessNode) {
 	}
 	if prev.States&platform.AccessDisabled != n.States&platform.AccessDisabled {
 		changed(uiaIsEnabledProperty, boolVariant(prev.States&platform.AccessDisabled == 0), boolVariant(n.States&platform.AccessDisabled == 0))
+	}
+	// A field marked invalid as the user leaves it, and what describes
+	// it, as its message showing.
+	if prev.States&platform.AccessInvalid != n.States&platform.AccessInvalid {
+		changed(uiaIsDataValidProperty, boolVariant(prev.States&platform.AccessInvalid == 0), boolVariant(n.States&platform.AccessInvalid == 0))
+	}
+	if prev.Description != n.Description {
+		str(uiaFullDescriptionProperty, prev.Description, n.Description)
 	}
 	switch {
 	case e.supports(ifaceToggle):
@@ -1029,13 +1057,7 @@ func initUIA() {
 			if e == nil {
 				return hr
 			}
-			chosen := e.chosen()
-			sa, _, _ := procSafeArrayCreateVector.Call(vtUnknown, 0, uintptr(len(chosen)))
-			for i, d := range chosen {
-				index := int32(i)
-				procSafeArrayPutElement.Call(sa, uintptr(unsafe.Pointer(&index)), d.ptr(ifaceSimple))
-			}
-			*(*uintptr)(native(p)) = sa
+			*(*uintptr)(native(p)) = elementArray(e.chosen())
 			return sOK
 		}),
 		cb(func(this, p uintptr) uintptr { // get_CanSelectMultiple
@@ -1052,6 +1074,8 @@ func initUIA() {
 			return sOK
 		}),
 	)
+
+	gridVtbls(vtbl, live)
 
 	uiaVtbls[ifaceScrollItem] = vtbl(
 		cb(func(this uintptr) uintptr { // ScrollIntoView
@@ -1178,10 +1202,15 @@ func (e *uiaElement) property(id int, v *variant) {
 			str("popup")
 		case platform.RoleHeading:
 			str("heading")
-		case platform.RoleRegion, platform.RoleLog, platform.RoleTimer, platform.RoleAlert, platform.RoleArticle:
+		case platform.RoleRegion, platform.RoleLog, platform.RoleTimer, platform.RoleAlert, platform.RoleArticle,
+			platform.RoleDeletion, platform.RoleInsertion:
 			str(ariaRoles[n.Role])
 		case platform.RoleRowHeader:
 			str("row header")
+		case platform.RoleTextField:
+			if n.States&platform.AccessSearch != 0 {
+				str("search box") // as Core-AAM's searchbox
+			}
 		}
 	case uiaNameProperty:
 		str(n.Label)
@@ -1215,10 +1244,20 @@ func (e *uiaElement) property(id int, v *variant) {
 		case n.States&platform.AccessSortOther != 0:
 			str("other")
 		}
-	case uiaControllerForProperty:
-		// What the element controls (aria-controls), of this tree.
+	case uiaControllerForProperty, uiaDescribedByProperty:
+		// What the element controls (aria-controls) and, while it is
+		// invalid, the elements holding its error (aria-errormessage), as
+		// Core-AAM maps both; or those describing it (aria-describedby).
+		// Of this tree.
+		ids := n.DescribedBy
+		if id == uiaControllerForProperty {
+			ids = n.Controls
+			if n.States&platform.AccessInvalid != 0 {
+				ids = append(slices.Clip(ids), n.ErrorMessage...)
+			}
+		}
 		var targets []*uiaElement
-		for _, id := range n.Controls {
+		for _, id := range ids {
 			if t := e.tree.nodes[id]; t != nil {
 				targets = append(targets, t)
 			}
@@ -1242,13 +1281,10 @@ func (e *uiaElement) property(id int, v *variant) {
 	case uiaIsOffscreenProperty:
 		*v = boolVariant(n.States&platform.AccessOffscreen != 0)
 	case uiaOrientationProperty:
-		// OrientationType_Horizontal or Vertical, of a slider or a rule.
-		if n.Role == platform.RoleSlider || n.Role == platform.RoleSeparator {
-			o := uint64(1)
-			if n.States&platform.AccessVertical != 0 {
-				o = 2
-			}
-			*v = variant{VT: vtI4, Val: o}
+		// OrientationType_Horizontal or Vertical (aria-orientation), a
+		// slider and a rule across unless told.
+		if o := orientation(n); o != 0 {
+			*v = variant{VT: vtI4, Val: uint64(o)}
 		}
 	case uiaHeadingLevelProperty:
 		// HeadingLevel1 to HeadingLevel9, as Chromium's headings.
@@ -1291,10 +1327,27 @@ func (e *uiaElement) property(id int, v *variant) {
 			str("region")
 		}
 	case uiaAriaRoleProperty:
+		if n.Role == platform.RoleTextField && n.States&platform.AccessSearch != 0 {
+			str("searchbox")
+			break
+		}
 		str(ariaRoles[n.Role])
 	case uiaAriaPropertiesProperty:
 		str(ariaProperties(n))
 	}
+}
+
+// orientation returns the OrientationType of a node: Vertical (2) or
+// Horizontal (1) where it says, else Horizontal for a slider or a rule,
+// None (0) for others.
+func orientation(n platform.AccessNode) int32 {
+	switch {
+	case n.States&platform.AccessVertical != 0:
+		return 2
+	case n.States&platform.AccessHorizontal != 0, n.Role == platform.RoleSlider || n.Role == platform.RoleSeparator:
+		return 1
+	}
+	return 0
 }
 
 // ariaProperties returns the ARIA states of a node that UI Automation has
@@ -1327,6 +1380,17 @@ func ariaProperties(n platform.AccessNode) string {
 		props = append(props, "sort=other")
 	}
 	return strings.Join(props, ";")
+}
+
+// elementArray returns a SAFEARRAY of the providers of elements, as the
+// patterns' methods return several.
+func elementArray(es []*uiaElement) uintptr {
+	sa, _, _ := procSafeArrayCreateVector.Call(vtUnknown, 0, uintptr(len(es)))
+	for i, d := range es {
+		index := int32(i)
+		procSafeArrayPutElement.Call(sa, uintptr(unsafe.Pointer(&index)), d.ptr(ifaceSimple))
+	}
+	return sa
 }
 
 // chosen returns the elements chosen in the element's Selection.

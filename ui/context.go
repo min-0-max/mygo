@@ -725,7 +725,10 @@ type state struct {
 	// accessDisabled, that assistive technology reads it as unavailable
 	// (AccessDisabled).
 	ignoreInput, accessHidden, accessDisabled bool
-	cursor                                    Cursor
+	// activeDescendant is the element that has the keyboard focus while
+	// this one does (ActiveDescendant), 0 for none.
+	activeDescendant uint64
+	cursor           Cursor
 	// tip marks an element with a tooltip (TooltipBase), which shows once
 	// the pointer has rested on it for tipDelay, or at once within tipWarm
 	// of another going: its theme's TooltipDelay.
@@ -765,9 +768,10 @@ type state struct {
 	pressPressure float32
 	// drag follows the press's moves; released tells that it ended since
 	// the last frame, going at releaseVX and releaseVY in the element's
-	// axes, releaseWX and releaseWY in the window's.
+	// axes, releaseWX and releaseWY in the window's, and canceled that it
+	// ended without the pointer letting go (PressCanceled).
 	drag                 dragTrack
-	released             bool
+	released, canceled   bool
 	releaseVX, releaseVY float32
 	releaseWX, releaseWY float32
 	pressPending         bool // the press began since the last build pass
@@ -775,10 +779,11 @@ type state struct {
 	// kept when it came with moves no pass had read for the pass that
 	// reads them to apply as it ends (forgetInput): where the pointer let
 	// go, which the element sees as the pointer meanwhile (pointer),
-	// whether it ended a drag, and the clicks since, the release's own
-	// first (click).
+	// whether it ended a drag or was canceled, and the clicks since, the
+	// release's own first (click).
 	releaseLater struct {
 		due, released       bool
+		canceled            bool
 		x, y                float32
 		clicks, rightClicks int
 		clickMods           Modifiers
