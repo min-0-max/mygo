@@ -229,6 +229,16 @@ type WindowOptions struct {
 	// the window and returns while the main thread goes on drawing it:
 	// guard the variable there, or set it with Window.Update.
 	Content Content
+	// DrawWhileOccluded has the Content draw the frames it asks for while
+	// nothing of the window shows, as when it is hidden, minimized or
+	// covered, where they otherwise wait until some of it shows: what
+	// waits for a presented frame, as a capture, a Window.AfterPresent
+	// notice or a native view placed with the frame, gets one. On macOS,
+	// while the window's display link does not tick, each frame asked for
+	// draws one display refresh after the last began, or at once when
+	// that passed. Frames the system asks for, as a resize's, draw at
+	// once either way.
+	DrawWhileOccluded bool
 }
 
 // WindowState is what WindowOptions.StateKey remembers of a window: its
@@ -315,11 +325,13 @@ type Window struct {
 	// long as the window is open (#1281). conn connects it to the native
 	// surface (main thread only). devTools tells that PageOptions.DevTools
 	// turned the developer tools on: the web inspector, or the inspector
-	// of the Content.
-	content      bool
-	conn         *surface.Conn
-	devTools     bool
-	invalidating atomic.Bool
+	// of the Content, and drawWhileOccluded that the Content draws its
+	// frames out of sight (WindowOptions.DrawWhileOccluded).
+	content           bool
+	conn              *surface.Conn
+	devTools          bool
+	drawWhileOccluded bool
+	invalidating      atomic.Bool
 	// userScripts are the scripts the window's pages run at document
 	// start: the bridge, the preferences and the preload script. Main
 	// thread only.
@@ -402,6 +414,8 @@ type Window struct {
 	onHide             listeners[func()]
 	onReadyToShow      listeners[func()]
 	onResize           listeners[func()]
+	onScaleChange      listeners[func(float64)]
+	onOcclusionChange  listeners[func(bool)]
 	onFileDrop         listeners[func(*FileDropEvent)]
 	onWillDownload     listeners[func(*DownloadEvent)]
 	onDownloadDone     listeners[func(*Download)]
@@ -598,6 +612,7 @@ func newWindow(opts WindowOptions, bg, tint *background, native uintptr, flyout 
 	popts := w.platformOptions(&opts)
 	popts.BackgroundColor = w.backgroundColor()
 	popts.Surface = opts.Content != nil
+	popts.DrawWhileOccluded = opts.DrawWhileOccluded
 	if opts.Transparent {
 		// Backends keep transparent windows clear; so do theme changes.
 		w.background = nil
@@ -617,6 +632,7 @@ func newWindow(opts WindowOptions, bg, tint *background, native uintptr, flyout 
 		popts.Center = false
 	}
 	w.devTools = popts.DevTools
+	w.drawWhileOccluded = popts.DrawWhileOccluded
 	if w.stateKey != "" {
 		restoreWindowState(w.stateKey, popts)
 	}
@@ -1866,6 +1882,20 @@ func (w *Window) OnReadyToShow(fn func()) (off func()) { return w.onReadyToShow.
 // OnResize is called after the window was resized.
 func (w *Window) OnResize(fn func()) (off func()) { return w.onResize.add(fn, false) }
 
+// OnScaleChange is called with the new scale of the window's backing store,
+// in device pixels per DIP, after the window moved to a display of another
+// scale or the scale of its display changed. It is called on macOS only.
+func (w *Window) OnScaleChange(fn func(scale float64)) (off func()) {
+	return w.onScaleChange.add(fn, false)
+}
+
+// OnOcclusionChange is called with true once none of the window shows, as
+// when other windows cover all of it, and with false once some of it shows
+// again. It is called on macOS only.
+func (w *Window) OnOcclusionChange(fn func(occluded bool)) (off func()) {
+	return w.onOcclusionChange.add(fn, false)
+}
+
 // OnFileDrop is called when files, for example from Finder or Explorer, are
 // dropped on the page, with their paths. The app's own pages also get them,
 // through onFileDrop of mygo-runtime. In a window showing native UI, it
@@ -2040,14 +2070,16 @@ func (h *windowHandler) MenuItemClicked(id int) {
 	}
 }
 
-func (h *windowHandler) Resized()           { h.w.stateChanged(); h.w.placeFlyouts(); fire(&h.w.onResize) }
-func (h *windowHandler) Moved()             { h.w.stateChanged(); h.w.placeFlyouts(); fire(&h.w.onMove) }
-func (h *windowHandler) Minimized()         { h.w.stateChanged(); fire(&h.w.onMinimize) }
-func (h *windowHandler) Restored()          { h.w.stateChanged(); fire(&h.w.onRestore) }
-func (h *windowHandler) Maximized()         { h.w.stateChanged(); fire(&h.w.onMaximize) }
-func (h *windowHandler) Unmaximized()       { h.w.stateChanged(); fire(&h.w.onUnmaximize) }
-func (h *windowHandler) EnteredFullScreen() { h.w.stateChanged(); fire(&h.w.onEnterFullScreen) }
-func (h *windowHandler) LeftFullScreen()    { h.w.stateChanged(); fire(&h.w.onLeaveFullScreen) }
+func (h *windowHandler) Resized()                       { h.w.stateChanged(); h.w.placeFlyouts(); fire(&h.w.onResize) }
+func (h *windowHandler) ScaleChanged(scale float64)     { fire1(&h.w.onScaleChange, scale) }
+func (h *windowHandler) OcclusionChanged(occluded bool) { fire1(&h.w.onOcclusionChange, occluded) }
+func (h *windowHandler) Moved()                         { h.w.stateChanged(); h.w.placeFlyouts(); fire(&h.w.onMove) }
+func (h *windowHandler) Minimized()                     { h.w.stateChanged(); fire(&h.w.onMinimize) }
+func (h *windowHandler) Restored()                      { h.w.stateChanged(); fire(&h.w.onRestore) }
+func (h *windowHandler) Maximized()                     { h.w.stateChanged(); fire(&h.w.onMaximize) }
+func (h *windowHandler) Unmaximized()                   { h.w.stateChanged(); fire(&h.w.onUnmaximize) }
+func (h *windowHandler) EnteredFullScreen()             { h.w.stateChanged(); fire(&h.w.onEnterFullScreen) }
+func (h *windowHandler) LeftFullScreen()                { h.w.stateChanged(); fire(&h.w.onLeaveFullScreen) }
 func (h *windowHandler) TitleBarChanged() {
 	h.w.sendTitleBar()
 	if c := h.w.conn; c != nil && c.TitleBarChanged != nil {

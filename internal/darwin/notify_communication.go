@@ -9,6 +9,7 @@ import (
 
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/platform"
 )
 
@@ -39,16 +40,20 @@ func checkCommunicationAuthorization() bool {
 	if err != nil {
 		return false
 	}
-	var createTask func(uintptr) uintptr
-	var copyEntitlement func(uintptr, id, uintptr) id
-	purego.RegisterLibFunc(&createTask, security, "SecTaskCreateFromSelf")
-	purego.RegisterLibFunc(&copyEntitlement, security, "SecTaskCopyValueForEntitlement")
-	task := createTask(0)
+	createTask, err := purego.Dlsym(security, "SecTaskCreateFromSelf")
+	if err != nil {
+		return false
+	}
+	copyEntitlement, err := purego.Dlsym(security, "SecTaskCopyValueForEntitlement")
+	if err != nil {
+		return false
+	}
+	task := mainthread.Forward[uintptr](createTask, uintptr(0))
 	if task == 0 {
 		return false
 	}
 	defer cfRelease(task)
-	value := copyEntitlement(task, nsString("com.apple.developer.usernotifications.communication"), 0)
+	value := mainthread.Forward[id](copyEntitlement, task, nsString("com.apple.developer.usernotifications.communication"), uintptr(0))
 	if value == 0 {
 		return false
 	}
@@ -147,7 +152,7 @@ func (b *Backend) addCommunicationNotification(n *platform.Notification, content
 		})
 	})
 	send(interaction, "donateInteractionWithCompletion:", uintptr(blk))
-	blk.Release()
+	blockRelease(uintptr(blk))
 	return true
 }
 

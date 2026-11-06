@@ -10,6 +10,7 @@ import (
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
 
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/platform"
 )
 
@@ -141,9 +142,9 @@ func (w *window) serverTrust(challenge, space id, handler uintptr) {
 			callBlock(handler, authUseCredential, uintptr(send(class("NSURLCredential"), "credentialForTrust:", uintptr(trust))))
 		})
 	})
-	status, _, _ := purego.SyscallN(api.evaluate, uintptr(trust), api.mainQueue, uintptr(block))
-	block.Release()
-	if int32(status) != 0 { // errSecSuccess: the block never runs otherwise
+	status := mainthread.Forward[int32](api.evaluate, trust, api.mainQueue, block)
+	blockRelease(uintptr(block))
+	if status != 0 { // errSecSuccess: the block never runs otherwise
 		release(challenge)
 		callBlock(handler, authDefault, 0)
 		blockRelease(handler)
@@ -153,7 +154,7 @@ func (w *window) serverTrust(challenge, space id, handler uintptr) {
 // leafCertificate returns the DER encoding of the server's own
 // certificate in trust.
 func leafCertificate(api *trustFuncs, trust id) []byte {
-	chain, _, _ := purego.SyscallN(api.chain, uintptr(trust))
+	chain := mainthread.Forward[uintptr](api.chain, trust)
 	if chain == 0 {
 		return nil
 	}
@@ -161,7 +162,7 @@ func leafCertificate(api *trustFuncs, trust id) []byte {
 	if sendInt(id(chain), "count") == 0 {
 		return nil
 	}
-	data, _, _ := purego.SyscallN(api.data, uintptr(send(id(chain), "objectAtIndex:", 0)))
+	data := mainthread.Forward[uintptr](api.data, send(id(chain), "objectAtIndex:", 0))
 	defer release(id(data))
 	return goBytes(id(data))
 }

@@ -7,6 +7,7 @@ import (
 	"github.com/egoist/mygo/i18n"
 	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/transfer"
+	"image"
 )
 
 // Conn is a window's side of the connection. Package mygo fills it before
@@ -34,6 +35,9 @@ type Conn struct {
 	// tells changes of as well.
 	IsDark      func() bool
 	Preferences func() platform.Preferences
+	// SystemSymbol returns the mask of a symbol of the system
+	// (platform.SymbolTheme), and false when it has none.
+	SystemSymbol func(name string, pointSize, scale float64) (image.Image, bool)
 	// Locale returns the language the app shows (App.Locale), and Region
 	// the user's regional formats, which LocaleChanged tells changes of.
 	// They cost nothing: the content may read them every frame.
@@ -63,6 +67,10 @@ type Conn struct {
 	// DevTools tells that the window's developer tools are on
 	// (PageOptions.DevTools): the content then opens its inspector.
 	DevTools bool
+	// DrawWhileOccluded tells that the content draws the frames it asks
+	// for while nothing of the window shows, holding none
+	// (WindowOptions.DrawWhileOccluded).
+	DrawWhileOccluded bool
 	// Invalidate asks for a frame; it is safe from any goroutine.
 	Invalidate func()
 	// Changed asks for a frame built anew after the app changed the state
@@ -82,6 +90,13 @@ type Conn struct {
 	// PlaceWebViews shows the window's web views where the content's last
 	// frame shows them (Surface.PlaceWebViews).
 	PlaceWebViews func(views []platform.WebViewPlacement)
+	// PlaceNativeViews, set by Window.NewNativeView, nil before, gives the
+	// application where the frame about to present shows its native view
+	// elements (NativeViewSurface.PlaceNativeViews).
+	PlaceNativeViews func(views []platform.NativeViewPlacement)
+	// TabIntoNativeView, set with it, gives key the keyboard
+	// (NativeViewSurface.TabIntoNativeView).
+	TabIntoNativeView func(key uintptr, back bool)
 	// ContentSize, set by a window that takes its content's size
 	// (mygo.FlyoutOptions.FitContent), nil in others, hears the size
 	// the content takes, in DIPs, as a frame laid out at the window's
@@ -98,6 +113,16 @@ type Conn struct {
 	// changed, and reports whether it did build one. The window calls
 	// it before it shows, to show at that size.
 	Fit func() bool
+	// AfterPresent has fn run once on the main thread with what came of
+	// the next frame the surface asks for, built anew: after its present
+	// ran, inside Core Animation's transaction for a frame presenting with
+	// it, or with why it presented nothing, and the error of a frame that
+	// failed (platform.PresentFailed). The content sets it.
+	AfterPresent func(fn func(platform.Presentation, error))
+	// HoldFrames keeps the window from drawing while hold is set, and
+	// draws what was asked for meanwhile as one frame once it is not
+	// (Window.HoldFrames). The content sets it.
+	HoldFrames func(hold bool)
 
 	// Event receives the surface's events, and Focus and Blur of the
 	// window. It reports whether the content takes dragged files, as

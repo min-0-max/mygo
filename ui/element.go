@@ -239,6 +239,8 @@ type textStyle struct {
 	strokeColor Color
 	// tabSize puts tab stops every tabSize spaces (TabSize).
 	tabSize float32
+	// keepAll breaks no line between letters (KeepAll).
+	keepAll bool
 	// shadow is the shadow the glyphs cast (TextShadow).
 	shadow TextShadow
 }
@@ -264,6 +266,7 @@ const (
 	setCaret
 	setStroke
 	setTabSize
+	setKeepAll
 	setShadow
 
 	// setAll has every bit of textStyle.set.
@@ -433,6 +436,9 @@ type node struct {
 	// hitFn tells where in its box the element takes the pointer
 	// (HitTest).
 	hitFn func(x, y float32, r Rect) bool
+	// hitOutset is how far beyond each side of its box the element takes
+	// the pointer (HitOutset).
+	hitOutset float32
 	// objectFn draws the inline objects of a text (DrawObjects).
 	objectFn func(p *Painter, at int, r Rect)
 	// styleFn sets the colors and opacity the element paints with, as it
@@ -1787,6 +1793,18 @@ func (e *node) TabSize(n float32) *node {
 	return e
 }
 
+// KeepAll breaks no line of the element's text between two letters or
+// digits, Hangul, Han and kana among them, as CSS's word-break: keep-all:
+// without it these lines may break between any two of their characters,
+// and with it, as lines of Latin words do, only where a space or
+// punctuation allows it. The elements inside the element inherit it. A word
+// wider than the line still breaks, as any word does.
+func (e *node) KeepAll() *node {
+	e.ts.keepAll = true
+	e.ts.set |= setKeepAll
+	return e
+}
+
 // linkTabs lets the text system set tab stops once an element sets a tab
 // size, so that apps that never do not link it.
 var linkTabs sync.Once
@@ -1991,6 +2009,13 @@ func (e *node) PassThrough() *node { e.flags |= flagPassThrough; return e }
 //		HitTest(func(x, y float32, r ui.Rect) bool { return ring(r).Contains(x, y) }).
 //		OnClick(func() { … })
 func (e *node) HitTest(fn func(x, y float32, r Rect) bool) *node { e.hitFn = fn; return e }
+
+// HitOutset makes the element take the pointer up to d beyond each side of
+// its box, as a slider takes it around its thin track: the press, the
+// hover and the cursor reach it there, over what lies under it, while its
+// box, its place in the layout and its rectangle for accessibility stay as
+// they are. The clips of the elements around it still cut it.
+func (e *node) HitOutset(d float32) *node { e.hitOutset = d; return e }
 
 // FocusRing sets whether MyGo rings the element when it has the keyboard
 // focus from the keyboard, as it does by default. Widgets that ring a part

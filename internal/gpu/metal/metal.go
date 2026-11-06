@@ -26,7 +26,9 @@ import (
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
 
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/gpu"
+	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/internal/scene"
 )
 
@@ -100,7 +102,10 @@ const (
 	filterLinear           = 1
 	statusError            = 5
 	layerWidthSizable      = 1 << 1
+	layerMaxXMargin        = 1 << 2
+	layerMinYMargin        = 1 << 3
 	layerHeightSizable     = 1 << 4
+	layerMaxYMargin        = 1 << 5
 )
 
 var (
@@ -109,16 +114,13 @@ var (
 
 	msgSend           uintptr
 	poolPush, poolPop uintptr
-	createDevice      func() id
+	msgSendStret      uintptr // the messages returning structs over 16 bytes
+	createDevice      uintptr // MTLCreateSystemDefaultDevice, on the main thread
 	srgb              uintptr
 	extendedSRGB      uintptr
 	msgReplaceRegion  func(obj id, sel objc.SEL, r mtlRegion, level uint, bytes unsafe.Pointer, bytesPerRow uint)
 	msgGetBytes       func(obj id, sel objc.SEL, bytes unsafe.Pointer, bytesPerRow uint, r mtlRegion, level uint)
 	msgSetClearColor  func(obj id, sel objc.SEL, c mtlClearColor)
-	msgSetSize        func(obj id, sel objc.SEL, s cgSize)
-	msgSetRect        func(obj id, sel objc.SEL, r cgRect)
-	msgRect           func(obj id, sel objc.SEL) cgRect
-	msgSetFloat       func(obj id, sel objc.SEL, v float64)
 	selMu             sync.Mutex
 	selectors         = map[string]objc.SEL{}
 	renderPass        id // MTLRenderPassDescriptor
@@ -176,7 +178,7 @@ func load() error {
 		msgSend = sym(objcLib, "objc_msgSend")
 		poolPush = sym(objcLib, "objc_autoreleasePoolPush")
 		poolPop = sym(objcLib, "objc_autoreleasePoolPop")
-		create := sym(metalLib, "MTLCreateSystemDefaultDevice")
+		createDevice = sym(metalLib, "MTLCreateSystemDefaultDevice")
 		name := sym(cg, "kCGColorSpaceSRGB")
 		extendedName := sym(cg, "kCGColorSpaceExtendedSRGB")
 		colorSpace := sym(cg, "CGColorSpaceCreateWithName")
@@ -197,30 +199,25 @@ func load() error {
 		modes := sym(cf, "kCFRunLoopCommonModes")
 		// Methods returning structs larger than 16 bytes use another entry
 		// point on amd64.
-		stret := msgSend
+		msgSendStret = msgSend
 		if runtime.GOARCH == "amd64" {
-			stret = sym(objcLib, "objc_msgSend_stret")
+			msgSendStret = sym(objcLib, "objc_msgSend_stret")
 		}
 		if errLoad != nil {
 			return
 		}
-		purego.RegisterFunc(&createDevice, create)
-		purego.RegisterFunc(&cfAbsoluteTimeGetCurrent, timeNow)
-		purego.RegisterFunc(&cfRunLoopTimerCreate, timerCreate)
-		purego.RegisterFunc(&cfRunLoopTimerSetNextFireDate, timerSetNext)
+		mainthread.BindAddr(&cfAbsoluteTimeGetCurrent, timeNow, "CFAbsoluteTimeGetCurrent")
+		mainthread.BindAddr(&cfRunLoopTimerCreate, timerCreate, "CFRunLoopTimerCreate")
+		mainthread.BindAddr(&cfRunLoopTimerSetNextFireDate, timerSetNext, "CFRunLoopTimerSetNextFireDate")
 		commonModes = *(*uintptr)(ptr(modes))
-		trimCallback = purego.NewCallback(func(timer, info uintptr) {
+		trimCallback = mainthread.Callback(purego.NewCallback(func(timer, info uintptr) {
 			if r := trimTimers[info]; r != nil {
 				r.trimIfIdle()
 			}
-		})
-		purego.RegisterFunc(&msgReplaceRegion, msgSend)
-		purego.RegisterFunc(&msgGetBytes, msgSend)
-		purego.RegisterFunc(&msgSetClearColor, msgSend)
-		purego.RegisterFunc(&msgSetSize, msgSend)
-		purego.RegisterFunc(&msgSetRect, msgSend)
-		purego.RegisterFunc(&msgSetFloat, msgSend)
-		purego.RegisterFunc(&msgRect, stret)
+		}))
+		mainthread.BindAddr(&msgReplaceRegion, msgSend, "objc_msgSend")
+		mainthread.BindAddr(&msgGetBytes, msgSend, "objc_msgSend")
+		mainthread.BindAddr(&msgSetClearColor, msgSend, "objc_msgSend")
 		renderPass = class("MTLRenderPassDescriptor")
 		selSetPipeline = sel("setRenderPipelineState:")
 		selSetFragmentTexture = sel("setFragmentTexture:atIndex:")
@@ -256,6 +253,7 @@ func ptr(a uintptr) unsafe.Pointer { return *(*unsafe.Pointer)(unsafe.Pointer(&a
 func send(obj id, selector string, args ...uintptr) id {
 	var a [10]uintptr
 	a[0], a[1] = obj, uintptr(sel(selector))
+	mainthread.CheckSend(a[0], a[1])
 	n := copy(a[2:], args)
 	r, _, _ := purego.SyscallN(msgSend, a[:n+2]...)
 	return r
@@ -266,10 +264,12 @@ func send(obj id, selector string, args ...uintptr) id {
 // they make no copy of their arguments, which purego.SyscallN allocates
 // once.
 func msg2(obj id, selector objc.SEL, a, b uintptr) {
+	mainthread.CheckSend(obj, uintptr(selector))
 	purego.SyscallN(msgSend, obj, uintptr(selector), a, b)
 }
 
 func msg5(obj id, selector objc.SEL, a, b, c, d, e uintptr) {
+	mainthread.CheckSend(obj, uintptr(selector))
 	purego.SyscallN(msgSend, obj, uintptr(selector), a, b, c, d, e)
 }
 
@@ -282,9 +282,35 @@ func (r *Renderer) setScissor(enc id, sc gpu.Scissor) {
 	msg2(enc, selSetScissorRects, uintptr(unsafe.Pointer(&r.scissor)), 1)
 }
 
+// sendMain sends a message whose arguments are integers or pointers on
+// the main thread (mainthread.Send): a message to an object that is
+// neither a Metal object nor a Metal descriptor, as the layer and
+// CATransaction.
+//
+//go:uintptrescapes
+func sendMain(obj id, selector string, args ...uintptr) id {
+	rest := make([]any, len(args))
+	for i, a := range args {
+		rest[i] = a
+	}
+	return mainthread.Send[id](objc.ID(obj), sel(selector), rest...)
+}
+
+// byReceiver sends release, autorelease or commit, which run on the
+// calling thread for a Metal object, a Metal descriptor or a drawable and
+// on the main thread for any other receiver (mainthread.ByReceiver).
+func byReceiver(obj id, selector string) id {
+	return mainthread.ByReceiver(msgSend, obj, uintptr(sel(selector)))
+}
+
+// layerBounds returns the bounds of the layer.
+func layerBounds(layer id) cgRect {
+	return mainthread.Forward[cgRect](msgSendStret, layer, sel("bounds"))
+}
+
 func release(obj *id) {
 	if *obj != 0 {
-		send(*obj, "release")
+		byReceiver(*obj, "release")
 		*obj = 0
 	}
 }
@@ -312,7 +338,9 @@ func describe(err id) string {
 	if err == 0 {
 		return "unknown error"
 	}
-	p := send(send(err, "localizedDescription"), "UTF8String")
+	desc := mainthread.SendRetained(objc.ID(err), sel("localizedDescription"))
+	defer byReceiver(id(desc), "release")
+	p := send(id(desc), "UTF8String")
 	if p == 0 {
 		return "unknown error"
 	}
@@ -400,6 +428,11 @@ type formatState struct {
 
 // Renderer draws scenes into a CAMetalLayer it adds to a view's layer.
 type Renderer struct {
+	// facts is what came of the last frame given to render; reportClock and
+	// reportCommit report it and the commits outside a frame (ReportFrames).
+	facts                  gpu.FrameFacts
+	reportClock            func() uint64
+	reportCommit           func(gpu.CommitKind, uint64)
 	device, queue, sampler id
 	// shaderBytes holds the uniforms of the shader being drawn, laid out.
 	shaderBytes []byte
@@ -432,12 +465,17 @@ type Renderer struct {
 	scale             float64
 
 	// synced tells that the layer presents with the Core Animation
-	// transaction, and holes that the last frame had holes (web views
-	// under it). pre fetches the drawables of frames following each
+	// transaction. pre fetches the drawables of frames following each
 	// other, and pending is a frame waiting for its drawable (present.go).
-	synced, holes bool
-	pre           presenter
-	pending       pendingFrame
+	synced bool
+	// following counts the frames in a row that followed the last, and third
+	// tells that the layer may have a third drawable (countFollowing).
+	following int
+	third     bool
+	// refreshRate returns the display's refresh rate (SetRefreshRate).
+	refreshRate func() float64
+	pre         presenter
+	pending     pendingFrame
 	// post runs a function on the main thread (SetPost), fetched has the
 	// presenter's thread draw pending through it, and wake is what Ready
 	// was given while a frame was pending.
@@ -451,15 +489,19 @@ type Renderer struct {
 	images map[uint64]*texture
 	// canvases are the textures canvases are drawn into.
 	canvases map[uint64]*canvasTexture
-	// blurred are the textures of the images the frame draws blurred
-	// (gpu.Builder.BlurredImage), the first used of them, and blurTmp the
-	// textures their passes go through; stopsTex is the texture of the
-	// stops of the scene drawn.
-	blurred  []texture
-	used     int
-	blurTmp  [2]texture
-	stopsTex id
-	frame    uint64
+	// blurs are the textures of the images frames draw blurred
+	// (gpu.Builder.BlurredImage), each by the image, its version and the
+	// blur, kept while frames draw them: an image unchanged is not
+	// blurred again, and a canvas shown only so needs no texture of its
+	// own (needsDrawing). blurTmp are the textures their passes go
+	// through, kept while each frame blurs, and blurPassed tells whether
+	// this one did. stopsTex is the texture of the stops of the scene
+	// drawn.
+	blurs      map[blurKey]*texture
+	blurTmp    [2]texture
+	blurPassed bool
+	stopsTex   id
+	frame      uint64
 	// Command buffers retain every resource used by their frame slot.
 	inflight    [ringSize]id
 	slot, inUse int
@@ -504,33 +546,29 @@ func New(layer uintptr) (r *Renderer, err error) {
 			err = errors.New("metal: no CAMetalLayer")
 			return
 		}
-		ml := send(send(class("CAMetalLayer"), "alloc"), "init")
+		ml := sendMain(sendMain(class("CAMetalLayer"), "alloc"), "init")
 		if err = need(ml, "CAMetalLayer", "setDevice:", "setPixelFormat:", "setFramebufferOnly:", "setPresentsWithTransaction:",
 			"setColorspace:", "setDrawableSize:", "setContentsScale:", "setFrame:", "setAutoresizingMask:", "nextDrawable"); err != nil {
 			release(&ml)
 			return
 		}
-		send(ml, "setDevice:", r.device)
-		send(ml, "setPixelFormat:", pixelFormatBGRA8Unorm)
+		sendMain(ml, "setDevice:", r.device)
+		sendMain(ml, "setPixelFormat:", pixelFormatBGRA8Unorm)
 		// Effects read their backdrops from the drawable, which their
 		// passes sample then.
-		send(ml, "setFramebufferOnly:", 0)
-		// Two drawables are too few: on a ProMotion display, frames
-		// waited for one most of each refresh. Three, as Core
-		// Animation makes while a window animates, also let both instance
-		// slots have a frame in flight while the display shows a third.
-		// They cost a frame of memory until the window idles (trim).
+		sendMain(ml, "setFramebufferOnly:", 0)
+		// A layer starts with two drawables (countFollowing).
 		if respondsTo(ml, "setMaximumDrawableCount:") {
-			send(ml, "setMaximumDrawableCount:", 3)
+			sendMain(ml, "setMaximumDrawableCount:", 2)
 		}
 		// The first frame shows with the window's other changes; render
 		// decides for each frame.
-		send(ml, "setPresentsWithTransaction:", 1)
+		sendMain(ml, "setPresentsWithTransaction:", 1)
 		r.synced = true
-		send(ml, "setColorspace:", srgb)
-		send(ml, "setOpaque:", 0)
-		send(ml, "setAutoresizingMask:", layerWidthSizable|layerHeightSizable)
-		send(layer, "addSublayer:", ml)
+		sendMain(ml, "setColorspace:", srgb)
+		sendMain(ml, "setOpaque:", 0)
+		sendMain(ml, "setAutoresizingMask:", layerWidthSizable|layerHeightSizable)
+		sendMain(layer, "addSublayer:", ml)
 		r.layer, r.superlayer = ml, layer
 	})
 	if err != nil {
@@ -563,7 +601,7 @@ func newRenderer() (r *Renderer, err error) {
 }
 
 func (r *Renderer) init() (err error) {
-	r.device = createDevice() // owned: NS_RETURNS_RETAINED
+	r.device = mainthread.Forward[id](createDevice) // owned: NS_RETURNS_RETAINED
 	if err := need(r.device, "Metal device", "newCommandQueue", "newLibraryWithSource:options:error:",
 		"newRenderPipelineStateWithDescriptor:error:", "newSamplerStateWithDescriptor:", "newTextureWithDescriptor:",
 		"newBufferWithLength:options:"); err != nil {
@@ -574,16 +612,17 @@ func (r *Renderer) init() (err error) {
 
 // initGPU makes what only drawing on the GPU needs. A window presenting
 // CPU frames needs the device and layer alone: neither a command queue
-// nor shaders, samplers and textures.
+// nor shaders, samplers and textures. The command queue goes with a trim,
+// so the first frame after one makes that alone.
 func (r *Renderer) initGPU() error {
-	if r.queue != 0 {
+	if r.queue == 0 {
+		if r.queue = send(r.device, "newCommandQueue"); r.queue == 0 {
+			return errors.New("metal: no command queue")
+		}
+	}
+	if r.sampler != 0 {
 		return nil
 	}
-	queue := send(r.device, "newCommandQueue")
-	if queue == 0 {
-		return errors.New("metal: no command queue")
-	}
-	defer release(&queue)
 	sd := send(send(class("MTLSamplerDescriptor"), "alloc"), "init")
 	defer release(&sd)
 	send(sd, "setMinFilter:", filterLinear)
@@ -595,8 +634,8 @@ func (r *Renderer) initGPU() error {
 	if empty == 0 || sampler == 0 {
 		return errors.New("metal: cannot create a texture")
 	}
-	r.queue, r.sampler, r.empty = queue, sampler, empty
-	queue, sampler, empty = 0, 0, 0
+	r.sampler, r.empty = sampler, empty
+	sampler, empty = 0, 0
 	return nil
 }
 
@@ -690,11 +729,11 @@ func (r *Renderer) setLayerWide(on bool) (changed bool) {
 		format, space = pixelFormatRGBA16Float, extendedSRGB
 	}
 	tx := class("CATransaction")
-	send(tx, "begin")
-	send(tx, "setDisableActions:", 1)
-	send(r.layer, "setPixelFormat:", format)
-	send(r.layer, "setColorspace:", space)
-	send(tx, "commit")
+	sendMain(tx, "begin")
+	sendMain(tx, "setDisableActions:", 1)
+	sendMain(r.layer, "setPixelFormat:", format)
+	sendMain(r.layer, "setColorspace:", space)
+	sendMain(tx, "commit")
 	r.layerWide = on
 	return true
 }
@@ -738,12 +777,12 @@ var classConstants = [gpu.NumClasses][8]bool{
 func (r *Renderer) specialized(lib id, fs string, cl uint32, continuous bool) (fn id, errObj id) {
 	if cl&(1<<gpu.ClassGeneral) != 0 {
 		fn = send(lib, "newFunctionWithName:", nsString(fs))
-		if fn == 0 || send(send(fn, "functionConstantsDictionary"), "count") == 0 {
+		if fn == 0 || sendMain(send(fn, "functionConstantsDictionary"), "count") == 0 {
 			return fn, 0
 		}
 		release(&fn)
 	}
-	values := send(send(class("MTLFunctionConstantValues"), "alloc"), "init")
+	values := sendMain(sendMain(class("MTLFunctionConstantValues"), "alloc"), "init")
 	defer release(&values)
 	const dataTypeBool = 53
 	for i := range 8 {
@@ -753,7 +792,7 @@ func (r *Renderer) specialized(lib id, fs string, cl uint32, continuous bool) (f
 				v = 1
 			}
 		}
-		send(values, "setConstantValue:type:atIndex:", uintptr(unsafe.Pointer(&v)), dataTypeBool, uintptr(i))
+		sendMain(values, "setConstantValue:type:atIndex:", uintptr(unsafe.Pointer(&v)), dataTypeBool, uintptr(i))
 	}
 	fn = send(lib, "newFunctionWithName:constantValues:error:", nsString(fs), values, uintptr(unsafe.Pointer(&errObj)))
 	return fn, errObj
@@ -1074,15 +1113,21 @@ func (r *Renderer) prepare(s *scene.Scene) (cb id, built *scene.Scene, err error
 		return 0, nil, err
 	}
 	r.pipes.fallbacks = 0
-	r.used = 0
+	r.blurPassed = false
 	cb = send(r.queue, "commandBuffer")
 	if !r.checked {
 		if err := need(cb, "command buffer", "renderCommandEncoderWithDescriptor:", "commit", "presentDrawable:", "waitUntilScheduled", "waitUntilCompleted", "status", "blitCommandEncoder"); err != nil {
 			return 0, nil, err
 		}
 	}
-	// Canvases first, into textures of their own, which the frame samples.
+	// Canvases first, into textures of their own, which the frame samples;
+	// a canvas the frame shows only through blurs kept has none.
+	need := r.needsDrawing(s)
 	s.EachCanvas(func(c *scene.Image) {
+		if !need[c] {
+			r.dropCanvas(c.ID())
+			return
+		}
 		if err == nil {
 			err = r.drawCanvas(cb, c)
 		}
@@ -1094,7 +1139,84 @@ func (r *Renderer) prepare(s *scene.Scene) (cb id, built *scene.Scene, err error
 	if built, err = r.build(cb, s, &r.drawState); err != nil {
 		return 0, nil, err
 	}
+	r.dropBlurs()
 	return cb, built, nil
+}
+
+// blurKey names a blurred image: the image, its version, and the blur
+// (gpu.Builder.BlurredImage).
+type blurKey struct {
+	image, version uint64
+	bk             scene.Backdrop
+}
+
+// keeps reports whether the renderer keeps the blur that op, an image
+// drawn blurred, draws of its image as it is.
+func (r *Renderer) keeps(op *scene.Op) bool {
+	img := op.Image
+	_, ok := r.blurs[blurKey{img.ID(), img.Version(), scene.ImageBlur(scene.ImageArea(op.Src, img.W, img.H), op.Blur)}]
+	return ok
+}
+
+// needsDrawing returns the canvases whose textures s needs: those its
+// images show unblurred, or blurred anew, and its shaders read, with the
+// canvases those show, and the canvases drawn anew. A canvas shown only
+// through blurs the renderer keeps needs none.
+func (r *Renderer) needsDrawing(s *scene.Scene) map[*scene.Image]bool {
+	need := map[*scene.Image]bool{}
+	var look func(sc *scene.Scene)
+	mark := func(c *scene.Image) {
+		if c != nil && c.Scene != nil && !need[c] {
+			need[c] = true
+			look(c.Scene)
+		}
+	}
+	look = func(sc *scene.Scene) {
+		for i := range sc.Ops {
+			op := &sc.Ops[i]
+			if op.Kind != scene.OpImage || op.Image == nil || op.Image.Scene == nil || op.Blur > 0 && r.keeps(op) {
+				continue
+			}
+			mark(op.Image)
+		}
+		for i := range sc.Effects {
+			for _, img := range sc.Effects[i].Images {
+				mark(img)
+			}
+		}
+	}
+	look(s)
+	for _, c := range s.Canvases {
+		mark(c)
+	}
+	return need
+}
+
+// dropCanvas frees the texture of a canvas, which its next drawing makes
+// again.
+func (r *Renderer) dropCanvas(key uint64) {
+	if t := r.canvases[key]; t != nil {
+		release(&t.tex)
+		t.drawState.release()
+		delete(r.canvases, key)
+	}
+}
+
+// dropBlurs frees the blurred images the frame did not draw, and the
+// textures of the blur passes when it ran none.
+func (r *Renderer) dropBlurs() {
+	for key, t := range r.blurs {
+		if t.lastFrame != r.frame {
+			release(&t.tex)
+			delete(r.blurs, key)
+		}
+	}
+	if !r.blurPassed {
+		for i := range r.blurTmp {
+			release(&r.blurTmp[i].tex)
+			r.blurTmp[i] = texture{}
+		}
+	}
 }
 
 // drawCanvas draws a canvas into its texture, unless it holds its version
@@ -1271,6 +1393,7 @@ func (r *Renderer) drawBuilt(cb id, s *scene.Scene, target id, d *drawState, par
 		}
 		if want != st.pipe {
 			st.pipe = want
+			mainthread.CheckSend(enc, uintptr(selSetPipeline))
 			purego.SyscallN(msgSend, enc, uintptr(selSetPipeline), want)
 		}
 		if b.Image != 0 && b.Image != st.image {
@@ -1365,7 +1488,7 @@ func (r *Renderer) begin(cb, target id, load uintptr, s *scene.Scene, b *gpu.Bui
 	send(ca, "setStoreAction:", storeActionStore)
 	c := s.Clear.Premul(1)
 	msgSetClearColor(ca, sel("setClearColor:"), mtlClearColor{float64(c[0]), float64(c[1]), float64(c[2]), float64(c[3])})
-	enc := send(cb, "renderCommandEncoderWithDescriptor:", rpd)
+	enc := renderEncoder(cb, rpd)
 	if !r.checked {
 		if err := need(enc, "render encoder", "setRenderPipelineState:", "setVertexBytes:length:atIndex:", "setVertexBuffer:offset:atIndex:",
 			"setFragmentBuffer:offset:atIndex:", "setFragmentBytes:length:atIndex:", "setFragmentTexture:atIndex:", "setFragmentSamplerState:atIndex:",
@@ -1465,6 +1588,11 @@ func (r *Renderer) syncStops(d *drawState) error {
 // BGRA8 whatever the frame's format, as internal/raster computes them,
 // and returns it, or 0.
 func (r *Renderer) blurImage(cb id, img *scene.Image, bk scene.Backdrop) uintptr {
+	key := blurKey{img.ID(), img.Version(), bk}
+	if t := r.blurs[key]; t != nil {
+		t.lastFrame = r.frame
+		return uintptr(t.tex)
+	}
 	src := id(r.imageTexture(img))
 	w, h := bk.Size()
 	f := &r.formats[0]
@@ -1488,19 +1616,17 @@ func (r *Renderer) blurImage(cb id, img *scene.Image, bk scene.Backdrop) uintptr
 			t.w, t.h = nw, nh
 		}
 	}
-	if r.used == len(r.blurred) {
-		r.blurred = append(r.blurred, texture{})
-	}
-	out := &r.blurred[r.used]
-	r.used++
+	out := r.blurTexture(key, w, h)
 	if out.tex == 0 || out.w != w || out.h != h {
 		release(&out.tex)
 		if out.tex = r.newTexture(w, h, pixelFormatBGRA8Unorm, usageRenderTarget|usageShaderRead, nil, 0); out.tex == 0 {
-			*out = texture{}
+			delete(r.blurs, key)
 			return 0
 		}
 		out.w, out.h = w, h
 	}
+	out.lastFrame = r.frame
+	r.blurPassed = true
 	p := gpu.ImageDownPass(bk)
 	if bk.Radius == 0 {
 		r.pass(cb, f.downPipe, src, out.tex, w, h, &p)
@@ -1512,6 +1638,25 @@ func (r *Renderer) blurImage(cb id, img *scene.Image, bk scene.Backdrop) uintptr
 	p = gpu.ImageBlurPass(bk, [2]int32{0, 1})
 	r.pass(cb, f.blurPipe, r.blurTmp[1].tex, out.tex, w, h, &p)
 	return uintptr(out.tex)
+}
+
+// blurTexture returns the texture kept for the blurred image key: that of
+// an earlier version of its image of the same size that this frame does
+// not draw, as an image changing every frame takes, or a new one.
+func (r *Renderer) blurTexture(key blurKey, w, h int) *texture {
+	if r.blurs == nil {
+		r.blurs = map[blurKey]*texture{}
+	}
+	for k, t := range r.blurs {
+		if k.image == key.image && t.w == w && t.h == h && t.lastFrame != r.frame {
+			delete(r.blurs, k)
+			r.blurs[key] = t
+			return t
+		}
+	}
+	t := &texture{}
+	r.blurs[key] = t
+	return t
 }
 
 // readBackdrop encodes the passes computing the backdrop bk of what
@@ -1570,15 +1715,26 @@ func (r *Renderer) fitBackdrop(b *gpu.Builder) error {
 	return nil
 }
 
-// hasHoles reports whether s has holes (scene.OpHole), where it shows
-// web views under it.
-func hasHoles(s *scene.Scene) bool {
-	for i := range s.Ops {
-		if s.Ops[i].Kind == scene.OpHole {
-			return true
+// HoldFrames has the window hold its frames, or stop (the window's
+// HoldFrames). While it does, the layer stays at the size of the last
+// frame, at the top left of its superlayer, as that resizes, rather than
+// scale the frame to it: the next frame gives it the new size (fit). A
+// frame waiting for its drawable goes: it would present while the window
+// holds its frames.
+func (r *Renderer) HoldFrames(hold bool) {
+	pool(func() {
+		mask := uintptr(layerWidthSizable | layerHeightSizable)
+		if hold {
+			r.dropPending()
+			// The margin that grows is the one away from the top left,
+			// whichever way the superlayer's y goes.
+			mask = layerMaxXMargin | layerMinYMargin
+			if byte(sendMain(r.superlayer, "isGeometryFlipped")) != 0 {
+				mask = layerMaxXMargin | layerMaxYMargin
+			}
 		}
-	}
-	return false
+		sendMain(r.layer, "setAutoresizingMask:", mask)
+	})
 }
 
 // Ready reports whether a frame following the last one can draw at once,
@@ -1600,15 +1756,36 @@ func or(a, b id) id {
 }
 
 // Render draws s into the layer and presents it.
-func (r *Renderer) Render(s *scene.Scene) (err error) {
+func (r *Renderer) Render(s *scene.Scene) error {
 	if s.Width <= 0 || s.Height <= 0 || r.layer == 0 {
 		return nil
 	}
-	pool(func() { err = r.render(s) })
+	return r.RenderNotice(s, func(platform.Presentation, error) {}, func() {})
+}
+
+// RenderNotice draws s into the layer and presents it, as Render does, and
+// gives done what came of the frame, once, on the main thread: Presented
+// once its drawable's present ran, inside Core Animation's transaction for
+// a frame presenting with it, else why it presented nothing, with the
+// error of a frame that failed (platform.PresentFailed). done runs before
+// RenderNotice returns, or, for a frame waiting for its drawable
+// (present.go), once it drew into it. Such a frame dropped, as the
+// renderer trims its drawables or is let go, calls again instead, for the
+// frame drawn after it, which shows what it would have, to answer it.
+// When RenderNotice returns an error, neither has run and neither does.
+func (r *Renderer) RenderNotice(s *scene.Scene, done func(platform.Presentation, error), again func()) (err error) {
+	switch {
+	case r.layer == 0:
+		return errors.New("metal: the renderer was let go")
+	case s.Width <= 0 || s.Height <= 0:
+		return fmt.Errorf("metal: no frame of %d×%d pixels to present", s.Width, s.Height)
+	}
+	pool(func() { err = r.render(s, done, again) })
 	return err
 }
 
-func (r *Renderer) render(s *scene.Scene) error {
+func (r *Renderer) render(s *scene.Scene, done func(platform.Presentation, error), again func()) error {
+	r.facts = gpu.FrameFacts{}
 	if r.err != nil {
 		return r.err
 	}
@@ -1626,7 +1803,7 @@ func (r *Renderer) render(s *scene.Scene) error {
 		// A frame not paced by the display, as a resize's, draws after
 		// the one waiting for its drawable, which fetches none for it
 		// when it takes its own.
-		if err := r.finishPending(!changes && !hasHoles(s) && !r.holes); err != nil {
+		if err := r.finishPending(!changes && !s.Transact); err != nil {
 			return err
 		}
 	}
@@ -1640,14 +1817,11 @@ func (r *Renderer) render(s *scene.Scene) error {
 	}
 	changed := r.setLayerWide(r.wide)
 	changed = r.fit(s.Width, s.Height, scale) || changed
-	// A frame changing the layer, or showing web views, which move with
-	// the window's other changes, presents with the Core Animation
-	// transaction, so that they show together, as during a live resize.
-	// Others present as soon as the GPU has them, sparing a commit of the
-	// transaction for each.
-	holes := hasHoles(s)
-	sync := changed || holes || r.holes
-	r.holes = holes
+	// A frame changing the layer, or moving the views under its holes,
+	// presents with the Core Animation transaction, so that they show
+	// together, as during a live resize. Others present as soon as the
+	// GPU has them, sparing a commit of the transaction for each.
+	sync := changed || s.Transact
 	if sync {
 		// A drawable fetched before the layer changed, or to present
 		// on its own, is not this frame's.
@@ -1660,14 +1834,19 @@ func (r *Renderer) render(s *scene.Scene) error {
 	}
 	r.diff.Wide = r.wide
 	damage, known := r.diff.Diff(s)
+	r.facts.Damage = gpu.DamageArea(damage, known, s.Width, s.Height)
 	if known && len(damage) == 0 && !sync {
 		r.redrew = redrewNothing
+		r.facts.Outcome = gpu.FrameUndamaged
+		done(platform.PresentNoDamage, nil)
 		return nil
 	}
+	r.countFollowing()
 	if !sync && r.fetched != nil && !r.pre.ready(r.fetched) {
 		// The next drawable is being fetched: the frame is built now and
 		// drawn into it once the presenter has it.
-		return r.stash(s, damage, known)
+		r.facts.Outcome = gpu.FrameStashed
+		return r.stash(s, damage, known, done, again)
 	}
 	var drawable id
 	cb, err := r.drawFrame(s, damage, known, func() id {
@@ -1676,15 +1855,17 @@ func (r *Renderer) render(s *scene.Scene) error {
 			if sync {
 				on = 1
 			}
-			send(r.layer, "setPresentsWithTransaction:", on)
+			sendMain(r.layer, "setPresentsWithTransaction:", on)
 			r.synced = sync
 		}
+		waited := r.reportNow()
 		if !sync {
 			drawable = r.prefetched()
 		}
 		if drawable == 0 {
-			drawable = send(r.layer, "nextDrawable")
+			drawable = frameDrawable(r.layer)
 		}
+		r.facts.DrawableWait = r.reportNow() - waited
 		if drawable == 0 {
 			return 0
 		}
@@ -1696,19 +1877,34 @@ func (r *Renderer) render(s *scene.Scene) error {
 	if drawable == 0 {
 		// None came within a second: the frame is skipped, its canvases
 		// drawn.
-		send(cb, "commit")
+		byReceiver(cb, "commit")
+		r.facts.Outcome, r.facts.CommandBuffer = gpu.FrameSkipped, true
 		r.track(cb)
+		done(platform.PresentNoDrawable, nil)
 		return nil
 	}
+	r.facts.CommandBuffer = true
 	if sync {
-		send(cb, "commit")
+		r.facts.Outcome = gpu.FrameTransaction
+		byReceiver(cb, "commit")
 		send(cb, "waitUntilScheduled")
-		send(drawable, "present")
+		r.presenting(drawable)
+		r.facts.Request = r.reportNow()
+		sendMain(drawable, "present")
 	} else {
+		r.facts.Outcome = gpu.FrameImmediate
+		r.presenting(drawable)
+		r.facts.Request = r.reportNow()
 		send(cb, "presentDrawable:", drawable)
-		send(cb, "commit")
-		// The next frame's drawable, while this one is shown.
-		r.pre.start(r.layer)
+		byReceiver(cb, "commit")
+		// The next frame's drawable, while this one is shown, when frames
+		// follow each other. For a frame alone, the display still shows the
+		// last and the GPU has this one, so the system would make a third
+		// drawable, whose memory stays until the window idles (trim). The
+		// next frame takes one itself; with two in use, one is free for it.
+		if r.follows(time.Since(r.lastRender)) {
+			r.pre.start(r.layer)
+		}
 	}
 	r.track(cb)
 	r.lastRender = time.Now()
@@ -1716,7 +1912,50 @@ func (r *Renderer) render(s *scene.Scene) error {
 	if r.frame%120 == 0 {
 		r.sweep()
 	}
+	// The transaction a frame presented with is still open: what the
+	// notice changes shows with the frame.
+	done(platform.Presented, nil)
 	return nil
+}
+
+// ReportFrames has the renderer read clock for the times of FrameFacts, and tell
+// commit of each command buffer it commits outside a frame, at the time it did.
+func (r *Renderer) ReportFrames(clock func() uint64, commit func(gpu.CommitKind, uint64)) {
+	r.reportClock, r.reportCommit = clock, commit
+}
+
+// FrameFacts tells what came of the last frame given to Render or RenderNotice.
+func (r *Renderer) FrameFacts() gpu.FrameFacts { return r.facts }
+
+// reportNow returns the time on the clock of ReportFrames, 0 without one.
+func (r *Renderer) reportNow() uint64 {
+	if r.reportClock == nil {
+		return 0
+	}
+	return r.reportClock()
+}
+
+// committedOutside reports a command buffer committed outside a frame.
+func (r *Renderer) committedOutside(kind gpu.CommitKind) {
+	if r.reportCommit != nil {
+		r.reportCommit(kind, r.reportNow())
+	}
+}
+
+// committedOffscreen reports the commit of an offscreen canvas.
+func (r *Renderer) committedOffscreen() { r.committedOutside(gpu.CommitOffscreen) }
+
+// TestPresenting, when set, is called with the layer and the drawable of
+// each frame before the frame requests the drawable's presentation, on
+// the thread that draws the frame. The tests of internal/e2e set it.
+var TestPresenting func(layer, drawable uintptr)
+
+// presenting calls TestPresenting with the drawable that a frame of r
+// presents.
+func (r *Renderer) presenting(drawable id) {
+	if TestPresenting != nil {
+		TestPresenting(r.layer, drawable)
+	}
 }
 
 // prefetched returns the drawable the presenter fetched, autoreleased, or
@@ -1728,10 +1967,10 @@ func (r *Renderer) prefetched() id {
 	}
 	t := send(d, "texture")
 	if int(send(t, "width")) != r.w || int(send(t, "height")) != r.h {
-		send(d, "release")
+		byReceiver(d, "release")
 		return 0
 	}
-	return send(d, "autorelease")
+	return byReceiver(d, "autorelease")
 }
 
 // drawFrame encodes the frame s, which changed damage since the last frame
@@ -1816,18 +2055,18 @@ func (r *Renderer) forgetFrames() {
 // fit sizes the layer and its drawables for frames of w×h pixels at
 // scale, and as its view, and reports whether they changed.
 func (r *Renderer) fit(w, h int, scale float64) (changed bool) {
-	bounds := msgRect(r.superlayer, sel("bounds"))
+	bounds := layerBounds(r.superlayer)
 	if w == r.w && h == r.h && scale == r.scale && bounds == r.bounds && !r.trimmed {
 		return false
 	}
 	// Without animating the change, as layers do by default.
 	tx := class("CATransaction")
-	send(tx, "begin")
-	send(tx, "setDisableActions:", 1)
-	msgSetRect(r.layer, sel("setFrame:"), bounds)
-	msgSetFloat(r.layer, sel("setContentsScale:"), scale)
-	msgSetSize(r.layer, sel("setDrawableSize:"), cgSize{float64(w), float64(h)})
-	send(tx, "commit")
+	sendMain(tx, "begin")
+	sendMain(tx, "setDisableActions:", 1)
+	mainthread.Forward[struct{}](msgSend, r.layer, sel("setFrame:"), bounds)
+	mainthread.Forward[struct{}](msgSend, r.layer, sel("setContentsScale:"), scale)
+	mainthread.Forward[struct{}](msgSend, r.layer, sel("setDrawableSize:"), cgSize{float64(w), float64(h)})
+	sendMain(tx, "commit")
 	r.w, r.h, r.scale, r.bounds, r.trimmed = w, h, scale, bounds, false
 	return true
 }
@@ -1847,10 +2086,10 @@ func (r *Renderer) releaseTextures() {
 		delete(r.canvases, key)
 	}
 	r.drawState.release()
-	for i := range r.blurred {
-		release(&r.blurred[i].tex)
+	for key, t := range r.blurs {
+		release(&t.tex)
+		delete(r.blurs, key)
 	}
-	r.blurred, r.used = nil, 0
 	for i := range r.blurTmp {
 		release(&r.blurTmp[i].tex)
 		r.blurTmp[i] = texture{}
@@ -1864,6 +2103,72 @@ func (r *Renderer) releaseTextures() {
 	r.b.Release()
 	r.b.Classes = true
 	r.b.Opaque = true // Release empties the builder
+}
+
+// HeldTexture is a texture a renderer holds: what it is, its size in
+// texels, and the bytes the GPU allocated for it (allocatedSize).
+type HeldTexture struct {
+	Name  string
+	W, H  int
+	Bytes int
+}
+
+// heldTextures returns the textures releaseTextures frees, and the empty
+// texture bound where there is none: what a window's frames hold on the
+// GPU besides its drawables.
+func (r *Renderer) heldTextures() []HeldTexture {
+	var held []HeldTexture
+	add := func(name string, t id) {
+		if t != 0 {
+			held = append(held, HeldTexture{Name: name, W: int(send(t, "width")), H: int(send(t, "height")), Bytes: int(send(t, "allocatedSize"))})
+		}
+	}
+	add("empty", r.empty)
+	add("mask atlas", r.mask.tex)
+	add("color atlas", r.color.tex)
+	for _, t := range r.images {
+		add("image", t.tex)
+	}
+	for _, t := range r.canvases {
+		add("canvas", t.tex)
+		for i := range t.stops {
+			add("canvas stops", t.stops[i].tex)
+		}
+	}
+	for i := range r.stops {
+		add("stops", r.stops[i].tex)
+	}
+	for _, t := range r.blurs {
+		add("blurred image", t.tex)
+	}
+	for i := range r.blurTmp {
+		add("blur pass", r.blurTmp[i].tex)
+	}
+	for i := range r.formats {
+		for j := range r.formats[i].backdrop {
+			add("backdrop", r.formats[i].backdrop[j].tex)
+		}
+	}
+	return held
+}
+
+// heldBuffers returns the buffers of instances the frames and the canvases
+// hold, a buffer for each frame slot, with the bytes the GPU allocated
+// for each; W is its length.
+func (r *Renderer) heldBuffers() []HeldTexture {
+	var held []HeldTexture
+	add := func(name string, d *drawState) {
+		for i := range d.instBufs {
+			if b := d.instBufs[i]; b != 0 {
+				held = append(held, HeldTexture{Name: name, W: int(send(b, "length")), Bytes: int(send(b, "allocatedSize"))})
+			}
+		}
+	}
+	add("frame instances", &r.drawState)
+	for _, t := range r.canvases {
+		add("canvas instances", &t.drawState)
+	}
+	return held
 }
 
 // trimAfter is how long a window draws nothing before its spare drawables
@@ -1917,15 +2222,19 @@ func (r *Renderer) trim() {
 	pool(func() {
 		r.waitLast()
 		r.releaseTextures()
+		// The driver keeps its memory of frames as long as their queue lives.
+		release(&r.queue)
 		r.ages.Reset()
 		r.diff.Release()
 		tx := class("CATransaction")
-		send(tx, "begin")
-		send(tx, "setDisableActions:", 1)
-		msgSetSize(r.layer, sel("setDrawableSize:"), cgSize{1, 1})
-		send(tx, "commit")
+		sendMain(tx, "begin")
+		sendMain(tx, "setDisableActions:", 1)
+		mainthread.Forward[struct{}](msgSend, r.layer, sel("setDrawableSize:"), cgSize{1, 1})
+		sendMain(tx, "commit")
+		r.setDrawables(2)
 	})
 	r.trimmed = true
+	r.following = 0
 }
 
 // renderOffscreen draws s into a texture of its own and returns its
@@ -1947,7 +2256,8 @@ func (r *Renderer) renderOffscreen(s *scene.Scene) (pix []byte, err error) {
 		blit := send(cb, "blitCommandEncoder")
 		send(blit, "synchronizeResource:", tex)
 		send(blit, "endEncoding")
-		send(cb, "commit")
+		byReceiver(cb, "commit")
+		r.committedOutside(gpu.CommitPixels)
 		send(cb, "waitUntilCompleted")
 		if int(send(cb, "status")) == statusError {
 			err = fmt.Errorf("metal: the frame failed: %s", describe(send(cb, "error")))
@@ -1966,8 +2276,8 @@ func (r *Renderer) Release() {
 	r.pre.stop()
 	r.b.Release()
 	if r.trimTimer != 0 {
-		purego.SyscallN(cfRunLoopTimerInvalidate, r.trimTimer)
-		purego.SyscallN(cfRelease, r.trimTimer)
+		mainthread.Forward[struct{}](cfRunLoopTimerInvalidate, r.trimTimer)
+		mainthread.ByReceiver(cfRelease, r.trimTimer)
 		delete(trimTimers, r.trimHandle)
 		r.trimTimer = 0
 	}
@@ -1976,10 +2286,10 @@ func (r *Renderer) Release() {
 		r.waitLast()
 		if r.layer != 0 {
 			tx := class("CATransaction")
-			send(tx, "begin")
-			send(tx, "setDisableActions:", 1)
-			send(r.layer, "removeFromSuperlayer")
-			send(tx, "commit")
+			sendMain(tx, "begin")
+			sendMain(tx, "setDisableActions:", 1)
+			sendMain(r.layer, "removeFromSuperlayer")
+			sendMain(tx, "commit")
 			release(&r.layer)
 		}
 		r.releaseTextures()

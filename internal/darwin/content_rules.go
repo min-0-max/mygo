@@ -58,7 +58,7 @@ func compileContentRules(b *Backend, contentID, identifier, rules string, done f
 			done(nil, fmt.Errorf("WebKit made no list"))
 		}
 	}
-	store := retain(send(class("WKContentRuleListStore"), "defaultStore"))
+	store := sendRetained(class("WKContentRuleListStore"), "defaultStore")
 	compile := func() {
 		compiled := newBlock(func(_ objc.Block, list, err id) {
 			retain(list)
@@ -75,7 +75,7 @@ func compileContentRules(b *Backend, contentID, identifier, rules string, done f
 		})
 		send(store, "compileContentRuleListForIdentifier:encodedContentRuleList:completionHandler:",
 			uintptr(nsString(identifier)), uintptr(nsString(rules)), uintptr(compiled))
-		compiled.Release()
+		blockRelease(uintptr(compiled))
 	}
 	withPool(func() {
 		found := newBlock(func(_ objc.Block, list, _ id) {
@@ -91,7 +91,7 @@ func compileContentRules(b *Backend, contentID, identifier, rules string, done f
 			})
 		})
 		send(store, "lookUpContentRuleListForIdentifier:completionHandler:", uintptr(nsString(identifier)), uintptr(found))
-		found.Release()
+		blockRelease(uintptr(found))
 	})
 }
 
@@ -120,13 +120,13 @@ func removeStaleContentRules(store id, contentID, current string) {
 			for _, name := range stale {
 				removed := newBlock(func(objc.Block, id) {})
 				send(store, "removeContentRuleListForIdentifier:completionHandler:", uintptr(nsString(name)), uintptr(removed))
-				removed.Release()
+				blockRelease(uintptr(removed))
 			}
 		})
 		release(store)
 	})
 	send(store, "getAvailableContentRuleListIdentifiers:", uintptr(listed))
-	listed.Release()
+	blockRelease(uintptr(listed))
 }
 
 // setContentRules replaces the lists of the window's content controller,

@@ -27,6 +27,12 @@ func (z *Rasterizer) Reset(w, h int) {
 	z.open = false
 }
 
+// Capacity returns how many cells the rasterizer holds on to.
+func (z *Rasterizer) Capacity() int { return cap(z.acc) }
+
+// Release lets go of the memory of a mask much larger than the next.
+func (z *Rasterizer) Release() { z.acc = nil }
+
 // MoveTo starts a contour, closing the previous one.
 func (z *Rasterizer) MoveTo(x, y float32) {
 	z.ClosePath()
@@ -85,21 +91,24 @@ func (z *Rasterizer) LineTo(bx, by float32) {
 		return
 	}
 	dxdy := (bx - ax) / (by - ay)
-	x := ax
+	// Each row's x comes from the line's start: a sum along the rows would
+	// gather the rounding of each row, a fraction of a pixel over a long
+	// line, and differ with the row a mask clipped to it starts at.
+	startX, startY := ax, ay
 	y0 := int(math.Floor(float64(ay)))
 	y1 := int(math.Ceil(float64(by)))
 	if y0 < 0 {
 		// Skip the rows above the mask.
-		x += dxdy * (0 - ay)
 		ay = 0
 		y0 = 0
 	}
+	x := startX + (ay-startY)*dxdy
 	y1 = min(y1, z.h)
 	w := z.w
 	for y := y0; y < y1; y++ {
 		fy := float32(y)
 		dy := min(fy+1, by) - max(fy, ay)
-		xNext := x + dy*dxdy
+		xNext := startX + (min(fy+1, by)-startY)*dxdy
 		d := dy * dir
 		row := z.acc[y*w : (y+1)*w]
 		x0, x1 := x, xNext

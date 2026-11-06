@@ -9,6 +9,7 @@ import (
 	"github.com/ebitengine/purego/objc"
 
 	"github.com/egoist/mygo/internal/accelerator"
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/platform"
 )
 
@@ -151,10 +152,11 @@ func (b *Backend) buildItem(it *platform.MenuItem, owner int) id {
 	applyItemState(item, it)
 	if it.Submenu != nil {
 		sub := b.buildMenu(it.Submenu, it.Label, owner)
+		if it.Role == "services" && owner == ownerAppMenu {
+			sub = b.servicesMenu(sub)
+		}
 		send(item, "setSubmenu:", uintptr(sub))
 		switch it.Role {
-		case "services":
-			send(b.app, "setServicesMenu:", uintptr(sub))
 		case "window", "windowMenu":
 			send(b.app, "setWindowsMenu:", uintptr(sub))
 		case "help":
@@ -163,6 +165,23 @@ func (b *Backend) buildItem(it *platform.MenuItem, owner int) id {
 	}
 	track(owner, it.ID, item)
 	return item
+}
+
+// servicesMenu returns the menu that an item of the services role holds.
+// AppKit takes one services menu for the life of the app and ignores every
+// later setServicesMenu:, so sub becomes that menu when there is none yet,
+// and after that the one menu moves to the item, as a menu has one supermenu.
+func (b *Backend) servicesMenu(sub id) id {
+	if b.services == 0 {
+		b.services = retain(sub)
+		send(b.app, "setServicesMenu:", uintptr(sub))
+		return sub
+	}
+	if parent := send(b.services, "supermenu"); parent != 0 {
+		index := sendInt(parent, "indexOfItemWithSubmenu:", uintptr(b.services))
+		send(send(parent, "itemAtIndex:", uintptr(index)), "setSubmenu:", 0)
+	}
+	return b.services
 }
 
 func applyItemState(item id, it *platform.MenuItem) {
@@ -433,7 +452,7 @@ func (b *Backend) NewTray(h platform.TrayHandler) (platform.Tray, error) {
 	t := &tray{b: b, h: h, owner: newOwner()}
 	withPool(func() {
 		bar := send(class("NSStatusBar"), "systemStatusBar")
-		t.item = retain(msgFloatID(bar, sel("statusItemWithLength:"), -1)) // NSVariableStatusItemLength
+		t.item = mainthread.ForwardRetained[id](msgSendAddr, bar, sel("statusItemWithLength:"), float64(-1)) // NSVariableStatusItemLength
 		t.button = send(t.item, "button")
 		send(t.button, "setTarget:", uintptr(trayTarget))
 		send(t.button, "setAction:", uintptr(sel("mygoTrayClicked:")))
@@ -527,7 +546,7 @@ func (t *tray) PopUpMenu(m *platform.Menu) {
 		menu := t.b.buildMenu(m, "", owner)
 		// Let the status item place and track its menu, including the
 		// button's highlight. Keep its previous menu alive while swapped.
-		previous := retain(send(t.item, "menu"))
+		previous := sendRetained(t.item, "menu")
 		defer release(previous)
 		send(t.item, "setMenu:", uintptr(menu))
 		send(t.button, "performClick:", 0)

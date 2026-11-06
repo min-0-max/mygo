@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/internal/raster"
 	"github.com/egoist/mygo/internal/scene"
@@ -111,6 +112,8 @@ func coverage(view func(c *context), w, h int) *image.RGBA {
 // around the window. They draw only the tiles that show and that they
 // reach, and the square's tiles inside it share their masks.
 func TestLargePathsDrawOnlyWhatShows(t *testing.T) {
+	defer func(tile, large int) { pathTile, pathLarge = tile, large }(pathTile, pathLarge)
+	pathTile, pathLarge = 511, 511
 	blue := RGB(20, 60, 230)
 	tt := coreNewTester(func(c *context) {
 		coreBox(c).Fill().Background(RGB(255, 255, 255)).Draw(func(p *Painter, r Rect) {
@@ -146,10 +149,11 @@ func TestLargePathsDrawOnlyWhatShows(t *testing.T) {
 	}
 }
 
-// TestPathsTheAtlasHoldsDrawFromOneMask draws a path 3000 pixels wide, as
-// it is and under a transform off the pixel grid: the atlas holds its
-// mask, so it draws from one, as before tiles.
-func TestPathsTheAtlasHoldsDrawFromOneMask(t *testing.T) {
+// TestPathsUnderATransformDrawFromOneMask draws a path 3000 pixels wide, as
+// it is and under a transform off the pixel grid. Under the transform the
+// atlas holds its mask, so it draws from one, which shows no line between
+// tiles. On the pixel grid it draws as tiles, for what it covers.
+func TestPathsUnderATransformDrawFromOneMask(t *testing.T) {
 	for _, moved := range []bool{false, true} {
 		tt := coreNewTester(func(c *context) {
 			coreBox(c).Fill().Draw(func(p *Painter, r Rect) {
@@ -166,7 +170,10 @@ func TestPathsTheAtlasHoldsDrawFromOneMask(t *testing.T) {
 			})
 		}, 1600, 100)
 		tt.SetScale(2)
-		if n := len(tt.rt.scene.Glyphs); n != 1 {
+		// As the atlas had no room for it, the mask has room now.
+		tt.rt.paths.crowded = 0
+		tt.Frame()
+		if n := len(tt.rt.scene.Glyphs); moved != (n == 1) {
 			t.Errorf("transformed %v, the path draws %d masks", moved, n)
 		}
 	}
@@ -229,22 +236,28 @@ func TestLongStrokesDrawWhenTheAtlasIsCrowded(t *testing.T) {
 	}
 }
 
-// TestCrowdedPathsDrawAsTilesForAWhile strokes a wire 1160×280 pixels
-// across and a short one after the atlas was crowded: the long one draws
-// as tiles, with the pixels of its mask within a level of 255, and from
-// one mask once pathCrowdedPaints paints have gone by; the short one, no
-// larger than a tile, from one mask throughout.
+// TestCrowdedPathsDrawAsTilesForAWhile strokes, under a transform, a wire
+// 1160×280 pixels across and a short one after the atlas was crowded: the
+// long one draws as tiles, with the pixels of its mask within a level of
+// 255, and from one mask once pathCrowdedPaints paints have gone by; the
+// short one, no larger than a tile, from one mask throughout.
 func TestCrowdedPathsDrawAsTilesForAWhile(t *testing.T) {
+	defer func(tile, large int) { pathTile, pathLarge = tile, large }(pathTile, pathLarge)
+	pathTile, pathLarge = 511, 511
 	tt := coreNewTester(func(c *context) {
 		coreBox(c).Fill().Background(RGB(255, 255, 255)).Draw(func(p *Painter, r Rect) {
-			var long, short Path
-			long.MoveTo(10.3, 10).CubeTo(300, 10, 300, 150, 590, 150)
-			p.StrokePath(&long, 2, RGB(20, 60, 230))
-			short.MoveTo(10, 180).LineTo(100, 190)
-			p.StrokePath(&short, 2, RGB(230, 40, 20))
+			p.Transform(Translation(1, 0), 0, 0, func() {
+				var long, short Path
+				long.MoveTo(10.3, 10).CubeTo(300, 10, 300, 150, 590, 150)
+				p.StrokePath(&long, 2, RGB(20, 60, 230))
+				short.MoveTo(10, 180).LineTo(100, 190)
+				p.StrokePath(&short, 2, RGB(230, 40, 20))
+			})
 		})
 	}, 600, 200)
 	tt.SetScale(2)
+	tt.rt.paths.crowded = 0
+	tt.Frame()
 	// The masks of the frame last painted, and its pixels as masks are
 	// rasterized (coverage).
 	masks := func() (long, short int) {
@@ -294,6 +307,8 @@ func TestCrowdedPathsDrawAsTilesForAWhile(t *testing.T) {
 // atlas making room for it would keep, as the frame drew them, leaving
 // the tiles no room.
 func TestWiresDrawInTheFrameTheAtlasFills(t *testing.T) {
+	defer func(tile, large int) { pathTile, pathLarge = tile, large }(pathTile, pathLarge)
+	pathTile, pathLarge = 511, 511
 	const n = 9
 	frame, long := 0, false
 	wire := func(i int) (p Path, at func(t float32) (float32, float32)) {
@@ -321,19 +336,22 @@ func TestWiresDrawInTheFrameTheAtlasFills(t *testing.T) {
 	empty := true
 	tt := coreNewTester(func(c *context) {
 		coreBox(c).Fill().Background(RGB(255, 255, 255)).Draw(func(p *Painter, r Rect) {
-			if empty {
-				// A line whose mask, 4093 pixels tall, only an empty atlas
-				// of the largest holds: the atlas grows to it, and lets go
-				// of what earlier tests drew.
-				var line Path
-				line.MoveTo(2, 1).LineTo(2, 2045)
-				p.StrokePath(&line, 2, RGB(20, 60, 230))
-				return
-			}
-			for i := range n + 1 {
-				path, _ := wire(i)
-				p.StrokePath(&path, 2, RGB(20, 60, 230))
-			}
+			// Paths this large draw from a mask under a transform alone.
+			p.Transform(Translation(1, 0), -1, 0, func() {
+				if empty {
+					// A line whose mask, 4093 pixels tall, only an empty atlas
+					// of the largest holds: the atlas grows to it, and lets go
+					// of what earlier tests drew.
+					var line Path
+					line.MoveTo(2, 1).LineTo(2, 2045)
+					p.StrokePath(&line, 2, RGB(20, 60, 230))
+					return
+				}
+				for i := range n + 1 {
+					path, _ := wire(i)
+					p.StrokePath(&path, 2, RGB(20, 60, 230))
+				}
+			})
 		})
 	}, 1800, 360)
 	// At twice the pixels, the line tries one mask, not tiles, though the
@@ -723,5 +741,312 @@ func TestResetRemovesTheStrokesStyle(t *testing.T) {
 		if p.Dash(0, lengths...); len(p.dash) != 0 {
 			t.Errorf("dashed %v, the path keeps %v", lengths, p.dash)
 		}
+	}
+}
+
+// outline is a rectangle of rounded corners around a window's content, as
+// the outline that binds a focused card with its sidebars, moved by shift.
+func outline(path *Path, w, h, shift float32) {
+	const r = 8
+	x0, y0, x1, y1 := 10+shift, 10+shift, w-10-shift, h-10-shift
+	path.MoveTo(x0+r, y0).LineTo(x1-r, y0).QuadTo(x1, y0, x1, y0+r).
+		LineTo(x1, y1-r).QuadTo(x1, y1, x1-r, y1).
+		LineTo(x0+r, y1).QuadTo(x0, y1, x0, y1-r).
+		LineTo(x0, y0+r).QuadTo(x0, y0, x0+r, y0).Close()
+}
+
+// TestAThinOutlineTakesTheRoomOfItsLine strokes a line of a pixel around a
+// window of 2800×1800 pixels, which one mask would hold in 5 million
+// pixels. Its masks take room for its line and not for what it encloses,
+// the buffers that draw them stay the size of a tile, and moving it, as
+// focus moves between cards, does not grow the atlas.
+func TestAThinOutlineTakesTheRoomOfItsLine(t *testing.T) {
+	const w, h = 1400, 900
+	shift := float32(0)
+	tt := coreNewTester(func(c *context) {
+		coreBox(c).Fill().Background(RGB(255, 255, 255)).Draw(func(p *Painter, r Rect) {
+			var path Path
+			outline(&path, w, h, shift)
+			p.StrokePath(&path, 0.5, RGB(20, 60, 230))
+		})
+	}, w, h)
+	tt.SetScale(2)
+	tt.Frame()
+	tt.Frame()
+	room := 0
+	for _, g := range tt.rt.scene.Glyphs {
+		room += (int(g.W) + 1) * (int(g.H) + 1)
+	}
+	perimeter := 2 * (2 * (w + h))
+	if room > perimeter*12 {
+		t.Errorf("the outline takes %d pixels of the atlas, more than 12 a pixel of its %d", room, perimeter)
+	}
+	tile := (pathTile + 1) * (pathTile + 1)
+	if n := cap(tt.rt.paths.pix); n > tile {
+		t.Errorf("the buffer of masks holds %d bytes, more than the %d of a tile", n, tile)
+	}
+	if n := tt.rt.paths.raster.Capacity(); n > tile {
+		t.Errorf("the rasterizer holds %d cells, more than the %d of a tile", n, tile)
+	}
+	atlas := tt.rt.text.MaskAtlas
+	size := atlas.W
+	for i := range 50 {
+		shift = float32(i) * 3
+		tt.Frame()
+		tt.Frame()
+	}
+	if atlas.W > size {
+		t.Errorf("moving the outline grew the atlas from %d to %d pixels a side", size, atlas.W)
+	}
+}
+
+// atlasReviewForTest is more frames than the atlas waits between reviews.
+const atlasReviewForTest = 121
+
+// TestTheAtlasLetsGoOfWhatNoFrameDraws grows the mask atlas to its largest
+// for a line 4093 pixels tall and stops drawing the line. The atlas, which
+// nothing fills any more, halves down to what the frames draw and gives
+// its memory back. What stays draws the same, and at rest no frame is
+// painted twice.
+func TestTheAtlasLetsGoOfWhatNoFrameDraws(t *testing.T) {
+	tall := true
+	view := func(c *context) {
+		coreBox(c).Fill().Background(RGB(255, 255, 255)).Draw(func(p *Painter, r Rect) {
+			var small Path
+			small.MoveTo(20, 20).LineTo(200, 40).LineTo(90, 110).Close()
+			p.FillPath(&small, RGB(20, 60, 230))
+			if !tall {
+				return
+			}
+			p.Transform(Translation(1, 0), -1, 0, func() {
+				var line Path
+				line.MoveTo(2, 1).LineTo(2, 2045)
+				p.StrokePath(&line, 2, RGB(20, 60, 230))
+			})
+		})
+	}
+	tt := coreNewTester(view, 400, 300)
+	tt.rt.paths.crowded = 0
+	tt.SetScale(2)
+	atlas := tt.rt.text.MaskAtlas
+	for i := 0; i < 4 && atlas.W < scene.MaxAtlasSize; i++ {
+		tt.rt.paths.crowded = 0
+		tt.Frame()
+	}
+	if atlas.W != scene.MaxAtlasSize {
+		t.Fatalf("the tall line grew the atlas to %d pixels a side", atlas.W)
+	}
+	gen := atlas.Generation()
+	tall = false
+	render := func() string {
+		s := tt.h.last
+		s.Text = scene.TextParams{}
+		var r raster.Renderer
+		r.Render(s)
+		return string(r.Image.RGBA())
+	}
+	tt.Frame()
+	want := render()
+	for range 2 * atlasReviewForTest {
+		tt.Frame()
+	}
+	if atlas.W > 1024 || len(atlas.Pix) != atlas.W*atlas.H {
+		t.Errorf("after the line went, the atlas holds %d pixels a side and %d bytes", atlas.W, len(atlas.Pix))
+	}
+	if atlas.Generation() == gen {
+		t.Error("the atlas changed size in the same generation")
+	}
+	if render() != want {
+		t.Error("what stayed draws differently from the smaller atlas")
+	}
+	size, paints := atlas.W, tt.rt.paints
+	for range 2 * atlasReviewForTest {
+		tt.Frame()
+	}
+	if atlas.W != size || tt.rt.paints != paints+2*atlasReviewForTest {
+		t.Errorf("at rest the atlas went from %d to %d pixels a side in %d paints of %d frames",
+			size, atlas.W, tt.rt.paints-paints, 2*atlasReviewForTest)
+	}
+}
+
+// TestTheLastFrameShrinksTheAtlas stops drawing a tall line and asks for no
+// frame after the one that follows: no later frame will review the atlas,
+// so that one does, painting again and asking for no other.
+func TestTheLastFrameShrinksTheAtlas(t *testing.T) {
+	tall := true
+	tt := coreNewTester(func(c *context) {
+		coreBox(c).Fill().Background(RGB(255, 255, 255)).Draw(func(p *Painter, r Rect) {
+			var small Path
+			small.MoveTo(20, 20).LineTo(200, 40).LineTo(90, 110).Close()
+			p.FillPath(&small, RGB(20, 60, 230))
+			if !tall {
+				return
+			}
+			p.Transform(Translation(1, 0), -1, 0, func() {
+				var line Path
+				line.MoveTo(2, 1).LineTo(2, 2045)
+				p.StrokePath(&line, 2, RGB(20, 60, 230))
+			})
+		})
+	}, 400, 300)
+	tt.SetScale(2)
+	atlas := tt.rt.text.MaskAtlas
+	for range 12 {
+		tt.rt.paths.crowded = 0
+		tt.Frame()
+	}
+	if atlas.W != scene.MaxAtlasSize {
+		t.Fatalf("the tall line grew the atlas to %d pixels a side", atlas.W)
+	}
+	tall = false
+	paints := tt.rt.paints
+	tt.h.requested.Store(false)
+	tt.Frame()
+	if atlas.W > 1024 {
+		t.Errorf("the last frame left %d pixels a side", atlas.W)
+	}
+	if n := tt.rt.paints - paints; n > 2 {
+		t.Errorf("the last frame painted %d times", n)
+	}
+	if tt.h.requested.Load() {
+		t.Error("the last frame asked for another")
+	}
+	paints = tt.rt.paints
+	size := atlas.Generation()
+	tt.Frame()
+	if tt.rt.paints != paints+1 || atlas.Generation() != size {
+		t.Errorf("the frame after it painted %d times, generation %d to %d", tt.rt.paints-paints, size, atlas.Generation())
+	}
+}
+
+// BenchmarkLargePathFrames paints paths larger than a tile frame after frame:
+// a stroke and a fill that stay, and a stroke moving by whole pixels, whose
+// masks are the same. puts/op counts the bitmaps a frame writes to the
+// atlas: none once the masks are cached.
+func BenchmarkLargePathFrames(b *testing.B) {
+	const w, h = 1400, 900
+	for _, kind := range []string{"stroke", "fill", "moved"} {
+		b.Run(kind, func(b *testing.B) {
+			frame := 0
+			tt := coreNewTester(func(c *context) {
+				coreBox(c).Fill().Background(RGB(255, 255, 255)).Draw(func(p *Painter, r Rect) {
+					var path Path
+					outline(&path, w, h, 0)
+					switch kind {
+					case "stroke":
+						p.StrokePath(&path, 0.5, RGB(20, 60, 230))
+					case "fill":
+						p.FillPath(&path, RGB(20, 60, 230))
+					case "moved":
+						var moved Path
+						shift := float32(frame%8) * 0.5
+						const r = 8
+						x0, y0, x1, y1 := 10+shift, 10+shift, w-30+shift, h-30+shift
+						moved.MoveTo(x0+r, y0).LineTo(x1-r, y0).QuadTo(x1, y0, x1, y0+r).
+							LineTo(x1, y1-r).QuadTo(x1, y1, x1-r, y1).
+							LineTo(x0+r, y1).QuadTo(x0, y1, x0, y1-r).
+							LineTo(x0, y0+r).QuadTo(x0, y0, x0+r, y0).Close()
+						p.StrokePath(&moved, 0.5, RGB(20, 60, 230))
+					}
+				})
+			}, w, h)
+			tt.SetScale(2)
+			for range 40 {
+				frame++
+				tt.Frame()
+			}
+			atlas := tt.rt.text.MaskAtlas
+			puts := atlas.Version()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				frame++
+				tt.Frame()
+			}
+			b.ReportMetric(float64(atlas.Version()-puts)/float64(b.N), "puts/op")
+		})
+	}
+}
+
+// TestAFramePaintedInPartLeavesTheAtlas animates a bar beside what is drawn
+// once. Frames that paint the bar alone draw too little to tell what the
+// atlas holds for: they leave it, and the next frame painted in full, which
+// draws all that shows, shrinks it.
+func TestAFramePaintedInPartLeavesTheAtlas(t *testing.T) {
+	tall := true
+	tt := newRepaintTester(func(c *context) {
+		coreBox(c).Size(100, 20).Draw(func(p *Painter, r Rect) {
+			p.AnimationFrame()
+			p.Fill(Rect{r.X + float32(p.Now().UnixMilli()%50), r.Y, 2, r.H}, RGB(0, 0, 255), 0)
+		})
+		coreBox(c).Size(100, 20).Draw(func(p *Painter, r Rect) {
+			if !tall {
+				return
+			}
+			p.Transform(Translation(1, 0), -1, 0, func() {
+				var line Path
+				line.MoveTo(2, 1).LineTo(2, 2045)
+				p.StrokePath(&line, 2, RGB(20, 60, 230))
+			})
+		})
+	})
+	tt.rt.paths.crowded = 0
+	tt.SetScale(2)
+	atlas := tt.rt.text.MaskAtlas
+	for range atlasReviewForTest {
+		tt.rt.paths.crowded = 0
+		tt.Frame()
+	}
+	if atlas.W != scene.MaxAtlasSize {
+		t.Fatalf("the tall line grew the atlas to %d pixels a side", atlas.W)
+	}
+	tall = false
+	tt.Frame()
+	paints := tt.rt.paints
+	for range 2 * atlasReviewForTest {
+		if built, _ := tt.frame(8 * time.Millisecond); built {
+			t.Fatal("a frame of the bar built the view")
+		}
+	}
+	if tt.rt.paints != paints || atlas.W != scene.MaxAtlasSize {
+		t.Fatalf("frames of the bar painted %d times in full and left %d pixels a side", tt.rt.paints-paints, atlas.W)
+	}
+	tt.Frame()
+	if atlas.W > 1024 {
+		t.Errorf("the frame painted in full left %d pixels a side", atlas.W)
+	}
+}
+
+// TestLargeStrokesMeetAcrossTiles draws strokes and fills larger than a tile, with
+// corners, curves and diagonals across its edges, and as one mask: the
+// pixels are the same, within a level.
+func TestLargeStrokesMeetAcrossTiles(t *testing.T) {
+	view := func(c *context) {
+		coreBox(c).Fill().Background(RGB(255, 255, 255)).Draw(func(p *Painter, r Rect) {
+			var frame, ring, slant, disc, hole Path
+			disc.Circle(350.3, 250.6, 240.2)
+			p.FillPath(&disc, RGB(235, 225, 150))
+			hole.MoveTo(40, 40).LineTo(660, 40).LineTo(660, 460).LineTo(40, 460).Close().
+				MoveTo(200, 150).LineTo(200, 350).LineTo(500, 350).LineTo(500, 150).Close()
+			p.FillPath(&hole, RGB(150, 200, 235).Alpha(0.5))
+			outline(&frame, 700, 500, 0.3)
+			p.StrokePath(&frame, 0.5, RGB(20, 60, 230))
+			ring.Circle(330.2, 240.7, 180.4)
+			p.StrokePath(&ring, 3.5, RGB(230, 40, 20))
+			slant.MoveTo(20.1, 480.3).LineTo(681.6, 22.4).LineTo(640, 470)
+			p.StrokePath(slant.Join(MiterJoin).Cap(SquareCap), 7, RGB(20, 160, 60))
+		})
+	}
+	tiled := coverage(view, 700, 500)
+	defer func(large int) { pathLarge = large }(pathLarge)
+	pathLarge = scene.MaxAtlasSize
+	whole := coverage(view, 700, 500)
+	worst := 0
+	for i := range whole.Pix {
+		d := int(whole.Pix[i]) - int(tiled.Pix[i])
+		worst = max(worst, d, -d)
+	}
+	if worst > 1 {
+		t.Errorf("tiled strokes differ by up to %d levels from one mask", worst)
 	}
 }

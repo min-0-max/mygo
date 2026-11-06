@@ -298,6 +298,21 @@ func (e *node) Password() *node {
 	return e
 }
 
+// SelectAll selects the text of a text input, so that the next key replaces
+// it, as Tab reaching an input does. A field around an input, as
+// SearchField's, passes it to its input. Called in a frame, it selects the
+// text as that frame has it; on any other element it does nothing.
+func (e *node) SelectAll() *node {
+	if e != nil && e.focusTo != nil {
+		e.focusTo.SelectAll()
+		return e
+	}
+	if e.hasState() && e.st.editor != nil {
+		e.st.editor.selectAll()
+	}
+	return e
+}
+
 // Search makes a text input one for searching, in the frames that call
 // it, as ARIA's searchbox and HTML's <input type=search>: assistive
 // technology reads it as a search field, as it reads a SearchField's

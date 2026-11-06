@@ -26,7 +26,7 @@ func runPanel(obj id, parent *window, sheetSel string, done func(resp int)) {
 			release(obj)
 		})
 		send(obj, sheetSel, uintptr(parent.win), uintptr(blk))
-		blk.Release()
+		blockRelease(uintptr(blk))
 		return
 	}
 	send(theBackend.app, "activateIgnoringOtherApps:", 1)
@@ -250,7 +250,7 @@ func watchAlertKeys() {
 		}
 		return ev
 	})
-	alertKeys = retain(send(class("NSEvent"), "addLocalMonitorForEventsMatchingMask:handler:", mask, uintptr(blk)))
+	alertKeys = sendRetained(class("NSEvent"), "addLocalMonitorForEventsMatchingMask:handler:", mask, uintptr(blk))
 }
 
 func (d dialogs) ShowMessageBox(parent platform.Window, o *platform.MessageBoxOptions, cb func(platform.MessageBoxResult, error)) {

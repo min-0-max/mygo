@@ -490,7 +490,7 @@ type paths struct {
 	stroke strokeBufs
 	// What pathTiles finds of a path drawn in tiles: the tiles its edges
 	// reach, and where its edges cross a row of tiles.
-	reached []bool
+	reached []pathReach
 	cross   []pathCrossing
 	// crowded is the last paint (engine.paints) that draws as tiles the
 	// paths larger than a tile whose masks the atlas would hold: it
@@ -517,31 +517,79 @@ type pathJob struct {
 
 // A path's mask is a bitmap in the mask atlas, which is at most
 // scene.MaxAtlasSize pixels a side, keeps a pixel of padding beside each
-// bitmap and holds the glyphs of text too. A path whose mask would be
-// wider or taller than pathMaskMax device pixels, the largest the atlas
-// holds, draws as tiles of its mask, pathTile pixels a side (pathTiles):
-// 512 with the padding, eight to a row of the largest atlas. They are
-// variables so that tests can tile small paths.
+// bitmap and holds the glyphs of text too. A path wider or taller than
+// pathLarge device pixels draws as tiles of its mask, pathTile pixels a
+// side (pathTiles), which take room for what the path covers: the mask of
+// a line around a window would take the room of the window. Under a
+// transform, a path up to pathMaskMax, the largest mask the atlas holds,
+// draws from one mask instead, which shows no line between tiles. They
+// are variables so that tests can tile small paths.
 var (
 	pathMaskMax = scene.MaxAtlasSize - 1
-	pathTile    = 511
+	pathTile    = 63
+	pathLarge   = 255
 )
 
-// pathCrowdedPaints is how many paints draw paths larger than a tile as
-// tiles after the atlas could not hold a path's mask. A mask that large
-// takes a shelf of the atlas of its own, mostly empty for a long thin
-// stroke, and a few of them, as wires redrawn every frame, can leave no
-// room for the rest of the frame's paths. Tiles pack eight to a row of
-// the largest atlas and skip what the path does not reach, so the frame
-// painted again holds them; on the pixel grid they draw the same pixels.
-// After those paints, paths try one mask again, which draws faster and
-// shows no line between tiles under a transform.
+// pathCrowdedPaints is how many paints draw large paths under a transform
+// as tiles after the atlas could not hold a path's mask. A mask that large
+// takes a shelf of the atlas of its own, and a few of them, as wires
+// redrawn every frame, can leave no room for the rest of the frame's
+// paths. After those paints, such paths try one mask again.
 const pathCrowdedPaints = 120
 
 // pathSpanMax is the largest width and height of a path's mask, in device
 // pixels: beyond it, float32 no longer holds the quarters of a pixel that
 // its points move to.
 const pathSpanMax = 1 << 22
+
+// pathReach is what a path reaches of a tile (pathTiles): the rectangle
+// its strokes can cover, from the corner of the path's mask.
+type pathReach struct {
+	on             bool
+	x0, y0, x1, y1 float32
+}
+
+// add takes in the part from k0 to k1 of the edge from (ax, ay) to (bx,
+// by), and what reaches m from it.
+func (r *pathReach) add(ax, ay, bx, by, k0, k1, m float32) {
+	xa, xb := ax+(bx-ax)*k0, ax+(bx-ax)*k1
+	ya, yb := ay+(by-ay)*k0, ay+(by-ay)*k1
+	x0, y0, x1, y1 := min(xa, xb)-m, min(ya, yb)-m, max(xa, xb)+m, max(ya, yb)+m
+	if r.on {
+		x0, y0, x1, y1 = min(x0, r.x0), min(y0, r.y0), max(x1, r.x1), max(y1, r.y1)
+	}
+	*r = pathReach{true, x0, y0, x1, y1}
+}
+
+// box returns the rectangle of whole pixels of r within the w×h tile at
+// (x, y).
+func (r *pathReach) box(x, y, w, h int) (int, int, int, int) {
+	x0 := max(int(math.Floor(float64(r.x0))), x)
+	y0 := max(int(math.Floor(float64(r.y0))), y)
+	x1 := min(int(math.Ceil(float64(r.x1))), x+w)
+	y1 := min(int(math.Ceil(float64(r.y1))), y+h)
+	return x0, y0, x1 - x0, y1 - y0
+}
+
+// edgeWithin returns the part of the edge from (ax, ay) to (bx, by) within
+// the rectangle (x0, y0)-(x1, y1), from k0 to k1 along it, and whether it
+// has one.
+func edgeWithin(ax, ay, bx, by, x0, y0, x1, y1 float32) (k0, k1 float32, ok bool) {
+	k0, k1 = 0, 1
+	slab := func(a, d, lo, hi float32) {
+		if d == 0 {
+			if a < lo || a > hi {
+				k1 = -1
+			}
+			return
+		}
+		from, to := (lo-a)/d, (hi-a)/d
+		k0, k1 = max(k0, min(from, to)), min(k1, max(from, to))
+	}
+	slab(ax, bx-ax, x0, x1)
+	slab(ay, by-ay, y0, y1)
+	return k0, k1, k0 <= k1
+}
 
 // pathCrossing is where an edge of a filled path crosses a line across a
 // row of tiles, and which way it goes: +1 down, -1 up.
@@ -645,8 +693,8 @@ func (p *Painter) drawPathPaint(f *flatPath, width float32, c Color, g *LinearGr
 	start := int32(len(p.s.Glyphs))
 	c = c.Alpha(p.opacity)
 	tint := scene.Glyph{Color: c.scene(), Wide: p.glyphWide(c)}
-	sum, large := hs.Sum64(), w > pathTile || h > pathTile
-	tiled := w > pathMaskMax || h > pathMaskMax || large && p.rt.paths.crowded >= p.rt.paints
+	sum, large := hs.Sum64(), w > pathLarge || h > pathLarge
+	tiled := w > pathMaskMax || h > pathMaskMax || large && (!p.transform.Set || p.rt.paths.crowded >= p.rt.paints)
 	ps := &p.rt.paths
 	if ps.largePaint != p.rt.paints {
 		ps.large, ps.largePaint = ps.large[:0], p.rt.paints
@@ -720,7 +768,9 @@ func (p *Painter) pathMask(key uint64, f *flatPath, hw, x0, y0 float32, w, h int
 // clipped to it, so that tiles meet as the pixels of one mask do. It draws
 // the tiles that show, within a pixel, and that the path reaches: those
 // within a pixel of its edges, and those inside a filled path, covered
-// whole, which share one mask of their size. Under a transform off the
+// whole, which share one mask of their size. A stroke's tile is a mask of
+// the rectangle the stroke can cover, so that the room of a long line
+// grows with its length and width alone. Under a transform off the
 // pixel grid, renderers smooth each mask's edges, so a faint line shows
 // where tiles meet. It reports false, drawing nothing, when the atlas
 // could not hold the tiles that show.
@@ -744,7 +794,7 @@ func (p *Painter) pathTiles(key uint64, f *flatPath, hw, x0, y0 float32, w, h in
 	}
 	reached := p.rt.paths.reached
 	if cap(reached) < cols*rows {
-		reached = make([]bool, cols*rows)
+		reached = make([]pathReach, cols*rows)
 	}
 	reached = reached[:cols*rows]
 	clear(reached)
@@ -783,18 +833,30 @@ func (p *Painter) pathTiles(key uint64, f *flatPath, hw, x0, y0 float32, w, h in
 			cl := max(int(math.Floor(float64((xl-m)/size))), c0)
 			ch := min(int(math.Floor(float64((xh+m)/size))), c1-1)
 			for c := cl; c <= ch; c++ {
-				reached[(r-r0)*cols+c-c0] = true
+				k0, k1, ok := edgeWithin(ax, ay, bx, by, float32(c*t)-m, float32(r*t)-m, float32((c+1)*t)+m, float32((r+1)*t)+m)
+				if ok {
+					reached[(r-r0)*cols+c-c0].add(ax, ay, bx, by, k0, k1, m)
+				}
 			}
 		}
 	})
+	// The mask of the tile at column c and row r: a fill's covers the
+	// tile, as what is inside it reaches as far as its edges enclose.
+	box := func(c, r int) (int, int, int, int) {
+		tx, ty, tw, th := c*t, r*t, min(t, w-c*t), min(t, h-r*t)
+		if hw == 0 {
+			return tx, ty, tw, th
+		}
+		return reached[(r-r0)*cols+c-c0].box(tx, ty, tw, th)
+	}
 	// The tiles the path reaches are masks of their own: more than half
 	// the largest atlas of them would not fit beside the frame's glyphs.
 	// Such a path, as one of which more than pathTilesMax tiles show, is
 	// not drawn, as paths too large for a mask were not before tiles.
 	room := 0
-	for i, ok := range reached {
-		if ok {
-			tw, th := min(t, w-(c0+i%cols)*t), min(t, h-(r0+i/cols)*t)
+	for i := range reached {
+		if reached[i].on {
+			_, _, tw, th := box(c0+i%cols, r0+i/cols)
 			room += (tw + 1) * (th + 1)
 		}
 	}
@@ -807,7 +869,7 @@ func (p *Painter) pathTiles(key uint64, f *flatPath, hw, x0, y0 float32, w, h in
 		// where its edges wind around a point of it by its rule: count
 		// those crossing a line across the row, left of the point.
 		cross := p.rt.paths.cross[:0]
-		if hw == 0 && slices.Contains(reached[(r-r0)*cols:(r-r0+1)*cols], false) {
+		if hw == 0 && slices.ContainsFunc(reached[(r-r0)*cols:(r-r0+1)*cols], func(e pathReach) bool { return !e.on }) {
 			y := float32(ty) + 0.5
 			segments(func(ax, ay, bx, by float32) {
 				if (ay <= y) != (by <= y) {
@@ -820,10 +882,23 @@ func (p *Painter) pathTiles(key uint64, f *flatPath, hw, x0, y0 float32, w, h in
 			})
 			p.rt.paths.cross = cross
 		}
+		// Covered tiles side by side, from pixel from to pixel to, draw as one
+		// mask covered whole, which those of its size share: the key of no
+		// path, at no place.
+		from, to := 0, 0
+		covered := func() {
+			if to > from {
+				p.pathMask(tileKey(0, -1, -1, to-from, th), f, 0, x0+float32(from), y0+float32(ty), to-from, th, true, tint)
+			}
+			from, to = 0, 0
+		}
 		for c := c0; c < c1; c++ {
 			tx, tw := c*t, min(t, w-c*t)
-			if reached[(r-r0)*cols+c-c0] {
-				p.pathMask(tileKey(key, tx, ty, tw, th), f, hw, x0+float32(tx), y0+float32(ty), tw, th, false, tint)
+			if reached[(r-r0)*cols+c-c0].on {
+				covered()
+				if mx, my, mw, mh := box(c, r); mw > 0 && mh > 0 {
+					p.pathMask(tileKey(key, mx, my, mw, mh), f, hw, x0+float32(mx), y0+float32(my), mw, mh, false, tint)
+				}
 				continue
 			}
 			winding, x := 0, float32(tx)+0.5
@@ -832,20 +907,32 @@ func (p *Painter) pathTiles(key uint64, f *flatPath, hw, x0, y0 float32, w, h in
 					winding += k.dir
 				}
 			}
-			if f.inside(winding) {
-				// A mask covered whole, which tiles of its size share: the
-				// key of no path, at no place.
-				p.pathMask(tileKey(0, -1, -1, tw, th), f, 0, x0+float32(tx), y0+float32(ty), tw, th, true, tint)
+			if !f.inside(winding) {
+				covered()
+				continue
 			}
+			if to-from+tw > pathCoveredMax {
+				covered()
+			}
+			if to == from {
+				from = tx
+			}
+			to = tx + tw
 		}
+		covered()
 	}
 	return true
 }
 
+// pathCoveredMax is how wide a mask covered whole is, in device pixels: a
+// few tiles, as a filled path inside a window would otherwise draw a mask
+// for each of a thousand tiles.
+const pathCoveredMax = 512
+
 // pathTilesMax is how many tiles that show pathTiles looks at, at most:
-// 64 by 64, 32704 pixels a side, more than a window shows of a path unless
-// a transform shrinks it several times over.
-const pathTilesMax = 64 * 64
+// 128 by 128, 8064 pixels a side, more than a window shows of a path
+// unless a transform shrinks it several times over.
+const pathTilesMax = 128 * 128
 
 // tileKey returns the key of the w×h tile at (x, y) of the mask of key.
 func tileKey(key uint64, x, y, w, h int) uint64 {
@@ -859,15 +946,23 @@ func tileKey(key uint64, x, y, w, h int) uint64 {
 }
 
 // rasterizePath draws the mask of the path job, into memory the engine
-// reuses: the text system copies it into its atlas.
+// reuses up to the size of a tile, as a window's paths draw again and
+// again: the text system copies it into its atlas. The memory of a larger
+// mask, which only a rare path draws, goes with it.
 func (rt *engine) rasterizePath() (int, int, []byte) {
 	j := &rt.paths.job
 	z := &rt.paths.raster
 	n := j.w * j.h
-	if cap(rt.paths.pix) < n {
-		rt.paths.pix = make([]byte, n)
+	kept := n <= (pathTile+1)*(pathTile+1)
+	if kept && cap(rt.paths.pix) < n {
+		rt.paths.pix = make([]byte, (pathTile+1)*(pathTile+1))
 	}
-	pix := rt.paths.pix[:n]
+	var pix []byte
+	if kept {
+		pix = rt.paths.pix[:n]
+	} else {
+		pix = make([]byte, n)
+	}
 	if j.full {
 		for i := range pix {
 			pix[i] = 255
@@ -881,6 +976,9 @@ func (rt *engine) rasterizePath() (int, int, []byte) {
 	} else {
 		fillInto(z, j.f, j.x0, j.y0)
 		fillMask(z, j.f, pix, j.w)
+	}
+	if !kept {
+		z.Release()
 	}
 	return j.w, j.h, pix
 }

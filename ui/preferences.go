@@ -8,6 +8,11 @@ type Preferences struct {
 	// Accent is the accent color the user chose, which the default theme
 	// takes; A is 0 where the desktop has none.
 	Accent Color
+	// DarkFocusRing is the color of the keyboard focus ring in the dark
+	// appearance, whichever appearance the app has, with its alpha: what a
+	// web page of the dark color scheme rings a control with, which follows
+	// the accent color. A is 0 where the desktop has none.
+	DarkFocusRing Color
 	// ReduceMotion asks for less motion: macOS's Reduce Motion, Windows's
 	// animation effects and GNOME's animations turned off. Animate then
 	// goes to its target at once; Loop, which shows that something is
@@ -73,6 +78,7 @@ func (rt *engine) preferences() Preferences {
 		p := rt.host.preferences()
 		rt.prefs = Preferences{
 			Accent:             Color{R: p.Accent.R, G: p.Accent.G, B: p.Accent.B, A: p.Accent.A},
+			DarkFocusRing:      Color{R: p.DarkFocusRing.R, G: p.DarkFocusRing.G, B: p.DarkFocusRing.B, A: p.DarkFocusRing.A},
 			ReduceMotion:       p.ReduceMotion,
 			ReduceTransparency: p.ReduceTransparency,
 			HighContrast:       p.HighContrast,

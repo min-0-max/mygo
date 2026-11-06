@@ -10,6 +10,7 @@ import (
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
 
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/platform"
 )
 
@@ -59,7 +60,6 @@ var (
 	libMediaPlayer   uintptr
 	mediaPlayerOnce  sync.Once
 	remoteHandled    bool // the commands have their handlers
-	msgInitArtwork   func(obj id, sel objc.SEL, size NSSize, handler objc.Block) id
 	mediaPlayerProps map[string]id
 )
 
@@ -72,7 +72,6 @@ func mediaPlayer() bool {
 			return
 		}
 		libMediaPlayer = lib
-		purego.RegisterFunc(&msgInitArtwork, msgSendAddr)
 		mediaPlayerProps = map[string]id{}
 		for _, name := range []string{
 			"MPMediaItemPropertyTitle", "MPMediaItemPropertyArtist", "MPMediaItemPropertyAlbumTitle",
@@ -113,7 +112,7 @@ func setNowPlaying(b *Backend, info *platform.NowPlayingInfo) {
 					return 0 // MPRemoteCommandHandlerStatusSuccess
 				})
 				send(send(commands, c.getter), "addTargetWithHandler:", uintptr(handler))
-				handler.Release()
+				blockRelease(uintptr(handler))
 			}
 		}
 		var enabled platform.MediaCommand
@@ -134,10 +133,11 @@ func setNowPlaying(b *Backend, info *platform.NowPlayingInfo) {
 			send(center, "setPlaybackState:", mpPlaybackStopped)
 			return
 		}
-		d := send(class("NSMutableDictionary"), "dictionary")
+		d := newDictionary()
+		defer release(d)
 		put := func(key string, v id) {
 			if k := mediaPlayerProps[key]; k != 0 && v != 0 {
-				send(d, "setObject:forKey:", uintptr(v), uintptr(k))
+				setObject(d, v, k)
 			}
 		}
 		number := func(v float64) id { return msgFloatID(class("NSNumber"), sel("numberWithDouble:"), v) }
@@ -176,7 +176,7 @@ func setNowPlaying(b *Backend, info *platform.NowPlayingInfo) {
 // 0. Its handler decodes the image whenever the system asks, from the
 // bytes it holds, so no image outlives the artwork.
 func artwork(data []byte) id {
-	if len(data) == 0 || msgInitArtwork == nil {
+	if len(data) == 0 {
 		return 0
 	}
 	img := send(send(class("NSImage"), "alloc"), "initWithData:", uintptr(nsData(data)))
@@ -189,7 +189,7 @@ func artwork(data []byte) id {
 	handler := newBlock(func(_ objc.Block, w, h float64) id {
 		return autorelease(send(send(class("NSImage"), "alloc"), "initWithData:", uintptr(nsData(data))))
 	})
-	defer handler.Release()
-	art := msgInitArtwork(send(class("MPMediaItemArtwork"), "alloc"), sel("initWithBoundsSize:requestHandler:"), size, handler)
+	defer blockRelease(uintptr(handler))
+	art := mainthread.Forward[id](msgSendAddr, send(class("MPMediaItemArtwork"), "alloc"), sel("initWithBoundsSize:requestHandler:"), size, handler)
 	return autorelease(art)
 }

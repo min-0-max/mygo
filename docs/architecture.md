@@ -56,6 +56,7 @@ framework safely. Read it before changing anything under `internal/`.
 ├── page.go             Page: the web page a window shows, its loading, Eval and events
 ├── content.go          Content: windows showing native UI instead of a page
 ├── webview.go          WebView: web pages in windows of native UI, under it
+├── nativeview.go       NewNativeView, HoldFrames: the application's views under native UI
 ├── ipc.go              Bind/BindAs, method calls, Event[T], CallerWindow
 ├── plugin.go           Plugin and Use: services bound as "plugin:<name>"
 ├── channel.go          Channel[T]: values streamed to a call's page
@@ -77,6 +78,7 @@ framework safely. Read it before changing anything under `internal/`.
 ├── internal/
 │   ├── platform/       the contract every backend implements
 │   ├── darwin/         macOS: AppKit + WKWebView through the Objective-C runtime
+│   ├── darwin/mainthread/ the worker of macOS: Go off the main thread, native calls on it
 │   ├── linux/          Linux: GTK 3 + WebKitGTK through dlopen
 │   ├── windows/        Windows: Win32 + WebView2 through syscall and COM
 │   ├── schemehost/     maps custom scheme URLs to the http://*.localhost URLs WebView2 serves them at
@@ -190,7 +192,9 @@ rules are:
 
 1. **The main goroutine is locked to the main thread** (`runtime.LockOSThread`
    in `mygo.go`'s `init`), and `App.Run` must be called from it. `Run`
-   initializes the backend and blocks in the native event loop. Before
+   hands `Backend.Run` its Go code: `start`, which initializes the
+   backend, then the native event loop, in which `Run` blocks, then
+   `finish`. Before
    that no backend is initialized (the Linux one has not even loaded GTK),
    yet `main` already runs on the main thread, where `onMain` calls
    functions directly, and generate mode never initializes it. So a public
@@ -235,6 +239,12 @@ rules are:
    input (for example `WindowOptions.BackgroundColor`) is checked before
    hopping to the main thread, so the panic points at the user's call.
 
+On macOS the main thread of these rules is where `IsMainThread` answers
+true: the main thread, and the worker while it runs a step (see
+[The worker of the main thread](#the-worker-of-the-main-thread)). The Go
+code of the app runs on the worker, and the native calls that it makes run
+on the main thread.
+
 Main-thread-only fields are marked as such in comments (for example
 `Window.native`, `Window.trusted`). Fields shared with other goroutines are
 guarded by a mutex or atomic.
@@ -265,9 +275,12 @@ purego gives three primitives, used everywhere:
 
 - `objc.go` loads the frameworks, caches selectors and classes, and wraps
   `objc_msgSend`: `send(obj, "selector:", args...)` for integer arguments and
-  pre-registered typed variants (`msgRect`, `msgSetFloat`, `msgInitWindow`,
-  …) for the rest. On amd64, methods returning structs larger than 16 bytes go
-  through `objc_msgSend_stret`.
+  typed variants (`msgRect`, `msgSetFloat`, `msgInitWindow`, …) for the
+  rest, all of which run on the main thread through the worker
+  (`mainthread.Send` and `mainthread.Forward`); `sendRetained` takes the
+  caller's reference to a result that it keeps, and `sendHere` sends to a
+  value object on the calling thread. On amd64, methods returning structs
+  larger than 16 bytes go through `objc_msgSend_stret`.
 - Classes are defined at run time with `objc.RegisterClass`: `MyGoWindow`
   (borderless-friendly `NSWindow`), `MyGoWebView` (records the last
   `mouseDown:` for drag regions; `window_drag.go` follows the press with a
@@ -297,7 +310,10 @@ purego gives three primitives, used everywhere:
   glass goes.
 - **Memory is managed by hand.** Objects created with `alloc`/`init` are owned
   (+1) and must be released; convenience constructors return autoreleased
-  objects. Code that creates temporary objects runs inside `withPool`,
+  objects. Arrays and dictionaries are made with `alloc` and an `init`
+  message (`nsArray`, `newDictionary`), and `release`, `autorelease` and
+  `cfRelease` go through `mainthread.ByReceiver`, which runs them on the
+  calling thread only for the receivers that allow it. Code that creates temporary objects runs inside `withPool`,
   which keeps the goroutine on its thread until it pops the pool: a pool
   belongs to the thread that pushed it, and a goroutine other than the
   main one, as those reading the bundle for `App.Name`, may otherwise
@@ -305,10 +321,11 @@ purego gives three primitives, used everywhere:
   Delegates and windows are released with `autorelease` from
   `windowWillClose:` because AppKit still uses them while closing.
 - **Blocks.** Completion handlers passed to Apple APIs are created with
-  `objc.NewBlock` and released right after the call (the callee copies
-  them). Blocks received from Apple (decision and completion handlers) are
-  invoked with `callBlock`; when they are called later they are
-  `_Block_copy`d first and released after use.
+  `newBlock` (`objc.NewBlock` through `mainthread.Block`) and released
+  right after the call (the callee copies them). Blocks received from
+  Apple (decision and completion handlers) are invoked with `callBlock`,
+  on the main thread; when they are called later they are copied with
+  `blockCopy` first and released with `blockRelease` after use.
 - **Coordinates.** AppKit's origin is the bottom-left of the primary screen;
   MyGo's is the top-left. `rectToMac`/`rectFromMac` convert.
 - **Quitting.** Cmd+Q ends in `applicationShouldTerminate:`, which runs the
@@ -317,6 +334,74 @@ purego gives three primitives, used everywhere:
   (Dock > Quit, AppleScript, logout) are handled by our own handler installed
   in `applicationWillFinishLaunching:`, so senders get a success reply, or
   error -128 when a listener cancels.
+
+### The worker of the main thread
+
+`internal/darwin/mainthread` runs the Go code of a macOS app on a worker:
+a goroutine locked to a thread other than the main thread.
+
+- `Backend.Run` hands `mainthread.Run` its Go code: `start`, which returns
+  the event loop, `run` of the shared application that it made, as a
+  native call (`Call`). `mainthread.Run` starts the worker (`Start`) and
+  makes one native call on the main thread (`runApp`): it hands the
+  worker `start` as a step, makes the call of the event loop, hands the
+  worker `finish` as another step and then the step that ends the worker.
+  So the main thread runs no Go code from the step of `start` until the
+  worker returned from its last step. `TestTheMainThreadIsTheWorker`
+  runs `App.Run` so on a fake backend and holds listeners, `onMain`,
+  `RunOnMain` and `await` to the worker. The main thread waits for a
+  step on its own stack and meanwhile runs the calls that the worker
+  forwards to it.
+- Each method of a class that mygo registers (`mainthread.RegisterClass`
+  sets each implementation to `mainthread.Method`), each block that it makes
+  (`mainthread.Block`) and each C callback that it passes
+  (`mainthread.Callback`) enters through an assembly trampoline. Called on
+  the main thread while the worker runs, a trampoline hands the call to
+  the worker as a step and waits for its result; a call that the main
+  thread runs for the worker during a step (a modal panel, a menu,
+  `sendEvent:`) delivers its callbacks as nested steps. Called on any
+  other thread, it enters Go on that thread.
+- `Forward` runs a native call on the main thread: at once on the main
+  thread, through the main thread that waits for the step on the worker,
+  and through a run loop source of the main thread, added in the common
+  modes, on any other thread. `ForwardRetained` and `SendRetained` take
+  the caller's reference to the result there, because the main autorelease
+  pool may drain before a caller off the worker's steps retains it.
+- The calls that run on the calling thread are listed in `calls.go`:
+  Metal and its descriptors, Core Text and Core Graphics, the Objective-C
+  runtime, the Foundation value objects and their Core Foundation
+  functions, libdispatch, the run loop functions that the worker and
+  `netproxy` use, a few functions of libSystem and the keychain.
+  `ByReceiver` decides `release`, `autorelease`, `commit`, `CFRetain`,
+  `CFRelease`, `_Block_copy` and `_Block_release` by the class or the Core
+  Foundation type of the receiver.
+- `RunOnWorkerAddress` and `RunOnMainAddress`, which the root package
+  makes public as `mygo.RunOnWorkerAddress` and `mygo.RunOnMainAddress`,
+  give C code two functions that take a block: the first runs it on the
+  worker as a step when the main thread calls it, the second on the main
+  thread when the worker calls it during a step, and each runs it at once
+  on any other thread.
+- `RunOnMain` runs a Go function on the worker: during a step as part of
+  it, and from the main thread or another thread as a step of its own,
+  which the main thread starts from its run loop for another thread. The
+  function's native calls run on the main thread one forwarded call each,
+  so no Go code runs on the main thread. A step that waits for another
+  thread's `RunOnMain` without running the main run loop waits for good;
+  `await` runs it through `Backend.Step`, whose Go runs on the worker
+  while the event loop runs once on the main thread, and the callbacks of
+  the event that it sends run on the worker as nested steps. `Forwarded`
+  counts the forwarded calls, and `Queued` those that threads other than
+  the worker and the main thread hand the main thread.
+- `IsMainThread` answers true on the main thread and on the worker during
+  a step. While the worker does not run, every call runs on the calling
+  thread, as before `App.Run`.
+- `TestCallSitesGoThroughTheWorker` reads every package of the module and
+  fails for a native call site that neither goes through `Forward` (and
+  the functions built on it) nor runs on the calling thread as `calls.go`
+  decides, for a `purego.NewCallback`, `objc.NewBlock` or `objc.NewIMP`
+  that is not the argument of `Callback`, `Block` or `Method`, and for a
+  class registered with `objc.RegisterClass` instead of
+  `mainthread.RegisterClass`.
 
 ### Linux (`internal/linux`)
 
@@ -1727,7 +1812,8 @@ as in Tauri:
   every window (any `OnClose` can cancel) → `OnWillQuit` → stop the loop →
   `App.Run` returns → `OnQuit`. It is used for `App.Quit`, Cmd+Q, quit
   Apple Events, and SIGINT/SIGTERM alike (`signal_unix.go`; a second signal
-  exits immediately).
+  exits immediately), unless `App.SetSignalQuit(false)` leaves the signals
+  to the app.
 - Taskbar state on Windows (`taskbar.go`) lives on the window and is
   applied when Explorer sends `TaskbarButtonCreated` (first show, Explorer
   restarts), so progress and a hidden button set before showing stick.
@@ -3962,6 +4048,33 @@ either.
   element the frame first builds was pressed outside of by none, as the
   press opening it is still in `downs` when a quick click opens it. A select's popup keeps a backdrop taking the presses outside,
   as the system's pop-up menus do.
+- **Native views** (`nativeview.go`, `ui/webview.go`,
+  `internal/darwin/native_view.go`). `Window.NewNativeView` adds a view the
+  application made under the surface, above the window's effect view
+  (`platform.NativeViewSurface`). `ui.NativeView` is a web view element
+  whose `surface.WebView` is a `nativeElement`, a value of the named and
+  key views, so hole, covers, focus, Tab and hit chain are the code of web
+  views, which branches only where they end: `windowHost.placeNativeViews`
+  gives the placements to `conn.PlaceNativeViews` in the same step as the
+  web views, `tabIntoWebView` gives the key view the keyboard
+  (`TabIntoNativeView`), and `accessElement` gives the page's node the
+  views instead of a `WebView`. The surface's `hitTest:` asks the hit test
+  of the native view where an element shows and nothing covers it, and
+  answers with nil there, so AppKit goes on to the views under the
+  surface. The content is told of presses by a local event monitor, armed
+  with the first native view and only for mouse-down events, as AppKit
+  gives the view the press itself and nothing of mygo's sees it; the
+  window's `selectKeyViewFollowingView:` and `...PrecedingView:` see Tab
+  leave a key view (`nativeHost.tabOut`). What every app reaches goes
+  through `surface.native`, an interface, and `conn`'s functions, which
+  `NewNativeView` sets, so an app without a native view links none of it. An element adopts the views
+  with `setAccessibilityParent:`, retained until the frame that stops
+  showing them, as the views are the application's and a class of its
+  own is not on them. `HoldFrames` lives in `windowHost` (`holding`,
+  `heldFrame`): `SurfaceFrame` is swallowed, frames answer `AfterPresent`
+  with `PresentHeld`, and Metal pins the layer's autoresizing mask to the
+  top left (`Renderer.HoldFrames`), dropping a frame that waited for its
+  drawable.
 - **Web views** (`webview.go`, `ui/webview.go`, `webview.go` of each
   backend). `Window.NewWebView` makes a web view of a window showing
   `Content`, whose page lives in a `Window` of its own that no list holds,
@@ -3981,7 +4094,8 @@ either.
   inner edge and cut by the clips around it, so that what paints after
   the element paints over the page. The native web view is under the
   surface, which shows it through its transparent frames; what shows over
-  it blends with it as over any pixels. After presenting a frame, the
+  it blends with it as over any pixels. Before presenting a frame that
+  the surface asked for, on the main thread, the
   engine gives the surface each web view's frame and clip and the boxes
   of the hits after its own within its clip, as they show (`Covers`): the
   pointer is the page's where it shows, inside its corners (`Radii`), and
@@ -4481,6 +4595,12 @@ either.
     repeats, and the canvas engine's own lines, which otherwise measure a
     tab as the canvas does, as a space. The first `TabSize` links it
     (`System.UseTabSize`), as `Justify` does `UseJustify`.
+  - *Keeping words.* `Params.KeepAll` takes the breaks of Unicode's line
+    breaking algorithm, without those between two letters, digits or
+    marks, where the engines know nothing of them: each line an engine
+    ends elsewhere ends at the last of these breaks and what follows
+    breaks anew (`breakLines`). It shapes no more of the text ahead than
+    it takes for a line to end, so that a long text costs as its lines do.
   Paths drawn with
   `Painter` are masks in the coverage atlas, rasterized by `internal/vec`,
   cached by their shape relative to the pixel grid in quarters of a pixel,
@@ -4821,10 +4941,12 @@ either.
     falls back to that, and its test fails. It draws into a CAMetalLayer
     it adds to the surface view's layer. The command queue, shaders,
     sampler and placeholder texture are made on demand. A frame that
-    changes the layer (its size, scale or pixel format), or shows web
-    views, which move in the window's transaction, presents with the Core
-    Animation transaction (`presentsWithTransaction`), so a live resize
-    shows no stretched frames; the others present as soon as the GPU has
+    changes the layer (its size, scale or pixel format), the placement
+    (box, clip or covers) of a web view or a native view element, or the
+    placement of a native glass view (`scene.Scene.Transact`), which move
+    in the window's transaction, presents with the Core Animation
+    transaction (`presentsWithTransaction`), so a live resize shows no
+    stretched frames; the others present as soon as the GPU has
     them (`presentDrawable:`), sparing a pass of AppKit's display cycle
     and a commit of the transaction each: an animation at 120 Hz takes
     about half the main thread's time it would. A resize's frame that
@@ -4879,8 +5001,10 @@ either.
     Two seconds after the last frame, as the
     driver frees its own memory of frames, a timer shrinks the drawables,
     which frees all but the one shown, until the next frame makes them
-    again, and releases GPU instance buffers, atlas/image textures and
-    backdrop textures: an idle window keeps one frame of memory. Its
+    again, and releases GPU instance buffers, atlas/image textures,
+    backdrop textures and the command queue, whose memory of frames the
+    driver keeps as long as it lives: an idle window keeps one frame of
+    memory. Its
     drawables are not `framebufferOnly`, as effects sample the drawable
     for their backdrops.
     A frame draws only what changed since its drawable was drawn. Core
@@ -5919,7 +6043,7 @@ which npm allows only for packages that exist: the first release uses an
 | native UI surface | layer-backed NSView, frames from `CADisplayLink` (a timer at the display's rate before macOS 14), input methods through NSTextInputClient | GtkGLArea (GtkDrawingArea without a GPU), GtkIMMulticontext | `MyGoSurface` child window, IMM32 |
 | native UI data drags | NSDraggingSession, NSPasteboardItemDataProvider, NSDraggingDestination | GTK drag contexts, MIME selections, text/uri-list | OLE IDataObject, IDropSource, IDropTarget, Shell drag images |
 | native UI accessibility | `NSAccessibilityElement` subclasses | ATK objects (GObject types registered through purego), bridged to AT-SPI by GTK | UI Automation fragments (COM objects; assembly thunks for the methods taking doubles) |
-| native UI rendering | Metal, into a CAMetalLayer presenting as soon as drawn, or with the Core Animation transaction for frames that resize it or show web views | OpenGL 3.3 or ES 3.0 in the GtkGLArea's render signal; on the CPU, painted with cairo, where OpenGL runs on the CPU | Direct3D 11 (WARP without a GPU), flip-model swap chain presenting dirty rectangles |
+| native UI rendering | Metal, into a CAMetalLayer presenting as soon as drawn, or with the Core Animation transaction for frames that resize it or move web views, native view elements or native glass views | OpenGL 3.3 or ES 3.0 in the GtkGLArea's render signal; on the CPU, painted with cairo, where OpenGL runs on the CPU | Direct3D 11 (WARP without a GPU), flip-model swap chain presenting dirty rectangles |
 | web views in native UI | WKWebView in a clip view under the surface; `hitTest:` lets the pointer through | WebKitWebView in a `GtkLayout` under the area in a `GtkOverlay`; an input shape lets the pointer through | WebView2 composition controller in a DirectComposition target under the frames'; the surface sends it the mouse |
 | audio output | Audio Queue on the default output | PulseAudio simple API (PipeWire too), else ALSA `default` | WASAPI shared mode, reopened when the default output changes |
 | gamepads | GameController.framework, extended gamepad profile | evdev, the kernel's gamepad layout, Xbox's X and Y swapped back | XInput, four slots, Guide by `XInputGetStateEx` |

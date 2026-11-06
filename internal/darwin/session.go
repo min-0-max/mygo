@@ -32,7 +32,7 @@ func (a appController) NewDataStore(opts platform.DataStoreOptions) (platform.Da
 		cls := class("WKWebsiteDataStore")
 		if !opts.Ephemeral && sendBool(cls, "respondsToSelector:", uintptr(sel("dataStoreForIdentifier:"))) {
 			uuid := send(send(class("NSUUID"), "alloc"), "initWithUUIDString:", uintptr(nsString(opts.ID)))
-			s.store = retain(send(cls, "dataStoreForIdentifier:", uintptr(uuid)))
+			s.store = sendRetained(cls, "dataStoreForIdentifier:", uintptr(uuid))
 			release(uuid)
 			return
 		}
@@ -41,7 +41,7 @@ func (a appController) NewDataStore(opts platform.DataStoreOptions) (platform.Da
 				log.Print("mygo: sessions keep their data in memory until the app quits before macOS 14")
 			})
 		}
-		s.store = retain(send(cls, "nonPersistentDataStore"))
+		s.store = sendRetained(cls, "nonPersistentDataStore")
 	})
 	return s, nil
 }
@@ -100,6 +100,6 @@ func (a appController) removeData(store platform.DataStore, types platform.SiteD
 	withPool(func() {
 		blk := newBlock(func(_ objc.Block) { a.b.runOnMain(func() { done(nil) }) })
 		send(websiteDataStore(store), "removeDataOfTypes:modifiedSince:completionHandler:", uintptr(websiteDataTypes(types)), uintptr(send(class("NSDate"), "distantPast")), uintptr(blk))
-		blk.Release()
+		blockRelease(uintptr(blk))
 	})
 }

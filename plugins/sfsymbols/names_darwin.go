@@ -8,6 +8,8 @@ import (
 	"unsafe"
 
 	"github.com/ebitengine/purego/objc"
+
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 )
 
 // The system's catalog of its symbols, in CoreGlyphs, the bundle AppKit
@@ -35,19 +37,21 @@ func Names() []string {
 		if !loadCG() {
 			return
 		}
-		withPool(func() {
-			names.list = readOrder()
-			if len(names.list) == 0 {
-				names.list = readAvailable()
-			}
+		mainthread.RunOnMain(func() {
+			withPool(func() {
+				names.list = readOrder()
+				if len(names.list) == 0 {
+					names.list = readAvailable()
+				}
+			})
 		})
 	})
 	return names.list
 }
 
 var (
-	selArrayFile = objc.RegisterName("arrayWithContentsOfFile:")
-	selDictFile  = objc.RegisterName("dictionaryWithContentsOfFile:")
+	selInitFile  = objc.RegisterName("initWithContentsOfFile:")
+	selInitArray = objc.RegisterName("initWithArray:")
 	selObjectFor = objc.RegisterName("objectForKey:")
 	selAllKeys   = objc.RegisterName("allKeys")
 	selCount     = objc.RegisterName("count")
@@ -58,24 +62,35 @@ var (
 
 func readOrder() []string {
 	path := nsString(orderList)
-	defer objc.Send[objc.ID](path, selRelease)
-	return strings(objc.Send[objc.ID](objc.ID(objc.GetClass("NSArray")), selArrayFile, path))
+	defer release(path)
+	arr := sendHere[objc.ID](sendHere[objc.ID](objc.ID(objc.GetClass("NSArray")), selAlloc), selInitFile, path)
+	if arr == 0 {
+		return nil
+	}
+	defer release(arr)
+	return strings(arr)
 }
 
 func readAvailable() []string {
 	path := nsString(availableList)
-	defer objc.Send[objc.ID](path, selRelease)
-	dict := objc.Send[objc.ID](objc.ID(objc.GetClass("NSDictionary")), selDictFile, path)
+	defer release(path)
+	dict := sendHere[objc.ID](sendHere[objc.ID](objc.ID(objc.GetClass("NSDictionary")), selAlloc), selInitFile, path)
 	if dict == 0 {
 		return nil
 	}
+	defer release(dict)
 	key := nsString("symbols")
-	defer objc.Send[objc.ID](key, selRelease)
-	symbols := objc.Send[objc.ID](dict, selObjectFor, key)
+	defer release(key)
+	symbols := sendHere[objc.ID](dict, selObjectFor, key)
 	if symbols == 0 {
 		return nil
 	}
-	list := strings(objc.Send[objc.ID](symbols, selAllKeys))
+	// The file decides the class of symbols, so allKeys goes to the main
+	// thread; the copy of its result is an array that this thread reads.
+	keys := sendHere[objc.ID](sendHere[objc.ID](objc.ID(objc.GetClass("NSArray")), selAlloc), selInitArray,
+		mainthread.Send[objc.ID](symbols, selAllKeys))
+	defer release(keys)
+	list := strings(keys)
 	sort.Strings(list)
 	return list
 }
@@ -87,14 +102,14 @@ func strings(arr objc.ID) []string {
 		return nil
 	}
 	class := objc.ID(objc.GetClass("NSString"))
-	n := int(objc.Send[uint](arr, selCount))
+	n := int(sendHere[uint](arr, selCount))
 	out := make([]string, 0, n)
 	for i := range n {
-		s := objc.Send[objc.ID](arr, selObjectAt, uint(i))
-		if s == 0 || !objc.Send[bool](s, selIsString, class) {
+		s := sendHere[objc.ID](arr, selObjectAt, uint(i))
+		if s == 0 || !sendHere[bool](s, selIsString, class) {
 			continue
 		}
-		if p := objc.Send[unsafe.Pointer](s, selUTF8); p != nil {
+		if p := sendHere[unsafe.Pointer](s, selUTF8); p != nil {
 			out = append(out, goString(p))
 		}
 	}

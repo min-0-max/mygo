@@ -656,6 +656,18 @@ func (_handle *Context) Size() (float32, float32) {
 	return _ctx.Size()
 }
 
+// SystemSymbol returns the symbol name of the system at pointSize, for the
+// scale of the window, and a Symbol without a Bitmap when the system has no
+// such symbol, as only macOS has a library of them. Draw it with
+// Painter.Symbol. The window asks the system once for each size and scale.
+func (_handle *Context) SystemSymbol(name string, pointSize float32) Symbol {
+	_ctx := _handle.build()
+	if _ctx == nil {
+		return *new(Symbol)
+	}
+	return _ctx.SystemSymbol(name, pointSize)
+}
+
 // Theme returns the theme of the frame: the light or dark theme following
 // the system's appearance, unless SetTheme replaced it. While the children
 // of a Themed build, it is the Themed's theme.
@@ -1784,6 +1796,41 @@ func Modal(c *Context, open *bool, fn func()) Element {
 	}
 	_ctx.rt.beginBuild()
 	_e := coreModal(_ctx, open, fn)
+	_ctx.rt.endBuild()
+	return wrapElement(_e)
+}
+
+// NativeView shows a view that the application made, inside the native
+// view of the window (mygo.Window.NewNativeView), in the element's content
+// box. key is the view of the element that takes the keyboard, view or a
+// view inside it; 0 is view. As a web view, the view has no size of its
+// own, and the element stretches across its container:
+//
+//	ui.Row(c).Fill().Children(func() {
+//		sidebar(c)
+//		ui.NativeView(c, holder, editor).Grow(1)
+//	})
+//
+// The element paints a hole through the window's content over its box, so
+// that what paints after it shows over the view, and in the frame that
+// draws it the window tells the application its box, clip and covers,
+// which sets the frame of the view before the frame presents; a frame
+// that does not build the element tells nothing of it, and the keyboard
+// leaves the view. The view takes the pointer where the element shows and
+// nothing painted over it takes it, if the hit test of the native view
+// finds a view there, and leaves it to the content otherwise; a press on
+// it reaches the content as one on a web view does, closing the popovers
+// it is outside of, and the view sets the cursor. Tab stops at the
+// element, and takes the keyboard into key, and Tab out of key goes on
+// from the element. Assistive technology finds what is in the view inside
+// the element, and nowhere else.
+func NativeView(c *Context, view uintptr, key uintptr) Element {
+	_ctx := c.build()
+	if _ctx == nil {
+		return Element{}
+	}
+	_ctx.rt.beginBuild()
+	_e := coreNativeView(_ctx, view, key)
 	_ctx.rt.endBuild()
 	return wrapElement(_e)
 }
@@ -5437,6 +5484,21 @@ func (_handle Element) Highlighted() bool {
 	return _node.Highlighted()
 }
 
+// HitOutset makes the element take the pointer up to d beyond each side of
+// its box, as a slider takes it around its thin track: the press, the
+// hover and the cursor reach it there, over what lies under it, while its
+// box, its place in the layout and its rectangle for accessibility stay as
+// they are. The clips of the elements around it still cut it.
+func (_handle Element) HitOutset(d float32) Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.HitOutset(d))
+}
+
 // HitTest sets where in its box the element takes the pointer: where fn
 // reports true for the pointer at (x, y), in the coordinates Draw paints
 // in, r being its box as Draw gets it. Elsewhere the pointer reaches what
@@ -5725,6 +5787,22 @@ func (_handle Element) JustifySelf(a Align) Element {
 	_ctx := _node.c
 	_ = _ctx
 	return wrapElement(_node.JustifySelf(a))
+}
+
+// KeepAll breaks no line of the element's text between two letters or
+// digits, Hangul, Han and kana among them, as CSS's word-break: keep-all:
+// without it these lines may break between any two of their characters,
+// and with it, as lines of Latin words do, only where a space or
+// punctuation allows it. The elements inside the element inherit it. A word
+// wider than the line still breaks, as any word does.
+func (_handle Element) KeepAll() Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.KeepAll())
 }
 
 // KeepFocus leaves the keyboard focus where it is while the element, or
@@ -7354,6 +7432,20 @@ func (_handle Element) Search() Element {
 	_ctx := _node.c
 	_ = _ctx
 	return wrapElement(_node.Search())
+}
+
+// SelectAll selects the text of a text input, so that the next key replaces
+// it, as Tab reaching an input does. A field around an input, as
+// SearchField's, passes it to its input. Called in a frame, it selects the
+// text as that frame has it; on any other element it does nothing.
+func (_handle Element) SelectAll() Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.SelectAll())
 }
 
 // Selectable lets the user select and copy text by dragging, double-clicking

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/i18n"
+	"github.com/egoist/mygo/internal/gpu"
 	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/internal/raster"
 	"github.com/egoist/mygo/internal/scene"
@@ -26,6 +27,8 @@ type headless struct {
 	requested atomic.Bool
 	dark      bool
 	prefs     platform.Preferences
+	// symbols is the library of symbols that SetSystemSymbols sets.
+	symbols func(name string, pointSize, scale float64) (image.Image, bool)
 	// lang and reg are what SetLocale and SetRegion set.
 	lang string
 	reg  i18n.Region
@@ -56,6 +59,8 @@ type headless struct {
 	menu   *platform.Menu
 	menuAt [2]float32
 	chosen func(id int)
+	// facts is what came of the frame presented last.
+	facts gpu.FrameFacts
 	// hz is the display's refresh rate; hidden tells that nothing of the
 	// window shows.
 	hz     float32
@@ -98,10 +103,18 @@ func (h *headless) refreshRate() float32              { return h.hz }
 func (h *headless) setFrameRate(fps float32)          { h.frameRate = fps }
 func (h *headless) framesAtOnce() bool                { return h.atOnce }
 func (h *headless) occluded() bool                    { return h.hidden }
+func (h *headless) framesHeld()                       {}
 func (h *headless) present(s *scene.Scene) {
 	h.last = s
-	h.img.Render(s)
+	// What the frame changed, as a window drawn in memory tells it.
+	damage := h.img.Render(s)
+	h.facts = gpu.FrameFacts{Outcome: gpu.FrameImmediate, Damage: gpu.DamageArea(damage, true, 0, 0)}
+	if len(damage) == 0 {
+		h.facts.Outcome = gpu.FrameUndamaged
+	}
 }
+func (h *headless) frameFacts() gpu.FrameFacts { return h.facts }
+func (h *headless) frameAsks() bool            { return h.requested.Load() }
 func (h *headless) afterTimer(at time.Time) {
 	h.afterAt = at
 	if h.clock != nil {
@@ -172,11 +185,18 @@ func (h *headless) escape()                           { h.escapes++ }
 func (h *headless) isDark() bool                      { return h.dark }
 func (h *headless) rightToLeft() bool                 { return h.rtl }
 func (h *headless) preferences() platform.Preferences { return h.prefs }
-func (h *headless) locale() string                    { return h.lang }
-func (h *headless) region() i18n.Region               { return h.reg }
-func (h *headless) titleBar() TitleBar                { return h.bar }
-func (h *headless) vibrancy() bool                    { return h.material }
-func (h *headless) active() bool                      { return !h.inactive }
+
+func (h *headless) systemSymbol(name string, pointSize, scale float64) (image.Image, bool) {
+	if h.symbols == nil {
+		return nil, false
+	}
+	return h.symbols(name, pointSize, scale)
+}
+func (h *headless) locale() string      { return h.lang }
+func (h *headless) region() i18n.Region { return h.reg }
+func (h *headless) titleBar() TitleBar  { return h.bar }
+func (h *headless) vibrancy() bool      { return h.material }
+func (h *headless) active() bool        { return !h.inactive }
 func (h *headless) invalidate() {
 	h.invalidated.Store(true)
 	h.requested.Store(true)
@@ -220,11 +240,12 @@ func (h *headless) keepAccess(t *platform.AccessTree) {
 func (h *headless) popupMenu(m *platform.Menu, x, y float32, chosen func(int)) {
 	h.menu, h.menuAt, h.chosen = m, [2]float32{x, y}, chosen
 }
-func (h *headless) placeWebViews(views []placedWebView) {
+func (h *headless) placeWebViews(views []placedWebView) bool {
 	h.webViews = append(h.webViews[:0], views...)
+	return true
 }
 func (h *headless) nativeGlass() bool                              { return false }
-func (h *headless) placeGlass([]platform.GlassPlacement)           {}
+func (h *headless) placeGlass([]platform.GlassPlacement) bool      { return true }
 func (h *headless) tabIntoWebView(v NativeWebView, back bool)      { h.tabbedInto, h.tabbedBack = v, back }
 func (h *headless) platformWebView(NativeWebView) platform.WebView { return nil }
 func (h *headless) image() *image.RGBA {
@@ -494,9 +515,19 @@ func (t *Tester) SetPreferences(p Preferences) {
 	t.settle()
 }
 
+// SetSystemSymbols gives the window a library of symbols, as a system has:
+// library returns the mask of a symbol, and false when it has none.
+func (t *Tester) SetSystemSymbols(library func(name string, pointSize, scale float64) (image.Image, bool)) {
+	t.h.symbols = library
+	t.rt.symbols = nil
+	t.h.requested.Store(true)
+	t.settle()
+}
+
 // platformPreferences returns p as a backend gives them.
 func platformPreferences(p Preferences) platform.Preferences {
-	return platform.Preferences{Accent: platform.Color{R: p.Accent.R, G: p.Accent.G, B: p.Accent.B, A: p.Accent.A}, ReduceMotion: p.ReduceMotion,
+	return platform.Preferences{Accent: platform.Color{R: p.Accent.R, G: p.Accent.G, B: p.Accent.B, A: p.Accent.A},
+		DarkFocusRing: platform.Color{R: p.DarkFocusRing.R, G: p.DarkFocusRing.G, B: p.DarkFocusRing.B, A: p.DarkFocusRing.A}, ReduceMotion: p.ReduceMotion,
 		ReduceTransparency: p.ReduceTransparency, HighContrast: p.HighContrast, TextScale: float64(p.TextScale),
 		Pointer: platform.PointerAccuracy(p.Pointer), AnyPointer: platform.PointerAccuracy(p.AnyPointer), NoHover: p.NoHover, NoAnyHover: p.NoAnyHover}
 }
@@ -526,6 +557,11 @@ func (t *Tester) SetDirection(d Direction) {
 	t.h.rtl = d == RightToLeft
 	t.Frame()
 }
+
+// RecordFrames has r hear the frames of the window, as Content.RecordFrames
+// does those of a window on screen, with the damage of each as the renderer
+// in memory draws it. Call it before the frames to hear.
+func (t *Tester) RecordFrames(r *FrameRecorder) { t.rt.recorder = r }
 
 // Frame renders another frame, as when the view's state changed.
 func (t *Tester) Frame() { t.h.requested.Store(true); t.settle() }

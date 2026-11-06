@@ -183,6 +183,12 @@ func (a *Atlas) Grow() bool {
 // again, tallest first, moving their pixels along. It returns where each
 // went, or false, changing nothing, when they do not fit.
 func (a *Atlas) Repack(rects []image.Rectangle) ([]image.Point, bool) {
+	return a.RepackTo(a.W, a.H, rects)
+}
+
+// RepackTo is Repack into an atlas of w×h pixels, which lets a smaller one
+// give its memory back.
+func (a *Atlas) RepackTo(w, h int, rects []image.Rectangle) ([]image.Point, bool) {
 	order := make([]int, len(rects))
 	for i := range order {
 		order[i] = i
@@ -190,7 +196,7 @@ func (a *Atlas) Repack(rects []image.Rectangle) ([]image.Point, bool) {
 	slices.SortFunc(order, func(i, j int) int {
 		return cmp.Or(cmp.Compare(rects[j].Dy(), rects[i].Dy()), cmp.Compare(rects[j].Dx(), rects[i].Dx()))
 	})
-	plan := Atlas{W: a.W, H: a.H, top: a.H}
+	plan := Atlas{W: w, H: h, top: h}
 	pos := make([]image.Point, len(rects))
 	for _, i := range order {
 		x, y, ok := plan.Alloc(rects[i].Dx(), rects[i].Dy())
@@ -208,7 +214,11 @@ func (a *Atlas) Repack(rects []image.Rectangle) ([]image.Point, bool) {
 		}
 		saved[i] = b
 	}
-	clear(a.Pix)
+	if w == a.W && h == a.H {
+		clear(a.Pix)
+	} else {
+		a.W, a.H, a.Pix = w, h, make([]byte, w*h*a.BPP)
+	}
 	for i, r := range rects {
 		row := r.Dx() * a.BPP
 		for j := 0; j < r.Dy(); j++ {

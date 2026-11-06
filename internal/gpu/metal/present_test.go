@@ -4,7 +4,9 @@ package metal
 
 import (
 	"testing"
+	"time"
 
+	"github.com/egoist/mygo/internal/gpu"
 	"github.com/egoist/mygo/internal/scene"
 	"github.com/egoist/mygo/internal/wait"
 )
@@ -21,7 +23,7 @@ func TestPresenter(t *testing.T) {
 	nextDrawable = func(id) id {
 		<-gate
 		fetched++
-		return send(send(class("NSObject"), "new"), "autorelease")
+		return send(send(class("NSMutableString"), "new"), "autorelease")
 	}
 	defer func() { nextDrawable = func(layer id) id { return send(layer, "nextDrawable") } }()
 	var p presenter
@@ -73,7 +75,7 @@ func TestPrefetchedFrames(t *testing.T) {
 		t.Skip("no Metal:", err)
 	}
 	var layer id
-	pool(func() { layer = send(class("CALayer"), "new") })
+	pool(func() { layer = sendMain(class("CALayer"), "new") })
 	if layer == 0 {
 		t.Skip("no Core Animation")
 	}
@@ -136,7 +138,7 @@ func TestPendingFrames(t *testing.T) {
 		t.Skip("no Metal:", err)
 	}
 	var layer id
-	pool(func() { layer = send(class("CALayer"), "new") })
+	pool(func() { layer = sendMain(class("CALayer"), "new") })
 	if layer == 0 {
 		t.Skip("no Core Animation")
 	}
@@ -208,7 +210,7 @@ func drawableID(d id) uintptr {
 	if d == 0 {
 		return 0
 	}
-	return send(d, "drawableID")
+	return sendMain(d, "drawableID")
 }
 
 // TestDroppedPendingFrame checks that a frame waiting for its drawable,
@@ -220,7 +222,7 @@ func TestDroppedPendingFrame(t *testing.T) {
 		t.Skip("no Metal:", err)
 	}
 	var layer id
-	pool(func() { layer = send(class("CALayer"), "new") })
+	pool(func() { layer = sendMain(class("CALayer"), "new") })
 	if layer == 0 {
 		t.Skip("no Core Animation")
 	}
@@ -271,7 +273,7 @@ func TestStalePost(t *testing.T) {
 		t.Skip("no Metal:", err)
 	}
 	var layer id
-	pool(func() { layer = send(class("CALayer"), "new") })
+	pool(func() { layer = sendMain(class("CALayer"), "new") })
 	if layer == 0 {
 		t.Skip("no Core Animation")
 	}
@@ -317,5 +319,265 @@ func TestStalePost(t *testing.T) {
 	finish()
 	if r.pending.cb != 0 {
 		t.Fatal("the frame pending was not drawn once its drawable came")
+	}
+}
+
+// commits keeps the commits that a renderer reports outside its frames.
+type commits struct {
+	kinds []gpu.CommitKind
+	times []uint64
+	clock uint64
+}
+
+func (c *commits) watch(r *Renderer) {
+	r.ReportFrames(func() uint64 { c.clock++; return c.clock }, func(kind gpu.CommitKind, at uint64) {
+		c.kinds, c.times = append(c.kinds, kind), append(c.times, at)
+	})
+}
+
+// TestFrameFacts checks what a renderer tells of each kind of frame: one that
+// presents with the transaction, one at once, one that changed nothing, and one
+// that waits for its drawable, whose command buffer commits outside its frame.
+func TestFrameFacts(t *testing.T) {
+	if err := load(); err != nil {
+		t.Skip("no Metal:", err)
+	}
+	var layer id
+	pool(func() { layer = sendMain(class("CALayer"), "new") })
+	if layer == 0 {
+		t.Skip("no Core Animation")
+	}
+	defer pool(func() { release(&layer) })
+	r, err := New(uintptr(layer))
+	if err != nil {
+		unavailable(t, err)
+	}
+	defer r.Release()
+	var c commits
+	c.watch(r)
+	posted := make(chan func(), 4)
+	r.SetPost(func(fn func()) { posted <- fn })
+	gate := make(chan struct{})
+	next := nextDrawable
+	nextDrawable = func(l id) id { <-gate; return next(l) }
+	defer func() { nextDrawable = next }()
+	defer close(gate)
+	frame := func(i int) gpu.FrameFacts {
+		t.Helper()
+		s := &scene.Scene{}
+		s.Reset(64, 32, scene.Color{A: 255})
+		s.Ops = append(s.Ops, scene.Op{Kind: scene.OpFill, Rect: scene.Rect{X: float32(i), W: 8, H: 8}, Color: scene.Color{R: 255, A: 255}})
+		if err := r.Render(s); err != nil {
+			t.Fatal(err)
+		}
+		return r.FrameFacts()
+	}
+	f := frame(0)
+	if f.Outcome != gpu.FrameTransaction || !f.CommandBuffer || f.Request == 0 || f.Damage != 64*32 {
+		t.Errorf("a frame that changes the layer: %+v", f)
+	}
+	f = frame(1)
+	if f.Outcome != gpu.FrameImmediate || !f.CommandBuffer || f.Request == 0 || f.Damage == 0 || f.Damage >= 64*32 {
+		t.Errorf("a frame that presents at once: %+v", f)
+	}
+	f = frame(1)
+	if f.Outcome != gpu.FrameUndamaged || f.CommandBuffer || f.Request != 0 || f.Damage != 0 {
+		t.Errorf("a frame that changed nothing: %+v", f)
+	}
+	if !r.pre.fetching {
+		t.Fatal("no drawable being fetched")
+	}
+	f = frame(2)
+	if f.Outcome != gpu.FrameStashed || f.CommandBuffer || f.Request != 0 || f.Damage == 0 {
+		t.Errorf("a frame that waits for its drawable: %+v", f)
+	}
+	if len(c.kinds) != 0 {
+		t.Fatalf("commits %v before the drawable came", c.kinds)
+	}
+	gate <- struct{}{}
+	wait.For(t, "the post", posted)()
+	if len(c.kinds) != 1 || c.kinds[0] != gpu.CommitStashed || c.times[0] == 0 {
+		t.Errorf("the frame that waited committed %v at %v", c.kinds, c.times)
+	}
+}
+
+// TestDrawableWaitOfAFrame checks that a frame tells how long it waited for its
+// drawable, on the clock of the report.
+func TestDrawableWaitOfAFrame(t *testing.T) {
+	if err := load(); err != nil {
+		t.Skip("no Metal:", err)
+	}
+	var layer id
+	pool(func() { layer = sendMain(class("CALayer"), "new") })
+	if layer == 0 {
+		t.Skip("no Core Animation")
+	}
+	defer pool(func() { release(&layer) })
+	r, err := New(uintptr(layer))
+	if err != nil {
+		unavailable(t, err)
+	}
+	defer r.Release()
+	var c commits
+	c.watch(r)
+	s := &scene.Scene{}
+	s.Reset(64, 32, scene.Color{A: 255})
+	if err := r.Render(s); err != nil {
+		t.Fatal(err)
+	}
+	if f := r.FrameFacts(); f.DrawableWait == 0 {
+		t.Errorf("the frame read no wait for its drawable: %+v", f)
+	}
+}
+
+// TestPixelsCommitOutsideAFrame checks that a render to pixels reports its
+// commit.
+func TestPixelsCommitOutsideAFrame(t *testing.T) {
+	r, err := newRenderer()
+	if err != nil {
+		t.Skip("no Metal:", err)
+	}
+	defer r.Release()
+	var c commits
+	c.watch(r)
+	s := &scene.Scene{}
+	s.Reset(64, 32, scene.Color{A: 255})
+	if _, err := r.renderOffscreen(s); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.kinds) != 1 || c.kinds[0] != gpu.CommitPixels || c.times[0] == 0 {
+		t.Errorf("a render to pixels committed %v at %v", c.kinds, c.times)
+	}
+}
+
+// TestAFrameAloneFetchesNoDrawable draws a frame after a pause, as a key or
+// a click does: the display still shows the last frame and the GPU has this
+// one, so a fetch would have the system make another drawable, which would
+// only hold memory until the window idles. A frame following it fetches.
+func TestAFrameAloneFetchesNoDrawable(t *testing.T) {
+	if err := load(); err != nil {
+		t.Skip("no Metal:", err)
+	}
+	var layer id
+	pool(func() { layer = sendMain(class("CALayer"), "new") })
+	if layer == 0 {
+		t.Skip("no Core Animation")
+	}
+	defer pool(func() { release(&layer) })
+	r, err := New(uintptr(layer))
+	if err != nil {
+		unavailable(t, err)
+	}
+	defer r.Release()
+	refreshes := followRefreshes
+	followRefreshes = 2
+	defer func() { followRefreshes = refreshes }()
+	// A refresh a second: however long a frame takes here, the next follows
+	// it.
+	r.SetRefreshRate(func() float64 { return 1 })
+	var fetched int
+	next := nextDrawable
+	nextDrawable = func(l id) id { fetched++; return next(l) }
+	defer func() { nextDrawable = next }()
+	frame := func(i int) {
+		t.Helper()
+		s := &scene.Scene{}
+		s.Reset(64, 32, scene.Color{A: 255})
+		s.Ops = append(s.Ops, scene.Op{Kind: scene.OpFill, Rect: scene.Rect{X: float32(i), W: 8, H: 8}, Color: scene.Color{R: 255, A: 255}})
+		if err := r.Render(s); err != nil {
+			t.Fatal(err)
+		}
+		r.pre.wait()
+	}
+	frame(0)
+	if !r.synced {
+		t.Fatal("the first frame did not present with the transaction")
+	}
+	r.lastRender = time.Now().Add(-time.Minute)
+	frame(1)
+	if r.synced {
+		t.Fatal("the frame alone presented with the transaction")
+	}
+	if fetched != 0 || r.pre.drawable != 0 {
+		t.Errorf("the frame alone fetched %d drawables, holding %#x", fetched, r.pre.drawable)
+	}
+	frame(2)
+	if fetched != 1 || r.pre.drawable == 0 {
+		t.Errorf("the frame following it fetched %d drawables, holding %#x", fetched, r.pre.drawable)
+	}
+}
+
+// TestFramesFollowByTheRefresh checks that a frame follows the last by the
+// display's refreshes, so that it means the same at any rate, and that a
+// display of no known rate counts as a 60 Hz one.
+func TestFramesFollowByTheRefresh(t *testing.T) {
+	refreshes := followRefreshes
+	followRefreshes = 2
+	defer func() { followRefreshes = refreshes }()
+	for _, c := range []struct {
+		hz      float64
+		since   time.Duration
+		follows bool
+	}{
+		{60, 30 * time.Millisecond, true},
+		{60, 40 * time.Millisecond, false},
+		{120, 15 * time.Millisecond, true},
+		{120, 20 * time.Millisecond, false},
+		{0, 30 * time.Millisecond, true},
+		{0, 40 * time.Millisecond, false},
+	} {
+		r := &Renderer{}
+		r.SetRefreshRate(func() float64 { return c.hz })
+		if got := r.follows(c.since); got != c.follows {
+			t.Errorf("%v Hz, %v after the last frame: follows %v, want %v", c.hz, c.since, got, c.follows)
+		}
+	}
+	r := &Renderer{}
+	if !r.follows(30*time.Millisecond) || r.follows(40*time.Millisecond) {
+		t.Error("a renderer without a rate does not count the display as a 60 Hz one")
+	}
+}
+
+// TestAThirdDrawableAwaitsFramesFollowing checks that the layer keeps two
+// drawables through the few frames that opening a view draws in a row, so
+// that they cost no third drawable, gets a third once frames keep following,
+// and goes back to two with the idle trim.
+func TestAThirdDrawableAwaitsFramesFollowing(t *testing.T) {
+	r := layerRenderer(t)
+	refreshes := followRefreshes
+	followRefreshes = 2
+	defer func() { followRefreshes = refreshes }()
+	// A refresh a second: however long a frame takes here, the next follows
+	// it.
+	r.SetRefreshRate(func() float64 { return 1 })
+	count := func() (n id) {
+		pool(func() { n = sendMain(r.layer, "maximumDrawableCount") })
+		return n
+	}
+	frame := func(i int) {
+		t.Helper()
+		render(t, r, squareAt(i), nil)
+		r.pre.wait()
+	}
+	frame(0)
+	for i := 1; i < framesForThird; i++ {
+		frame(i)
+		if n := count(); n != 2 {
+			t.Fatalf("after %d frames following, the layer allows %d drawables, want 2", i, n)
+		}
+	}
+	frame(framesForThird)
+	if n := count(); n != 3 {
+		t.Fatalf("after %d frames following, the layer allows %d drawables, want 3", framesForThird, n)
+	}
+	r.trim()
+	if n := count(); n != 2 {
+		t.Fatalf("after the idle trim, the layer allows %d drawables, want 2", n)
+	}
+	r.lastRender = time.Now().Add(-time.Minute)
+	frame(0)
+	frame(1)
+	if n := count(); n != 2 {
+		t.Fatalf("the count of frames following outlived the trim: the layer allows %d drawables, want 2", n)
 	}
 }

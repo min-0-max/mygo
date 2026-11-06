@@ -33,9 +33,6 @@ func (e *node) Cache() *node { e.cache = keptLayer{}; return e }
 // layerKeeper renders an element's layer only when what it paints
 // changed (Cache): the methods are linked into apps that use it alone.
 type layerKeeper interface {
-	// area returns the area of e's layer, in its own space: its box and
-	// what it and those inside it paint around it.
-	area(e *node) Rect
 	// draw draws cv as Canvas.drawPart does, unless what fn paints is what
 	// it painted last.
 	draw(cv *Canvas, p *Painter, scale float32, w, h int, fn func(cp *Painter))
@@ -43,6 +40,9 @@ type layerKeeper interface {
 
 type keptLayer struct{}
 
+// area returns the area of e's layer, in its own space: its box and what
+// it and those inside it paint around it. A layer kept or drawn anew is
+// made of this area alike (paintEffect, paintGroup).
 func (keptLayer) area(e *node) Rect {
 	box := Rect{e.x, e.y, e.w, e.h}
 	grown := func(r Rect, m float32) Rect { return Rect{r.X - m, r.Y - m, r.W + 2*m, r.H + 2*m} }

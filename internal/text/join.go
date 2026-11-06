@@ -89,7 +89,7 @@ func (s *System) GlyphRun(f *Font, ids []uint32, xs []float32, scale float32, sh
 	}
 	rk := runKey{f, key.String()}
 	if e, ok := s.runs[rk]; ok {
-		e.used = s.frame
+		s.touch(e)
 		return e.GlyphImage
 	}
 	if _, out := s.outRuns[rk]; out {
@@ -115,7 +115,9 @@ func (s *System) GlyphRun(f *Font, ids []uint32, xs []float32, scale float32, sh
 	}
 	g := GlyphImage{OK: true, Subpixel: b.subpixel, Thin: f.thin,
 		X: uint16(x), Y: uint16(y), W: uint16(b.w), H: uint16(b.h), Left: float32(b.left), Top: float32(b.top)}
-	s.runs[rk] = &atlasEntry{g, s.frame}
+	e := &atlasEntry{GlyphImage: g, used: s.frame - 1}
+	s.touch(e)
+	s.runs[rk] = e
 	return g
 }
 

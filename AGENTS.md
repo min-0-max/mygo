@@ -32,6 +32,12 @@ wire protocol, TypeScript generation, and the checklist for adding features.
 - **Threading.** Backend methods and handler callbacks run on the main thread.
   Public methods must be safe from any goroutine (`onMain`/`postMain`/`await`
   in `loop.go`). Never block the main thread waiting on work that needs it.
+  On macOS that is where `IsMainThread` answers true, the worker of
+  `internal/darwin/mainthread` during a step among them: every native call
+  goes through `mainthread` (`Send`, `Forward`, `ByReceiver`) or runs on the
+  calling thread as its `calls.go` decides, and every method, block and C
+  callback that mygo makes enters through `Method`, `Block` or `Callback`
+  (classes through `mainthread.RegisterClass`).
 - **purego callbacks are a scarce, never-freed resource.** Create them once
   per signature at startup and route by user data, never per window or call.
 - **Apps pay only for what they use.** A feature must not grow apps that
@@ -119,7 +125,8 @@ Windows GUI tests need Windows with the WebView2 Runtime (a GitHub Actions
   is Go only too, loading.dev's indicators drawn with `ui.Painter` on
   ui's public API: keep them as loading-dev draws them in a browser.
   The sfsymbols plugin is Go only too: on macOS it rasterizes the system's
-  SF Symbols through purego, and elsewhere it has none (`Image` says so).
+  SF Symbols through purego, in one step of `mainthread` as the Threading
+  rule asks, and elsewhere it has none (`Image` says so).
   The automation plugin is Go only too, gated with the inspector
   (`mygo_noinspector`): a socket (`MYGO_AUTOMATION`) through which
   other processes drive the app, reaching native UI only through

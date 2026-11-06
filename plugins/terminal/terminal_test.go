@@ -1403,6 +1403,96 @@ func TestCJKPunctuationKeepsItsPlace(t *testing.T) {
 	}
 }
 
+// TestWideCharacterKeepsItsFont checks that a wide character is the same
+// glyph at the same place in its cells whatever is before it and whatever
+// its color. The system's fallback picks a font for what it lacks by the
+// text around it, so a color that splits a run gave the characters after it
+// another font, of another width. The glyph is compared whole: its font,
+// its id and its advance.
+func TestWideCharacterKeepsItsFont(t *testing.T) {
+	loadLib(t)
+	colors := strings.NewReplacer("\x1b[31m", "", "\x1b[32m", "")
+	for _, size := range []float32{12, 13} {
+		seen := map[rune]ui.Glyph{}
+		for _, in := range []string{"清理。地方", "清理。\x1b[31m地方", "地方", "地", "地方清理。", "\x1b[31m地\x1b[32m方", "日本語。地", "日本語。\x1b[31m地"} {
+			term, err := New(Options{Conn: newPipe(), Font: Font{Size: size}, NoBlink: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tt := ui.NewTester(func(c *ui.Context) { View(c, term).Fill() }, 400, 120)
+			term.Feed([]byte(in))
+			tt.Frame()
+			term.mu.Lock()
+			v := term.v
+			cw := float32(v.cellW) / v.scale
+			var got []ui.Glyph
+			line := v.lines[0]
+			for _, r := range line.runs {
+				for i, g := range r.glyphs {
+					if slices.Contains(line.wide, r.cols[i]) {
+						g.X -= float32(r.cols[i]) * cw
+						g.Cluster = 0
+						got = append(got, g)
+					}
+				}
+			}
+			term.mu.Unlock()
+			term.Close()
+			chars := []rune(colors.Replace(in))
+			if len(got) != len(chars) {
+				t.Errorf("size %v, %q: %d wide glyphs, want %d", size, in, len(got), len(chars))
+				continue
+			}
+			for i, r := range chars {
+				p, ok := seen[r]
+				if !ok {
+					seen[r] = got[i]
+				} else if g := got[i]; math.Abs(float64(g.X-p.X)) > 0.01 {
+					t.Errorf("size %v, %q: %c at offset %v, elsewhere %v", size, in, r, g.X, p.X)
+				} else if g.X = p.X; g != p {
+					t.Errorf("size %v, %q: %c is %+v, elsewhere %+v", size, in, r, g, p)
+				}
+			}
+		}
+	}
+}
+
+// TestCJKPunctuationStaysWhole checks what turning kerning off is for:
+// Core Text trims the CJK punctuation of the system's monospaced font's
+// fallback, to half width where a run ends, where the text is Chinese or
+// Japanese. A terminal's text has no language, so the language here
+// stands for a system whose fallback for these is such a font. Without
+// one or in Korean, on macOS 27, the advances are the same with kerning
+// on or off, and the other tests here pass either way.
+func TestCJKPunctuationStaysWhole(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Core Text's kerning")
+	}
+	loadLib(t)
+	term, err := New(Options{Conn: newPipe(), Font: Font{Size: 12}, NoBlink: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer term.Close()
+	tt := ui.NewTester(func(c *ui.Context) { View(c, term).Fill() }, 400, 120)
+	tt.Frame()
+	term.mu.Lock()
+	f := term.v.fonts[0]
+	term.mu.Unlock()
+	for _, lang := range []string{"zh-Hans", "zh-Hant", "ja"} {
+		f.Lang = lang
+		for _, in := range []string{"。", "清理。", "清理。地方", "清理。。地", "日本語。", "「地方」"} {
+			g := ui.Shape(in, f)
+			for _, o := range g {
+				if math.Abs(float64(o.Advance-g[0].Advance)) > 0.01 {
+					t.Errorf("%s, %q: advances %+v", lang, in, g)
+					break
+				}
+			}
+		}
+	}
+}
+
 func TestWindowsShell(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("cmd.exe")

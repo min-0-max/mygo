@@ -21,14 +21,15 @@ const softHyphen = '\u00AD'
 // (Span.PaddingX), which engines know nothing of: narrower by it.
 // What follows the indented line, or a line that broke elsewhere then, is
 // broken anew: a paragraph without either is shaped once. hy is nil for a
-// text without soft hyphens.
-func (s *System) breakLines(text []rune, style Style, spans []Span, width, indent float32, rtl, wholeWords bool, hy *hyphens) []shapedLine {
+// text without soft hyphens. keep is where KeepAll lets lines break
+// (keepAllBreaks), which engines know nothing of either, and nil without it.
+func (s *System) breakLines(text []rune, style Style, spans []Span, width, indent float32, rtl, wholeWords bool, keep []bool, hy *hyphens) []shapedLine {
 	e := s.engine()
 	if width <= 0 {
 		return e.shape(text, style, spans, 0, rtl, wholeWords)
 	}
 	pads := padded(spans)
-	if indent <= 0 && hy == nil && !pads {
+	if indent <= 0 && hy == nil && !pads && keep == nil {
 		return e.shape(text, style, spans, width, rtl, wholeWords)
 	}
 	var out []shapedLine
@@ -37,7 +38,16 @@ func (s *System) breakLines(text []rune, style Style, spans []Span, width, inden
 		if first {
 			limit = max(width-indent, 1)
 		}
-		lines := e.shape(text[pos:], style, spansIn(spans, pos, len(text)), limit, rtl, wholeWords)
+		var lines []shapedLine
+		if keep == nil {
+			lines = e.shape(text[pos:], style, spansIn(spans, pos, len(text)), limit, rtl, wholeWords)
+		} else {
+			ahead := 16
+			if len(out) > 0 {
+				ahead = 2*(out[len(out)-1].end-out[len(out)-1].start) + 8
+			}
+			lines = shapeAhead(e, text[pos:], style, spansIn(spans, pos, len(text)), limit, rtl, wholeWords, ahead)
+		}
 		if len(lines) == 0 {
 			break
 		}
@@ -47,6 +57,16 @@ func (s *System) breakLines(text []rune, style Style, spans []Span, width, inden
 		}
 		offsetLines(lines, pos)
 		for _, l := range lines {
+			if keep != nil {
+				if end := keptEnd(keep, l, wholeWords); end != l.end {
+					// The line ends elsewhere, and what follows breaks anew.
+					if kept := e.shape(text[l.start:end], style, spansIn(spans, l.start, end), 0, rtl, wholeWords); len(kept) > 0 {
+						offsetLines(kept[:1], l.start)
+						out = append(out, kept[0])
+						break
+					}
+				}
+			}
 			if c := softBreak(l, text); c >= 0 && hy != nil && hy.lineWidth(l, text, c) > limit+1e-3 {
 				narrow := e.shape(text[l.start:l.end], style, spansIn(spans, l.start, l.end), max(limit-hy.width(c), 1), rtl, wholeWords)
 				if len(narrow) > 0 && narrow[0].end != l.end && hy.opportunity(text, l.start+narrow[0].end) {
@@ -77,6 +97,59 @@ func (s *System) breakLines(text []rune, style Style, spans []Span, width, inden
 		pos = end
 	}
 	return out
+}
+
+// shapeAhead returns the first lines of text as engine e breaks them, shaping
+// no more of it than they need, so that a long text that breaks anew after
+// each line takes as long as its lines. ahead is how many runes to try first.
+// The last line of a part of the text may end only because the part does,
+// and is not one of them.
+func shapeAhead(e engine, text []rune, style Style, spans []Span, width float32, rtl, wholeWords bool, ahead int) []shapedLine {
+	for n := ahead; n < len(text); n *= 2 {
+		if lines := e.shape(text[:n], style, spansIn(spans, 0, n), width, rtl, wholeWords); len(lines) > 1 {
+			return lines[:len(lines)-1]
+		}
+	}
+	return e.shape(text, style, spans, width, rtl, wholeWords)
+}
+
+// keepAllBreaks reports, for each rune of text and for its end, whether a
+// line may break before it under KeepAll: where Unicode's algorithm lets
+// it, but between two letters, digits or their marks.
+func keepAllBreaks(text []rune) []bool {
+	var seg segmenter.Segmenter
+	breaks := lineBreaks(&seg, nil, text)
+	inWord := func(r rune) bool { return unicode.In(r, unicode.L, unicode.N, unicode.M) }
+	for i := 1; i < len(text); i++ {
+		if breaks[i] && inWord(text[i-1]) && inWord(text[i]) {
+			breaks[i] = false
+		}
+	}
+	return breaks
+}
+
+// keptEnd returns where line l of an engine ends under KeepAll: where the
+// engine ends it, when keep lets it, or at the last break of the line that
+// keep lets. A line with none is a part of a word wider than the line, which
+// breaks where the engine breaks it, or, with wholeWords, overflows to the
+// end of the word.
+func keptEnd(keep []bool, l shapedLine, wholeWords bool) int {
+	if keep[l.end] {
+		return l.end
+	}
+	for i := l.end - 1; i > l.start; i-- {
+		if keep[i] {
+			return i
+		}
+	}
+	if !wholeWords {
+		return l.end
+	}
+	end := l.end
+	for !keep[end] {
+		end++
+	}
+	return end
 }
 
 // padded reports whether a span pads its pieces of lines (Span.PaddingX).

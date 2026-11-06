@@ -103,6 +103,10 @@ type AccessNode struct {
 	// (Surface.NewWebView): assistive technology finds the page's elements
 	// inside it, and it has no children of its own.
 	WebView WebView
+	// View is the view a native view element names, if the node stands
+	// for one, and KeyView its key view: assistive technology finds what
+	// is in the view inside the node.
+	View, KeyView uintptr
 	// TextRuns are the formats of the runes of a text field's Value, as a
 	// rich text editor's: runs in order, from rune Start to End, that
 	// screen readers read as bold, italic, links and headings. Runes no

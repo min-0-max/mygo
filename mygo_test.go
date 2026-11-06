@@ -35,6 +35,14 @@ import (
 
 var fb *fake.Backend
 
+// workerTestMain, set on platforms with the worker of the main thread, is
+// the helper process of the test of the worker.
+var workerTestMain func()
+
+// signalTestMain is the helper process of the signal tests, on the
+// systems with signals: signalApp.
+var signalTestMain func()
+
 // TestMain runs the application on the main goroutine with the fake
 // backend, like a real program, and the tests on another goroutine.
 func TestMain(m *testing.M) {
@@ -56,6 +64,9 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
+	if os.Getenv("MYGO_TEST_WORKER") == "1" && workerTestMain != nil {
+		workerTestMain()
+	}
 	fb = fake.New()
 	backendOnce.Do(func() { theBackend = fb })
 	if os.Getenv("MYGO_TEST_STUCK_QUIT") == "1" {
@@ -68,6 +79,12 @@ func TestMain(m *testing.M) {
 	stopGrace = 0
 	if os.Getenv("MYGO_TEST_BEFORE_RUN") == "1" {
 		beforeRun()
+	}
+	if os.Getenv("MYGO_TEST_OWNED_APP") == "1" {
+		ownedApp()
+	}
+	if os.Getenv("MYGO_TEST_SIGNAL") != "" && signalTestMain != nil {
+		signalTestMain()
 	}
 	App.SetName("MyGoTest")
 	// Keep running when tests close their windows.
@@ -365,6 +382,35 @@ func TestWindowStateAndEvents(t *testing.T) {
 	want := "maximize,unmaximize,minimize,restore,resize,focus"
 	if got := strings.Join(events, ","); got != want {
 		t.Errorf("events = %s, want %s", got, want)
+	}
+}
+
+// The occlusion that the backend reports reaches the listeners of the window.
+func TestOnOcclusionChange(t *testing.T) {
+	w, fw := testWindow(t, WindowOptions{})
+	var got []bool
+	off := w.OnOcclusionChange(func(occluded bool) { got = append(got, occluded) })
+	onMain(func() {
+		fw.H.OcclusionChanged(true)
+		fw.H.OcclusionChanged(false)
+	})
+	off()
+	onMain(func() { fw.H.OcclusionChanged(true) })
+	if !slices.Equal(got, []bool{true, false}) {
+		t.Errorf("the listener heard %v, want [true false] and nothing after it was removed", got)
+	}
+}
+
+// The scale that the backend reports reaches the listeners of the window.
+func TestOnScaleChange(t *testing.T) {
+	w, fw := testWindow(t, WindowOptions{})
+	var got []float64
+	off := w.OnScaleChange(func(scale float64) { got = append(got, scale) })
+	onMain(func() { fw.H.ScaleChanged(2) })
+	off()
+	onMain(func() { fw.H.ScaleChanged(1) })
+	if !slices.Equal(got, []float64{2}) {
+		t.Errorf("the listener heard %v, want [2] and nothing after it was removed", got)
 	}
 }
 

@@ -122,3 +122,44 @@ func TestAtlasRepackAndGrow(t *testing.T) {
 		t.Error("no room after growing")
 	}
 }
+
+// TestAtlasRepackToASmallerSize moves what stays into a smaller atlas, whose
+// memory is smaller, and changes nothing when it does not fit.
+func TestAtlasRepackToASmallerSize(t *testing.T) {
+	a := NewAtlas(1, 512, 512)
+	x, y, ok := a.Alloc(40, 30)
+	if !ok {
+		t.Fatal("full")
+	}
+	pix := make([]byte, 40*30)
+	for i := range pix {
+		pix[i] = byte(1 + i%250)
+	}
+	a.Put(x, y, 40, 30, pix, 40)
+	gen := a.Generation()
+	r := image.Rect(x, y, x+40, y+30)
+
+	if pos, ok := a.RepackTo(32, 32, []image.Rectangle{r}); ok || pos != nil {
+		t.Fatalf("a 40 pixel bitmap fit 32 pixels: %v", pos)
+	}
+	if a.W != 512 || a.Generation() != gen {
+		t.Fatalf("a repack that failed left %d pixels, generation %d", a.W, a.Generation())
+	}
+
+	pos, ok := a.RepackTo(64, 64, []image.Rectangle{r})
+	if !ok {
+		t.Fatal("RepackTo refused")
+	}
+	if a.W != 64 || a.H != 64 || len(a.Pix) != 64*64 || a.Generation() == gen {
+		t.Fatalf("after RepackTo: %d×%d, %d bytes, generation %d", a.W, a.H, len(a.Pix), a.Generation())
+	}
+	for j := range 30 {
+		got := a.Pix[(pos[0].Y+j)*a.W+pos[0].X:][:40]
+		if string(got) != string(pix[j*40:][:40]) {
+			t.Fatalf("row %d of the bitmap moved wrong", j)
+		}
+	}
+	if x, y, ok := a.AllocTransient(10, 10); !ok || x != 0 || y+12 != 64 {
+		t.Errorf("the transient zone starts at %d,%d %v, not at the new bottom", x, y, ok)
+	}
+}

@@ -63,7 +63,7 @@ const layoutFlags = flagScrollX | flagScrollY | flagClipX | flagClipY | flagAbso
 
 // textLayoutSet are the text styles that lay text out (textParams) and
 // size icons, which elements inherit.
-const textLayoutSet = setFamily | setSize | setWeight | setItalic | setLineHeight | setAlign | setSpacing | setFeatures | setLang | setTabSize
+const textLayoutSet = setFamily | setSize | setWeight | setItalic | setLineHeight | setAlign | setSpacing | setFeatures | setLang | setTabSize | setKeepAll
 
 // layoutRecord is what an element's state keeps of its last layout.
 type layoutRecord struct {
@@ -216,6 +216,7 @@ type textLayout struct {
 	family, features, lang    string
 	size, lineHeight, spacing float32
 	tabSize                   float32
+	keepAll                   bool
 	weight                    int
 	italic, fixedLine         bool
 	align                     Align
@@ -239,7 +240,8 @@ func (l *textLayout) same(t *textStyle) bool {
 		(set&setSpacing == 0 || l.spacing == t.spacing) &&
 		(set&setFeatures == 0 || l.features == t.features) &&
 		(set&setLang == 0 || l.lang == t.lang) &&
-		(set&setTabSize == 0 || l.tabSize == t.tabSize)
+		(set&setTabSize == 0 || l.tabSize == t.tabSize) &&
+		(set&setKeepAll == 0 || l.keepAll == t.keepAll)
 }
 
 // layoutOfText returns what of t lays text out.
@@ -278,6 +280,9 @@ func layoutOfText(t *textStyle) textLayout {
 	}
 	if set&setTabSize != 0 {
 		l.tabSize = t.tabSize
+	}
+	if set&setKeepAll != 0 {
+		l.keepAll = t.keepAll
 	}
 	return l
 }
