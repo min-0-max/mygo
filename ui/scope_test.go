@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/egoist/mygo/internal/platform"
@@ -319,5 +320,31 @@ func TestEscapeGoesToTheFocusedElementFirst(t *testing.T) {
 	tt.Key(0, KeyEscape)
 	if !open || escapes != 1 {
 		t.Errorf("Escape in the terminal: dialog open %v, the terminal took %d", open, escapes)
+	}
+}
+
+// TestPlacingPopoversTakesNoMemory places popovers after their anchors,
+// one in another and one whose anchor is in no order, as every frame does
+// with a popover mounted, closed or not. Frames after the first take no
+// memory.
+func TestPlacingPopoversTakesNoMemory(t *testing.T) {
+	order := []uint64{10, 20, 30, 40, 50, 60}
+	scopes := []focusScope{{}, {}, {}, {anchor: 10}, {anchor: 40}, {anchor: 99}}
+	rt := &engine{}
+	place := func() {
+		rt.focusOrder = append(rt.focusOrder[:0], order...)
+		rt.focusScopes = append(rt.focusScopes[:0], scopes...)
+		rt.placePopovers(rt.focusOrder, rt.focusScopes)
+	}
+	place()
+	if want := []uint64{10, 40, 50, 20, 30, 60}; !slices.Equal(rt.focusOrder, want) {
+		t.Fatalf("the order is %v, want %v", rt.focusOrder, want)
+	}
+	if rt.focusScopes[1].anchor != 10 || rt.focusScopes[2].anchor != 40 || rt.focusScopes[5].anchor != 99 {
+		t.Fatalf("the scopes did not move with their elements: %v", rt.focusScopes)
+	}
+	place()
+	if n := testing.AllocsPerRun(100, place); n != 0 {
+		t.Errorf("placing popovers takes %v allocations a frame", n)
 	}
 }

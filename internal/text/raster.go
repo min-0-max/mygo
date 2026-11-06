@@ -473,11 +473,16 @@ func (s *System) Origin(f *Font, scale, x float32, opaque bool) float32 {
 // the pixel x is in.
 func (s *System) place(f *Font, scale float32, subpixel bool, x float32) (q, n int, carry float32) {
 	pk := placeKey{f, uint32(scale*256 + 0.5), subpixel}
-	pl, ok := s.places[pk]
-	if !ok {
-		pl.n, pl.round = s.engine().positions(f, scale, subpixel)
-		pl.n = max(pl.n, 1)
-		s.places[pk] = pl
+	// The glyphs of a text come one after the other in its font.
+	pl := s.lastPlace
+	if pk != s.lastPlaceKey {
+		var ok bool
+		if pl, ok = s.places[pk]; !ok {
+			pl.n, pl.round = s.engine().positions(f, scale, subpixel)
+			pl.n = max(pl.n, 1)
+			s.places[pk] = pl
+		}
+		s.lastPlaceKey, s.lastPlace = pk, pl
 	}
 	frac := float64(x) - math.Floor(float64(x))
 	if pl.round {
