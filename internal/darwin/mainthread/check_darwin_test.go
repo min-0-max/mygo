@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"unsafe"
@@ -257,7 +258,9 @@ func checkHelper() int {
 	done := make(chan struct{})
 	go func() {
 		rec, _, _ := prepareForTest(pid)
-		run(checkedOnMain(rec))
+		checked := checkedOnMain(rec)
+		run(checked)
+		checkForwarded(checked)
 		close(done)
 	}()
 	<-done
@@ -266,4 +269,41 @@ func checkHelper() int {
 
 func prepareForTest(fn uintptr) (*record, []any, unsafe.Pointer) {
 	return prepare(fn, reflect.TypeFor[int32](), nil)
+}
+
+// The checker must make its identity decision without entering a Go callback
+// on the dispatching thread. Exercise the native gate directly, without an
+// event loop or JavaScriptCore: it returns zero after a matching call, or the
+// actual thread identity without executing the target after a mismatch.
+func TestCheckerNativeDispatchGate(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := loadNative(); err != nil {
+		t.Fatal(err)
+	}
+	pid, err := purego.Dlsym(purego.RTLD_DEFAULT, "getpid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, _, _ := prepareForTest(pid)
+	tp := threadPointer()
+	actual, _, _ := purego.SyscallN(checkedCallRecordAddress(), uintptr(unsafe.Pointer(rec)), tp)
+	if actual != 0 || int32(rec.r[0]) != int32(os.Getpid()) {
+		t.Fatalf("matching native dispatch: identity=%#x result=%d", actual, rec.r[0])
+	}
+	const untouched = 0x1234
+	rec.r[0] = untouched
+	actual, _, _ = purego.SyscallN(checkedCallRecordAddress(), uintptr(unsafe.Pointer(rec)), ^tp)
+	if actual != tp || rec.r[0] != untouched {
+		t.Fatalf("mismatching native dispatch must refuse the target: identity=%#x want=%#x result=%#x", actual, tp, rec.r[0])
+	}
+	// Keep the variadic argument backing outside the measured dispatch:
+	// allocating the test driver's arguments is not native gate work.
+	args := []uintptr{uintptr(unsafe.Pointer(rec)), tp}
+	if n := testing.AllocsPerRun(100, func() {
+		purego.SyscallN(checkedCallRecordAddress(), args...)
+	}); n != 0 {
+		t.Fatalf("native identity dispatch allocated %g times", n)
+	}
+	runtime.KeepAlive(rec)
 }
