@@ -1,3 +1,5 @@
+//go:build !js
+
 package mygo
 
 import (
@@ -7,6 +9,9 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
+// This window integration owner uses the desktop fake backend and its TestMain
+// (contentWindow). Portable presentation behavior is owned by ui's untagged
+// after_present_test.go, including builds for browsers.
 // TestAfterPresent checks that the notice of a window showing Content
 // runs once on the main thread, after the frame showing the Content as it
 // stood presented, or as the window is destroyed first, and that a window
