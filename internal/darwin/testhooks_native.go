@@ -93,6 +93,21 @@ func TestSetHidden(view uintptr, hidden bool) {
 	send(id(view), "setHidden:", on)
 }
 
+// TestSetHiddenInTransaction commits only the child's visibility change;
+// it does not invalidate or draw the window's native UI surface.
+func TestSetHiddenInTransaction(view uintptr, hidden bool) {
+	tx := class("CATransaction")
+	send(tx, "begin")
+	send(tx, "setDisableActions:", 1)
+	TestSetHidden(view, hidden)
+	send(tx, "commit")
+}
+
+// TestWindowBackingScale reports the real window's point-to-pixel scale.
+func TestWindowBackingScale(handle uintptr) float64 {
+	return msgFloat(theBackend.byNSWindow[id(handle)].win, sel("backingScaleFactor"))
+}
+
 // TestContentOrder returns the subviews of a window's content view, from
 // the back: the surface's view as the view TestSurfaceView returns.
 func TestContentOrder(handle uintptr) []uintptr {

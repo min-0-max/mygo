@@ -3,7 +3,10 @@
 package e2e
 
 import (
+	"bytes"
 	"fmt"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,10 +17,153 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/internal/darwin"
 	"github.com/egoist/mygo/internal/gpu/metal"
+	"github.com/egoist/mygo/internal/wait"
 	"github.com/egoist/mygo/ui"
 )
 
 const nativePage = `<!doctype html><body style="margin:0;background:#00f"><input id=a></body>`
+
+// TestNativeViewRetainsChromeAfterTrim observes committed window contents,
+// not a newly acquired drawable: a child-only transaction must retain the
+// root's last frame while its idle Metal layer has given back its drawables.
+func TestNativeViewRetainsChromeAfterTrim(t *testing.T) {
+	r := newNativeRig(t, false)
+	var presents atomic.Int32
+	previous := metal.TestPresenting
+	metal.TestPresenting = func(layer, drawable uintptr) {
+		presents.Add(1)
+		if previous != nil {
+			previous(layer, drawable)
+		}
+	}
+	t.Cleanup(func() { metal.TestPresenting = previous })
+	shot := func() *image.RGBA {
+		t.Helper()
+		var img *image.RGBA
+		var ok bool
+		onMain(func() { img, ok = darwin.TestWindowPixels(r.handle) })
+		if !ok {
+			t.Fatal("committed WindowServer pixels unavailable; retained chrome was not verified")
+		}
+		return img
+	}
+	// The fixture declares a 20-point red root band and a blue WK child
+	// below it. Stay inside both regions, away from borders and the input.
+	chrome := image.Rect(4, 4, 396, 16)
+	child := image.Pt(100, 100)
+	var before *image.RGBA
+	// Preserve the actual committed image and native geometry on a failed
+	// preparation, before cleanup destroys the window. These are observations,
+	// not alternate expected colors or a redraw of the view hierarchy.
+	var first *image.RGBA
+	diagnose := func(label string, img *image.RGBA) {
+		t.Helper()
+		f, err := os.CreateTemp("", "mygo-retained-chrome-"+label+"-*.png")
+		if err != nil {
+			t.Errorf("retain %s WindowServer image: %v", label, err)
+			return
+		}
+		encodeErr := png.Encode(f, img)
+		closeErr := f.Close()
+		if encodeErr != nil || closeErr != nil {
+			t.Errorf("retain %s WindowServer image: encode=%v close=%v", label, encodeErr, closeErr)
+		}
+		var rootFrame, webFrame, layerFrame [4]float64
+		var scale float64
+		onMain(func() {
+			rootFrame[0], rootFrame[1], rootFrame[2], rootFrame[3] = darwin.TestViewFrame(r.root)
+			webFrame[0], webFrame[1], webFrame[2], webFrame[3] = darwin.TestViewFrame(r.webHolder)
+			layerFrame[0], layerFrame[1], layerFrame[2], layerFrame[3] = darwin.TestMetalLayerFrame(r.handle)
+			scale = darwin.TestWindowBackingScale(r.handle)
+		})
+		t.Logf("%s committed PNG=%s bounds=%v window=%+v content=%+v root=%v webHolder=%v metal=%v backingScale=%v presentationCount=%d redSample=%v childSample=%v",
+			label, f.Name(), img.Bounds(), r.w.Bounds(), r.w.ContentBounds(), rootFrame, webFrame, layerFrame, scale, presents.Load(), img.RGBAAt(10, 10), img.RGBAAt(child.X, child.Y))
+	}
+	t.Cleanup(func() {
+		if t.Failed() && before != nil {
+			diagnose("last", before)
+		}
+	})
+	// AfterPresent observes the root frame request, not WindowServer or
+	// WebKit's independent compositor. There is no committed-window-pixels
+	// callback on this test interface, so only preparation polls pixels:
+	// every 20ms, ending at the first red/blue sample or at two seconds.
+	// Subsequent retention comparisons remain byte-exact against that sample.
+	type result struct {
+		p   mygo.Presentation
+		err error
+	}
+	presented := make(chan result, 1)
+	if err := r.w.AfterPresent(func(p mygo.Presentation, err error) { presented <- result{p, err} }); err != nil {
+		t.Fatal(err)
+	}
+	resultOfFrame := wait.For(t, "the preparation frame's presentation result", presented)
+	if resultOfFrame.err != nil || (resultOfFrame.p != mygo.Presented && resultOfFrame.p != mygo.PresentNoDamage) {
+		t.Fatalf("preparation frame: %v, %v", resultOfFrame.p, resultOfFrame.err)
+	}
+	prepared := func() bool {
+		before = shot()
+		if first == nil {
+			first = before
+			diagnose("initial", first)
+		}
+		if !chrome.In(before.Bounds()) || !child.In(before.Bounds()) {
+			t.Fatalf("unexpected native fixture bounds: %v", before.Bounds())
+		}
+		red, blue := before.RGBAAt(10, 10), before.RGBAAt(child.X, child.Y)
+		return red.A == 255 && red.R > red.G && red.R > red.B && blue.A == 255 && blue.B > blue.R && blue.B > blue.G
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for !prepared() {
+		if remaining := time.Until(deadline); remaining <= 0 {
+			t.Fatal("preparation lacks opaque red root/blue child after presentation; inspect retained PNG and geometry before testing trim")
+		} else {
+			time.Sleep(min(20*time.Millisecond, remaining))
+		}
+	}
+	eventually(t, "the root Metal drawable storage trimmed", func() bool {
+		var trimmed, ok bool
+		onMain(func() { trimmed, ok = darwin.TestDrawablesTrimmed(r.handle) })
+		if !ok {
+			t.Fatal("window has no Metal drawable storage; retained chrome was not verified")
+		}
+		return trimmed
+	})
+	count := presents.Load()
+	check := func(img *image.RGBA) {
+		t.Helper()
+		if got := presents.Load(); got != count {
+			t.Fatalf("root presented during the retained-content observation: %d -> %d", count, got)
+		}
+		if img.Bounds() != before.Bounds() {
+			t.Fatalf("window bounds changed: %v -> %v", before.Bounds(), img.Bounds())
+		}
+		for y := chrome.Min.Y; y < chrome.Max.Y; y++ {
+			start, end := before.PixOffset(chrome.Min.X, y), before.PixOffset(chrome.Max.X, y)
+			if !bytes.Equal(before.Pix[start:end], img.Pix[start:end]) {
+				t.Fatalf("retained root chrome changed at row %d without a root presentation", y)
+			}
+		}
+		var trimmed, ok bool
+		onMain(func() { trimmed, ok = darwin.TestDrawablesTrimmed(r.handle) })
+		if !ok || !trimmed {
+			t.Fatal("root did not remain drawable-trimmed during child-only transaction")
+		}
+	}
+	check(shot())
+	onMain(func() { darwin.TestSetHiddenInTransaction(r.web, true) })
+	eventually(t, "the child-only transaction committed without losing root chrome", func() bool {
+		img := shot()
+		check(img)
+		return img.RGBAAt(child.X, child.Y) != before.RGBAAt(child.X, child.Y)
+	})
+	onMain(func() { darwin.TestSetHiddenInTransaction(r.web, false) })
+	eventually(t, "the child restored its exact committed pixel while root stayed trimmed", func() bool {
+		img := shot()
+		check(img)
+		return img.RGBAAt(child.X, child.Y) == before.RGBAAt(child.X, child.Y)
+	})
+}
 
 // nativeRig is a window of native UI with a native view, in which a holder
 // holds a web view and another a view showing an IOSurface, each named by
