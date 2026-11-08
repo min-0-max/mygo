@@ -91,6 +91,19 @@ its drawn size at the top left of the content, instead of scaling it to
 the new bounds. What was asked for meanwhile draws as one frame after the
 release. Holds do not nest: the first `ReleaseFrames` ends them.
 
+## An open transaction
+
+An application that opens a Core Animation transaction on the main thread
+(`[CATransaction begin]`) and keeps it open across passes of the run loop,
+as while it lays out native views, tells the window with
+`Window.TransactionOpened`, and with `Window.TransactionCommitted` on the
+main thread right after the commit. A frame that presents with the
+transaction meanwhile keeps its drawable until the commit, so a frame that
+would find no other drawable does not wait for one on the main thread,
+which would keep the commit from coming until the system gives up after a
+second: it is built at once and draws, once, after the commit. Without an
+open transaction, frames take their drawables as before.
+
 ## Pointer and keyboard
 
 The view takes the pointer where its element shows, nothing painted over

@@ -477,11 +477,17 @@ type Renderer struct {
 	pre         presenter
 	pending     pendingFrame
 	// post runs a function on the main thread (SetPost), fetched has the
-	// presenter's thread draw pending through it, and wake is what Ready
-	// was given while a frame was pending.
+	// presenter's thread draw pending through it (finish), and wake is what
+	// Ready was given while a frame was pending.
 	post    func(func())
 	fetched func()
+	finish  func()
 	wake    func()
+	// transaction tells that the application keeps a transaction open
+	// (SetTransaction), and bound counts the drawables that frames
+	// presented with it meanwhile (held, present.go).
+	transaction bool
+	bound       int
 
 	mask   texture
 	color  texture
@@ -1799,11 +1805,19 @@ func (r *Renderer) render(s *scene.Scene, done func(platform.Presentation, error
 		scale /= float64(s.Zoom)
 	}
 	changes := r.layerChanges(s, scale)
+	// carried tells that this frame shows what a frame dropped for it would
+	// have, which presented with the transaction.
+	carried := false
 	if r.pending.cb != 0 {
 		// A frame not paced by the display, as a resize's, draws after
 		// the one waiting for its drawable, which fetches none for it
-		// when it takes its own.
-		if err := r.finishPending(!changes && !s.Transact); err != nil {
+		// when it takes its own. While an open transaction holds the
+		// drawables, the one waiting goes, and this frame, which shows
+		// what it would have, waits in its place.
+		if r.held() {
+			carried = r.pending.sync
+			r.dropPending()
+		} else if err := r.finishPending(!changes && !s.Transact); err != nil {
 			return err
 		}
 	}
@@ -1821,7 +1835,7 @@ func (r *Renderer) render(s *scene.Scene, done func(platform.Presentation, error
 	// presents with the Core Animation transaction, so that they show
 	// together, as during a live resize. Others present as soon as the
 	// GPU has them, sparing a commit of the transaction for each.
-	sync := changed || s.Transact
+	sync := changed || s.Transact || carried
 	if sync {
 		// A drawable fetched before the layer changed, or to present
 		// on its own, is not this frame's.
@@ -1846,18 +1860,17 @@ func (r *Renderer) render(s *scene.Scene, done func(platform.Presentation, error
 		// The next drawable is being fetched: the frame is built now and
 		// drawn into it once the presenter has it.
 		r.facts.Outcome = gpu.FrameStashed
-		return r.stash(s, damage, known, done, again)
+		return r.stash(s, damage, known, sync, done, again)
+	}
+	if r.held() {
+		// No drawable can come before the open transaction commits: the
+		// frame is built now and drawn then (SetTransaction).
+		r.facts.Outcome = gpu.FrameStashed
+		return r.stash(s, damage, known, sync, done, again)
 	}
 	var drawable id
 	cb, err := r.drawFrame(s, damage, known, func() id {
-		if sync != r.synced {
-			on := uintptr(0)
-			if sync {
-				on = 1
-			}
-			sendMain(r.layer, "setPresentsWithTransaction:", on)
-			r.synced = sync
-		}
+		r.presentWith(sync)
 		waited := r.reportNow()
 		if !sync {
 			drawable = r.prefetched()
@@ -1890,6 +1903,8 @@ func (r *Renderer) render(s *scene.Scene, done func(platform.Presentation, error
 		send(cb, "waitUntilScheduled")
 		r.presenting(drawable)
 		r.facts.Request = r.reportNow()
+		// The drawable stays bound to the transaction until it commits.
+		r.bind()
 		sendMain(drawable, "present")
 	} else {
 		r.facts.Outcome = gpu.FrameImmediate

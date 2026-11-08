@@ -31,7 +31,9 @@ import (
 // (its drawables' size or format, presenting with the transaction,
 // trimming), so a fetch never races those, and frames presented with the
 // transaction take their drawable themselves, as a live resize's must.
-// Waiting on a channel, the thread costs nothing while frames stop.
+// Waiting on a channel, the thread costs nothing while frames stop. While
+// an open transaction holds the drawables (held), no frame takes one: it
+// waits, built, until the transaction commits.
 type presenter struct {
 	layer id
 	fetch chan struct{}
@@ -184,6 +186,8 @@ type pendingFrame struct {
 	// drawn: it is drawn whole.
 	size  scene.Scene
 	whole bool
+	// sync tells that the frame presents with the transaction (render).
+	sync bool
 	// done and again are the frame's notice (RenderNotice).
 	done  func(platform.Presentation, error)
 	again func()
@@ -195,7 +199,7 @@ type pendingFrame struct {
 // post. Without it, frames wait for their drawable.
 func (r *Renderer) SetPost(post func(func())) {
 	r.post = post
-	finish := func() {
+	r.finish = func() {
 		pool(func() {
 			// A frame not paced may have drawn the frame pending this was
 			// posted for, and another may be pending, whose drawable is
@@ -210,7 +214,68 @@ func (r *Renderer) SetPost(post func(func())) {
 			}
 		})
 	}
-	r.fetched = func() { post(finish) }
+	r.fetched = func() { post(r.finish) }
+}
+
+// SetTransaction tells the renderer that the application opened a Core
+// Animation transaction on the main thread, which it keeps open across
+// passes of the run loop, or that it committed it, on the main thread right
+// after the commit (the window's TransactionOpened and
+// TransactionCommitted). A frame presented with the transaction meanwhile
+// binds its drawable to it until the commit (held); once it commits, the
+// frame waiting for a drawable draws.
+func (r *Renderer) SetTransaction(open bool) {
+	if open {
+		r.transaction = true
+		return
+	}
+	r.transaction, r.bound = false, 0
+	if r.layer == 0 || r.pending.cb == 0 || r.finish == nil {
+		return
+	}
+	r.finish()
+}
+
+// bind counts a drawable that a frame presents with the transaction as
+// bound to it until the commit, while the application keeps it open.
+func (r *Renderer) bind() {
+	if r.transaction {
+		r.bound++
+	}
+}
+
+// held reports whether the drawables bound to the open transaction, with
+// the one shown before them, which the display lets go only once they show,
+// are as many as the layer may have. nextDrawable on the main thread would
+// then wait for a commit that the wait itself keeps from coming, until the
+// system gives up after a second and the frame shows nothing: the frame
+// waits, built (stash), for SetTransaction, and nothing waits for a
+// drawable meanwhile. Without such a transaction nothing is held: a
+// drawable that a commit freed comes once the display lets go of it, as in
+// a live resize.
+func (r *Renderer) held() bool {
+	if r.bound == 0 || r.post == nil {
+		return false
+	}
+	allowed := 2
+	if r.third {
+		allowed = 3
+	}
+	return r.bound+1 >= allowed
+}
+
+// presentWith has the layer present with the transaction, or as soon as
+// the GPU has a frame.
+func (r *Renderer) presentWith(sync bool) {
+	if sync == r.synced {
+		return
+	}
+	on := uintptr(0)
+	if sync {
+		on = 1
+	}
+	sendMain(r.layer, "setPresentsWithTransaction:", on)
+	r.synced = sync
 }
 
 // SetRefreshRate gives the renderer rate, which returns the display's
@@ -273,9 +338,10 @@ func (r *Renderer) layerChanges(s *scene.Scene, scale float64) bool {
 }
 
 // stash builds the frame s, which changed damage since the last one, to
-// draw once its drawable comes (finishPending), then tell done, or call
-// again once dropped (dropPending).
-func (r *Renderer) stash(s *scene.Scene, damage []image.Rectangle, known bool, done func(platform.Presentation, error), again func()) error {
+// draw once its drawable comes (finishPending), presenting with the
+// transaction if sync, then tell done, or call again once dropped
+// (dropPending).
+func (r *Renderer) stash(s *scene.Scene, damage []image.Rectangle, known, sync bool, done func(platform.Presentation, error), again func()) error {
 	cb, _, err := r.prepare(s)
 	if err != nil {
 		r.forgetFrames()
@@ -283,7 +349,7 @@ func (r *Renderer) stash(s *scene.Scene, damage []image.Rectangle, known bool, d
 	}
 	damage = r.pipelineDamage(damage, known)
 	r.ages.Add(damage, !known)
-	r.pending = pendingFrame{cb: send(cb, "retain"), whole: len(s.Effects) > 0, done: done, again: again}
+	r.pending = pendingFrame{cb: send(cb, "retain"), whole: len(s.Effects) > 0, sync: sync, done: done, again: again}
 	r.pending.size.Width, r.pending.size.Height, r.pending.size.Clear = s.Width, s.Height, s.Clear
 	r.diff.Remember(s)
 	r.pipelines.Remember()
@@ -292,12 +358,20 @@ func (r *Renderer) stash(s *scene.Scene, damage []image.Rectangle, known bool, d
 
 // finishPending draws the frame pending into its drawable, waiting for it
 // when called before the presenter has it, and presents it, then has the
-// presenter fetch the next frame's drawable if prefetch.
+// presenter fetch the next frame's drawable if prefetch. It is not called
+// while an open transaction holds the drawables (held).
 func (r *Renderer) finishPending(prefetch bool) error {
 	p := r.pending
 	r.pending = pendingFrame{}
 	defer r.wakeContent()
-	drawable := r.prefetched()
+	var drawable id
+	if p.sync {
+		// A drawable fetched to present on its own is not this frame's.
+		r.pre.drain()
+	} else {
+		drawable = r.prefetched()
+	}
+	r.presentWith(p.sync)
 	if drawable == 0 {
 		drawable = frameDrawable(r.layer)
 	}
@@ -324,11 +398,19 @@ func (r *Renderer) finishPending(prefetch bool) error {
 		return err
 	}
 	r.presenting(drawable)
-	send(p.cb, "presentDrawable:", drawable)
-	byReceiver(p.cb, "commit")
-	r.committedOutside(gpu.CommitStashed)
-	if prefetch {
-		r.pre.start(r.layer)
+	if p.sync {
+		byReceiver(p.cb, "commit")
+		r.committedOutside(gpu.CommitStashed)
+		send(p.cb, "waitUntilScheduled")
+		r.bind()
+		sendMain(drawable, "present")
+	} else {
+		send(p.cb, "presentDrawable:", drawable)
+		byReceiver(p.cb, "commit")
+		r.committedOutside(gpu.CommitStashed)
+		if prefetch {
+			r.pre.start(r.layer)
+		}
 	}
 	r.track(p.cb)
 	release(&p.cb)
