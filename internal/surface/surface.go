@@ -123,6 +123,11 @@ type Conn struct {
 	// draws what was asked for meanwhile as one frame once it is not
 	// (Window.HoldFrames). The content sets it.
 	HoldFrames func(hold bool)
+	// Transaction tells that the application keeps a Core Animation
+	// transaction open on the main thread, or committed it, right after
+	// (Window.TransactionOpened, TransactionCommitted). The content sets
+	// it.
+	Transaction func(open bool)
 
 	// Event receives the surface's events, and Focus and Blur of the
 	// window. It reports whether the content takes dragged files, as

@@ -110,6 +110,28 @@ func (w *Window) HoldFrames() { w.holdFrames(true) }
 // ReleaseFrames ends what HoldFrames began.
 func (w *Window) ReleaseFrames() { w.holdFrames(false) }
 
+// TransactionOpened tells the window that the application opened a Core
+// Animation transaction on the main thread ([CATransaction begin]) that it
+// keeps open across passes of the run loop, as while it lays out native
+// views, until TransactionCommitted, which it calls on the main thread
+// right after the commit. A frame presented with the transaction meanwhile
+// keeps its drawable until the commit: the frames after it that would find
+// no drawable but those wait, built, and draw after the commit, rather
+// than wait on the main thread for a commit that the wait keeps from
+// coming. It does nothing to a window that shows no Content.
+func (w *Window) TransactionOpened() { w.transaction(true) }
+
+// TransactionCommitted ends what TransactionOpened began.
+func (w *Window) TransactionCommitted() { w.transaction(false) }
+
+func (w *Window) transaction(open bool) {
+	onMain(func() {
+		if w.native != nil && w.conn != nil && w.conn.Transaction != nil {
+			w.conn.Transaction(open)
+		}
+	})
+}
+
 func (w *Window) holdFrames(hold bool) {
 	onMain(func() {
 		if w.native != nil && w.conn != nil && w.conn.HoldFrames != nil {

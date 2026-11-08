@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/egoist/mygo/internal/gpu"
+	"github.com/egoist/mygo/internal/platform"
 	"github.com/egoist/mygo/internal/scene"
 	"github.com/egoist/mygo/internal/wait"
 )
@@ -579,5 +580,127 @@ func TestAThirdDrawableAwaitsFramesFollowing(t *testing.T) {
 	frame(1)
 	if n := count(); n != 2 {
 		t.Fatalf("the count of frames following outlived the trim: the layer allows %d drawables, want 2", n)
+	}
+}
+
+// takenDrawables counts the drawables that frames take on the main thread.
+func takenDrawables(t *testing.T) *int {
+	t.Helper()
+	taken := new(int)
+	take := frameDrawable
+	frameDrawable = func(l id) id { *taken++; return take(l) }
+	t.Cleanup(func() { frameDrawable = take })
+	return taken
+}
+
+// transactAt returns squareAt(x) moving the views under its holes, which
+// presents with the transaction.
+func transactAt(x int) *scene.Scene {
+	s := squareAt(x)
+	s.Transact = true
+	return s
+}
+
+// openTransaction opens a Core Animation transaction on the main thread
+// and tells r, as an application laying out native views does, and returns
+// what commits it and tells r right after.
+func openTransaction(r *Renderer) (commit func()) {
+	tx := class("CATransaction")
+	pool(func() { sendMain(tx, "begin") })
+	r.SetTransaction(true)
+	return func() {
+		pool(func() { sendMain(tx, "commit") })
+		r.SetTransaction(false)
+	}
+}
+
+// TestAnOpenTransactionHoldsTheNextFrame draws two frames presenting with
+// a transaction the application keeps open: of the layer's two drawables,
+// the first frame's is bound to the transaction until it commits and the
+// other is shown, so the second takes none, which would wait a second for a
+// commit that its wait keeps from coming. It waits, built.
+func TestAnOpenTransactionHoldsTheNextFrame(t *testing.T) {
+	r := layerRenderer(t)
+	r.SetPost(func(func()) {})
+	taken := takenDrawables(t)
+	render(t, r, squareAt(0), nil) // changes the layer
+	commit := openTransaction(r)
+	defer commit()
+	render(t, r, transactAt(1), nil)
+	*taken = 0
+	var held noticed
+	render(t, r, transactAt(2), &held)
+	if f := r.FrameFacts(); f.Outcome != gpu.FrameStashed || f.DrawableWait != 0 {
+		t.Errorf("the second frame in the transaction: %+v, want it stashed, waiting for no drawable", f)
+	}
+	if *taken != 0 || r.pending.cb == 0 {
+		t.Fatalf("the second frame in the transaction took %d drawables, pending %v", *taken, r.pending.cb != 0)
+	}
+	held.want(t, "while the transaction is open")
+	if r.Ready(func() {}) {
+		t.Fatal("ready while a frame waits")
+	}
+}
+
+// TestACommitDrawsTheHeldFrameOnce checks that the frame waiting for the
+// open transaction draws once it commits, once, with the transaction.
+func TestACommitDrawsTheHeldFrameOnce(t *testing.T) {
+	r := layerRenderer(t)
+	posted := make(chan func(), 4)
+	r.SetPost(func(fn func()) { posted <- fn })
+	taken := takenDrawables(t)
+	render(t, r, squareAt(0), nil)
+	commit := openTransaction(r)
+	render(t, r, transactAt(1), nil)
+	var held noticed
+	render(t, r, transactAt(2), &held)
+	woke := false
+	if r.Ready(func() { woke = true }) {
+		t.Fatal("ready while a frame waits")
+	}
+	*taken = 0
+	commit()
+	if *taken != 1 || r.pending.cb != 0 || !woke || !r.synced || r.bound != 0 {
+		t.Fatalf("once committed: took %d drawables, pending %v, woke %v, synced %v, %d bound",
+			*taken, r.pending.cb != 0, woke, r.synced, r.bound)
+	}
+	held.want(t, "once committed", platform.Presented)
+	// Nothing posted draws it again.
+	for {
+		select {
+		case fn := <-posted:
+			fn()
+			continue
+		default:
+		}
+		break
+	}
+	if *taken != 1 || len(held.got) != 1 || held.agains != 0 {
+		t.Fatalf("after: took %d drawables, noticed %v, handed on %d times", *taken, held.got, held.agains)
+	}
+	if !r.Ready(nil) {
+		t.Fatal("not ready once drawn")
+	}
+}
+
+// TestFramesWithTheTransactionWithoutAnOpenOne checks that without a
+// transaction the application keeps open, frames presenting with the
+// transaction one after another take their drawables at once, as before.
+func TestFramesWithTheTransactionWithoutAnOpenOne(t *testing.T) {
+	r := layerRenderer(t)
+	r.SetPost(func(func()) {})
+	taken := takenDrawables(t)
+	render(t, r, squareAt(0), nil)
+	*taken = 0
+	for i := 1; i <= 3; i++ {
+		var n noticed
+		render(t, r, transactAt(i), &n)
+		if f := r.FrameFacts(); f.Outcome != gpu.FrameTransaction {
+			t.Errorf("frame %d: %+v, want it presented with the transaction", i, f)
+		}
+		n.want(t, "a frame with the transaction", platform.Presented)
+	}
+	if *taken != 3 || r.pending.cb != 0 || r.bound != 0 {
+		t.Fatalf("took %d drawables for 3 frames, pending %v, %d bound", *taken, r.pending.cb != 0, r.bound)
 	}
 }

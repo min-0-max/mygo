@@ -105,6 +105,7 @@ func (v *Content) AttachContent(conn *surface.Conn) {
 	conn.Detach = h.detach
 	conn.AfterPresent = h.afterPresent
 	conn.HoldFrames = h.holdFrames
+	conn.Transaction = h.setTransaction
 	if conn.ContentSize != nil && conn.FitWidth != nil {
 		rt.fit = newFitter(conn.FitWidth, conn.ContentSize)
 		conn.Fit = h.fit
@@ -188,6 +189,9 @@ type windowHost struct {
 	// holding tells that the window holds its frames (holdFrames), and
 	// heldFrame that a frame was asked for meanwhile.
 	holding, heldFrame bool
+	// transaction tells that the application keeps a Core Animation
+	// transaction open (setTransaction).
+	transaction bool
 	// glassPlaced is where the surface shows the system's glass.
 	glassPlaced []platform.GlassPlacement
 	// waiting tells that a frame paced by the display waits for waitingOn,
@@ -597,6 +601,21 @@ func (h *windowHost) afterPresent(fn func(platform.Presentation, error)) {
 // and has the frame shown stay as drawn; HoldFrames(false) ends that.
 type frameHolder interface{ HoldFrames(hold bool) }
 
+// transactionRenderer is a GPU renderer whose frames presented with Core
+// Animation's transaction keep their drawables until it commits (Metal's):
+// SetTransaction tells it that the application keeps one open, or
+// committed it (surface.Conn.Transaction).
+type transactionRenderer interface{ SetTransaction(open bool) }
+
+// setTransaction tells the GPU renderer, and the next one made, whether
+// the application keeps a transaction open.
+func (h *windowHost) setTransaction(open bool) {
+	h.transaction = open
+	if g, ok := h.gpu.(transactionRenderer); ok {
+		g.SetTransaction(open)
+	}
+}
+
 // holdFrames keeps the surface's frames from drawing while hold is set,
 // those that the system asks for among them, and draws one once it is not
 // if one was asked for meanwhile (surface.Conn.HoldFrames). The notices
@@ -803,6 +822,9 @@ func (h *windowHost) makeGPU() {
 		p.SetRefreshRate(func() float64 { return h.conn.Surface.RefreshRate() })
 	}
 	h.reportFrames()
+	if t, ok := r.(transactionRenderer); ok && h.transaction {
+		t.SetTransaction(true)
+	}
 }
 
 // accelerated reports whether the frame draws on a GPU (Painter.Accelerated).
