@@ -42,3 +42,28 @@ func ends(lines []shapedLine) []int {
 	}
 	return out
 }
+
+// TestCoreTextBreaksAtTheSpaceBeforeAPointWord checks a whole paragraph whose
+// line Core Text alone would end before "opens", keeping it with ".lprobe".
+func TestCoreTextBreaksAtTheSpaceBeforeAPointWord(t *testing.T) {
+	text := []rune("Window check fixture that reports its tab reports, start values, surface size and a document region, opens .lprobe files, and declares sections, settings and a right sidebar override.")
+	for _, family := range []string{"ui-monospace,SFMono-Regular,Menlo,monospace", "Menlo"} {
+		for _, wholeWords := range []bool{false, true} {
+			s := newSystem()
+			s.mu.Lock()
+			e := s.engine().(*coreText)
+			for pass := range 2 {
+				e.resetScratch()
+				for _, l := range e.shape(text, Style{Size: 11, Family: family}, nil, 259, false, wholeWords) {
+					if l.end < len(text) && string(text[l.end:l.end+7]) == ".lprobe" {
+						break
+					}
+					if l.end < len(text) && string(text[l.end:l.end+5]) == "opens" {
+						t.Errorf("%s, whole words %v, pass %d: a line ends before %q though %q fits after it", family, wholeWords, pass, "opens", "opens")
+					}
+				}
+			}
+			s.mu.Unlock()
+		}
+	}
+}
