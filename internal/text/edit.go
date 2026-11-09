@@ -318,6 +318,10 @@ func (b *Boundaries) WordAt(i int) (start, end int) {
 
 // lineBreaks reports, for each rune of text and for its end, whether a
 // line may break before it, in breaks, with seg; both are reused.
+//
+// A line may also break after every run of spaces, before whatever follows,
+// as a browser breaks a text: Unicode's rules keep a word that opens with a
+// mark such as "." or "!" with the word before it, across the spaces.
 func lineBreaks(seg *segmenter.Segmenter, breaks []bool, text []rune) []bool {
 	breaks = slices.Grow(breaks[:0], len(text)+1)[:len(text)+1]
 	clear(breaks)
@@ -326,6 +330,11 @@ func lineBreaks(seg *segmenter.Segmenter, breaks []bool, text []rune) []bool {
 	for it.Next() {
 		l := it.Line()
 		breaks[l.Offset+len(l.Text)] = true
+	}
+	for i := 1; i < len(text); i++ {
+		if text[i-1] == ' ' && text[i] != ' ' {
+			breaks[i] = true
+		}
 	}
 	return breaks
 }
