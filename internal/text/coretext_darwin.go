@@ -136,6 +136,7 @@ var ct struct {
 	paragraphStyleCreate  func(settings *ctParagraphStyleSetting, n int) uintptr
 	typesetterCreate      func(str uintptr) uintptr
 	suggestLineBreak      func(typesetter uintptr, start int, width float64) int
+	suggestClusterBreak   func(typesetter uintptr, start int, width float64) int
 	typesetterCreateLine  func(typesetter uintptr, r cfRange) uintptr
 	lineGetGlyphRuns      func(line uintptr) uintptr
 	lineGetStringRange    func(line uintptr) cfRange
@@ -265,6 +266,7 @@ func loadCoreText() error {
 	bind(text, &ct.fontDrawGlyphs, "CTFontDrawGlyphs")
 	bind(text, &ct.paragraphStyleCreate, "CTParagraphStyleCreate")
 	bind(text, &ct.suggestLineBreak, "CTTypesetterSuggestLineBreak")
+	bind(text, &ct.suggestClusterBreak, "CTTypesetterSuggestClusterBreak")
 	bind(cg, &ct.colorSpaceDeviceRGB, "CGColorSpaceCreateDeviceRGB")
 	bind(cg, &ct.bitmapContextCreate, "CGBitmapContextCreate")
 	bind(cg, &ct.contextRelease, "CGContextRelease")
@@ -1023,18 +1025,18 @@ func (e *coreText) shapeText(text []rune, style Style, spans []Span, width float
 	}
 	e.u16, e.index = appendUTF16(e.u16[:0], e.index[:0], text)
 	u16, index := e.u16, e.index
-	n := len(u16)
 	var breaks []bool
 	if wholeWords && width > 0 {
 		e.breaks = lineBreaks(&e.seg, e.breaks, text)
 		breaks = e.breaks
 	}
-	return e.typesetLines(typesetter, n, width, breaks, index, style.Italic)
+	return e.typesetLines(typesetter, u16, width, breaks, index, style.Italic)
 }
 
-// typesetLines has Core Text break a typesetter's text of n UTF-16 units into
+// typesetLines has Core Text break a typesetter's text of UTF-16 units into
 // lines, carrying on to the next of breaks when given, and shape them.
-func (e *coreText) typesetLines(typesetter uintptr, n int, width float32, breaks []bool, index []int, italic bool) []shapedLine {
+func (e *coreText) typesetLines(typesetter uintptr, u16 []uint16, width float32, breaks []bool, index []int, italic bool) []shapedLine {
+	n := len(u16)
 	var lines []shapedLine
 	mark := len(e.shapeScratch.lines)
 	for start := 0; start < n; {
@@ -1043,7 +1045,7 @@ func (e *coreText) typesetLines(typesetter uintptr, n int, width float32, breaks
 			// A width measured by Layout sums advances in float32, which
 			// may round below Core Text's own line width and wrap the
 			// last word; allow a 1/1024 point, as Pango's units do.
-			count = max(ct.suggestLineBreak(typesetter, start, float64(width)+1.0/1024), 1)
+			count = lineEnd(typesetter, u16, start, float64(width)+1.0/1024)
 			// Core Text breaks a word that does not fit a line; carry
 			// on to the next break instead.
 			if breaks != nil {
@@ -1063,6 +1065,34 @@ func (e *coreText) typesetLines(typesetter uintptr, n int, width float32, breaks
 		start += count
 	}
 	return lines
+}
+
+// lineEnd returns how many UTF-16 units of a typesetter's text from start
+// make a line within limit: up to where Core Text breaks it or, when later, up
+// to after the last run of spaces whose text before it fits. A browser breaks
+// after every space, and Core Text keeps a word that opens with a mark such as
+// "." with the word before it, across the spaces between them.
+func lineEnd(typesetter uintptr, u16 []uint16, start int, limit float64) int {
+	n := len(u16)
+	end := min(start+max(ct.suggestLineBreak(typesetter, start, limit), 1), n)
+	if end == n {
+		return end - start
+	}
+	fit := start + ct.suggestClusterBreak(typesetter, start, limit)
+	for i := end; i < n; i++ {
+		if u16[i] != ' ' {
+			if i >= fit {
+				break
+			}
+			continue
+		}
+		for i < n && u16[i] == ' ' {
+			i++
+		}
+		end = i
+		i--
+	}
+	return end - start
 }
 
 // newTypesetter shapes a text, without its line breaks, into a typesetter the

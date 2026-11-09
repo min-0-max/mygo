@@ -189,7 +189,8 @@ func (e *coreText) wrapKept(kept *keptTypesetter, text []rune, style Style, widt
 		}
 		if end == start || end < n && !plain {
 			// The first word does not fit, or the next may break inside.
-			count := max(ct.suggestLineBreak(kept.typesetter, start, limit), 1)
+			e.u16, e.index = appendUTF16(e.u16[:0], e.index[:0], text)
+			count := lineEnd(kept.typesetter, e.u16, start, limit)
 			line := ct.typesetterCreateLine(kept.typesetter, cfRange{start, count})
 			if line == 0 {
 				return nil
@@ -213,8 +214,8 @@ func (e *coreText) wrapKept(kept *keptTypesetter, text []rune, style Style, widt
 	}
 	f.lines++
 	if f.checked < wrapCheckedFirst || f.lines%wrapCheckedEvery == 0 {
-		e.index = runeIndex(e.index, n)
-		shaped := e.typesetLines(kept.typesetter, n, width, nil, e.index, style.Italic)
+		e.u16, e.index = appendUTF16(e.u16[:0], e.index[:0], text)
+		shaped := e.typesetLines(kept.typesetter, e.u16, width, nil, e.index, style.Italic)
 		if !sameLines(lines, shaped) {
 			f.disagreed = true
 			return shaped
