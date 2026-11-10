@@ -324,6 +324,7 @@ func (r *Renderer) finishPending(prefetch bool) error {
 		return err
 	}
 	r.presenting(drawable)
+	r.observeRootLayer(gpu.RootLayerPresentRequested)
 	send(p.cb, "presentDrawable:", drawable)
 	byReceiver(p.cb, "commit")
 	r.committedOutside(gpu.CommitStashed)

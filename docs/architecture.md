@@ -2515,6 +2515,26 @@ Recent (about 290 KB).
 
 ## Native UI (`ui`)
 
+An optional `FrameRecorder.RootLayer` callback observes the Metal root
+renderer's drawable-size transitions and presentation requests. It uses the
+recorder's explicitly supplied `Clock`; its timestamps have no implicit
+relationship to ScreenCaptureKit's mach `displayTime`. The window's recorder
+owns the stream. `Layer` identifies one observation attachment, and its
+contiguous `Sequence` starts at one; attaching a new observer gives a new
+identity. Consumers must reject sequence loss or truncation, rather than infer
+unchanged state from an incomplete stream. Identity or sequence overflow and
+invalid clocks fail explicitly. Removing recording detaches this observer.
+
+`Attached` reports the renderer's currently known size (`SizeKnown` is false
+before it first sets the drawable size); `Resized` and `Trimmed` report actual
+property-setting transitions. `PresentRequested` records a request, whose
+sequence and timestamp subsequent transitions retain. These records do not
+acknowledge GPU completion, Core Animation commit, or compositor display. They
+never acquire a drawable or request a redraw. Ordinary frame recording does
+not enable them. A capture-side snapshot would describe callback-time state,
+not the earlier displayed frame; correlating that frame requires the complete
+transition stream and an explicit clock-domain mapping.
+
 The public API keeps one stable `*Context` per window. Child builders share
 it and temporarily change its parent. `Element` is a 16-byte checked value:
 a direct owner record, arena slot and 32-bit generation. The owner detaches

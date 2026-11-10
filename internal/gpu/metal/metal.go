@@ -433,6 +433,7 @@ type Renderer struct {
 	facts                  gpu.FrameFacts
 	reportClock            func() uint64
 	reportCommit           func(gpu.CommitKind, uint64)
+	rootObserver           *rootLayerObserver
 	device, queue, sampler id
 	// shaderBytes holds the uniforms of the shader being drawn, laid out.
 	shaderBytes []byte
@@ -1890,11 +1891,13 @@ func (r *Renderer) render(s *scene.Scene, done func(platform.Presentation, error
 		send(cb, "waitUntilScheduled")
 		r.presenting(drawable)
 		r.facts.Request = r.reportNow()
+		r.observeRootLayer(gpu.RootLayerPresentRequested)
 		sendMain(drawable, "present")
 	} else {
 		r.facts.Outcome = gpu.FrameImmediate
 		r.presenting(drawable)
 		r.facts.Request = r.reportNow()
+		r.observeRootLayer(gpu.RootLayerPresentRequested)
 		send(cb, "presentDrawable:", drawable)
 		byReceiver(cb, "commit")
 		// The next frame's drawable, while this one is shown, when frames
@@ -2068,6 +2071,7 @@ func (r *Renderer) fit(w, h int, scale float64) (changed bool) {
 	mainthread.Forward[struct{}](msgSend, r.layer, sel("setDrawableSize:"), cgSize{float64(w), float64(h)})
 	sendMain(tx, "commit")
 	r.w, r.h, r.scale, r.bounds, r.trimmed = w, h, scale, bounds, false
+	r.observeRootLayer(gpu.RootLayerResized)
 	return true
 }
 
@@ -2235,6 +2239,7 @@ func (r *Renderer) trim() {
 	})
 	r.trimmed = true
 	r.following = 0
+	r.observeRootLayer(gpu.RootLayerTrimmed)
 }
 
 // renderOffscreen draws s into a texture of its own and returns its

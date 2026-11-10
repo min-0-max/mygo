@@ -71,6 +71,23 @@ type FrameRecorder struct {
 	Clock  func() uint64
 	Frame  func(*FrameRecord)
 	Commit func(CommitRecord)
+	// RootLayer opts into root drawable transitions, on Clock. It reports
+	// property changes and requests, never actual compositor presentation.
+	RootLayer func(RootLayerRecord)
+}
+
+type RootLayerRecord = gpu.RootLayerRecord
+type RootLayerKind = gpu.RootLayerKind
+
+const (
+	RootLayerAttached         = gpu.RootLayerAttached
+	RootLayerResized          = gpu.RootLayerResized
+	RootLayerTrimmed          = gpu.RootLayerTrimmed
+	RootLayerPresentRequested = gpu.RootLayerPresentRequested
+)
+
+type rootLayerReporter interface {
+	ReportRootLayer(func() uint64, func(gpu.RootLayerRecord))
 }
 
 // frameReporter is a GPU renderer that tells what came of a frame (Metal's), and
@@ -97,6 +114,13 @@ func (h *windowHost) record(r *FrameRecorder) {
 
 // reportFrames tells the GPU renderer of the recorder.
 func (h *windowHost) reportFrames() {
+	if layer, ok := h.gpu.(rootLayerReporter); ok {
+		if r := h.rt.recorder; r != nil && r.RootLayer != nil {
+			layer.ReportRootLayer(r.Clock, r.RootLayer)
+		} else {
+			layer.ReportRootLayer(nil, nil)
+		}
+	}
 	f, ok := h.gpu.(frameReporter)
 	r := h.rt.recorder
 	if !ok || r == nil {
