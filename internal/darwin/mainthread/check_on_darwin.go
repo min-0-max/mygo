@@ -317,25 +317,25 @@ func coreTextType(t string) bool {
 	return strings.HasPrefix(t, "CT") && slices.ContainsFunc(CFTypes, func(c CFType) bool { return c.Name == t })
 }
 
-// onMain is the C function of the records that checkedOnMain returns.
-var onMain = sync.OnceValue(func() uintptr {
-	return purego.NewCallback(func(p uintptr) {
-		checkOnMainThread()
-		run(*(**record)(unsafe.Pointer(&p)))
-	})
-})
+// checkedCallRecordAddress is a native C-ABI function taking (rec, expectedThread).
+// It returns zero after running rec on the expected thread, or the actual
+// thread identity without running rec. Neither path enters a Go callback.
+func checkedCallRecordAddress() uintptr
 
-// checkedOnMain returns a record of a function that checks that it runs
-// on the main thread, and runs rec there.
+// checkedOnMain wraps the native call with a native identity gate. Both
+// architectures place its two integer arguments in the first two x slots.
 func checkedOnMain(rec *record) *record {
-	outer, _, _ := prepare(onMain(), reflect.TypeFor[struct{}](), []any{uintptr(unsafe.Pointer(rec))})
+	outer := &record{fn: checkedCallRecordAddress()}
+	outer.x[0] = uintptr(unsafe.Pointer(rec))
+	outer.x[1] = link.mainThread
 	return outer
 }
 
-// checkOnMainThread panics off the thread that Start ran on, which is the
-// main thread of an application.
-func checkOnMainThread() {
-	if threadPointer() != link.mainThread {
+// checkForwarded reports a native dispatch failure on the caller, after the
+// main thread has returned the record. Reporting must never enter Go on the
+// main thread, whose native stack JavaScriptCore may scan concurrently.
+func checkForwarded(rec *record) {
+	if rec.r[0] != 0 {
 		panic("mainthread: a forwarded call runs off the main thread")
 	}
 }

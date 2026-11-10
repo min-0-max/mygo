@@ -595,6 +595,7 @@ func Queued() uint64 { return queued.Load() }
 
 // forward runs rec on the main thread.
 func forward(rec *record) {
+	original := rec
 	tp := threadPointer()
 	switch {
 	case atomic.LoadUintptr(&link.running) == 0 || tp == link.mainThread:
@@ -603,6 +604,7 @@ func forward(rec *record) {
 		forwarded.Add(1)
 		rec = checkedOnMain(rec)
 		purego.SyscallN(exchangeAddress(), uintptr(unsafe.Pointer(rec)))
+		checkForwarded(rec)
 	default:
 		forwarded.Add(1)
 		queued.Add(1)
@@ -623,8 +625,10 @@ func forward(rec *record) {
 		for native.semaphoreWait(s) != 0 {
 		}
 		putSemaphore(s)
+		checkForwarded(rec)
 	}
 	runtime.KeepAlive(rec)
+	runtime.KeepAlive(original)
 }
 
 // entry returns the trampoline that calls target, a callback that purego
