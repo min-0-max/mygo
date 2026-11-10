@@ -1,3 +1,5 @@
+//go:build !js
+
 package mygo
 
 import (
@@ -6,6 +8,8 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
+// This integration owner inspects the desktop fake backend installed by
+// TestMain. Portable frame behavior remains in ui/draw_occluded_test.go.
 // TestDrawWhileOccludedOption checks that WindowOptions.DrawWhileOccluded
 // reaches the backend's window, whose surface draws the frames asked for
 // out of sight, and the Content, which then holds none.

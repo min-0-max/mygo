@@ -1,3 +1,5 @@
+//go:build !js
+
 package mygo
 
 import (
@@ -8,6 +10,9 @@ import (
 	"testing"
 )
 
+// This owner and its subprocess inspect the desktop fake backend and helper
+// dispatch installed by TestMain; browser tests have neither process ownership
+// nor the application's native activation and notification delegate.
 // The settings with which an application takes over what MyGo does for it
 // by default reach the backend: none in the tests' process, which makes
 // none of them, and each in that of ownedApp.
