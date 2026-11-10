@@ -576,6 +576,7 @@ func layoutBox(e *node, w, h float32) {
 // computeBox gives the element its size and lays out its content.
 func computeBox(e *node, w, h float32) {
 	e.w, e.h = w, h
+	e.gutter = scrollGutter{}
 	cw, ch := max(w-e.padX(), 0), max(h-e.padY(), 0)
 	switch e.kind {
 	case kindText:
@@ -601,20 +602,64 @@ func computeBox(e *node, w, h float32) {
 	if e.overflow != nil {
 		e.layoutToolbar(cw)
 	}
-	lw, lh := cw, ch
-	if e.flags&flagScrollX != 0 {
-		lw = inf
+	bar := float32(0)
+	if e.scrolls() {
+		bar = e.classicBarWidth()
+		e.gutter.border = e.border
 	}
-	if e.flags&flagScrollY != 0 {
-		lh = inf
+	// The content box beside the classic bars of the directions that
+	// overflow (classicscroll.go): laid out without bars, and again with
+	// those that it overflows with, which stay.
+	var uw, uh float32
+	laidW, laidH := float32(-1), float32(-1)
+	for {
+		lw, lh := max(cw-e.gutter.v, 0), max(ch-e.gutter.h, 0)
+		if e.flags&flagScrollX != 0 {
+			lw = inf
+		}
+		if e.flags&flagScrollY != 0 {
+			lh = inf
+		}
+		if lw != laidW || lh != laidH {
+			// A bar across a direction the content does not scroll in
+			// leaves it less room.
+			uw, uh = boxLayout(e, lw, lh, true)
+			laidW, laidH = lw, lh
+		}
+		if bar <= 0 {
+			break
+		}
+		g := e.gutter
+		// A bar across the other direction takes room from the view, and
+		// may make the content overflow it.
+		for range 2 {
+			if e.flags&flagScrollY != 0 && g.v == 0 && overflows(uh+e.padY(), h, g.h) {
+				g.v = bar
+			}
+			if e.flags&flagScrollX != 0 && g.h == 0 && overflows(uw+e.padX(), w, g.v) {
+				g.h = bar
+			}
+		}
+		if g == e.gutter {
+			break
+		}
+		e.gutter = g
 	}
-	uw, uh := boxLayout(e, lw, lh, true)
-	if e.flags&flagScrollX != 0 && uw < cw && e.rtl() {
+	vw, vh := max(cw-e.gutter.v, 0), max(ch-e.gutter.h, 0)
+	if e.flags&flagScrollX != 0 && uw < vw && e.rtl() {
 		// Laid out from the right of what the content takes, which goes
 		// at the right of the container.
 		for c := e.first; c != nil; c = c.next {
 			if c.flags&flagAbsolute == 0 {
-				c.x += cw - uw
+				c.x += vw - uw
+			}
+		}
+	}
+	if e.gutter.v > 0 && e.rtl() {
+		// Right of the vertical bar, on the left.
+		for c := e.first; c != nil; c = c.next {
+			if c.flags&flagAbsolute == 0 {
+				c.x += e.gutter.v
 			}
 		}
 	}
@@ -622,8 +667,10 @@ func computeBox(e *node, w, h float32) {
 		alignBaselines(e)
 	}
 	if e.scrolls() {
-		e.contentW = float64(max(uw, cw) + e.padX())
-		e.contentH = float64(max(uh, ch) + e.padY())
+		// The bars' room, as far as the content scrolls past the view
+		// beside them.
+		e.contentW = float64(max(uw, vw) + e.padX() + e.gutter.v)
+		e.contentH = float64(max(uh, vh) + e.padY() + e.gutter.h)
 	}
 	layoutAbsolute(e)
 }
@@ -1203,7 +1250,12 @@ func justifyOffsets(j Align, free float32, n int) (start, between float32) {
 // to left, as in CSS, one with neither Left nor Right goes to the right,
 // and Right wins over Left where its width leaves no room for both.
 func layoutAbsolute(e *node) {
-	pw, ph := e.w-e.border[1]-e.border[3], e.h-e.border[0]-e.border[2]
+	// The padding box, beside classic scroll bars.
+	pw, ph := max(e.w-e.border[1]-e.border[3]-e.gutter.v, 0), max(e.h-e.border[0]-e.border[2]-e.gutter.h, 0)
+	var gx float32
+	if e.rtl() {
+		gx = e.gutter.v
+	}
 	for c := e.first; c != nil; c = c.next {
 		if c.flags&flagAbsolute == 0 || c.leaving != 0 || c.hidden {
 			// Copies of elements leaving are placed by their transitions.
@@ -1275,6 +1327,9 @@ func layoutAbsolute(e *node) {
 			case autoT:
 				y += max(free, 0)
 			}
+		}
+		if c.placeOn == nil {
+			ox += gx
 		}
 		c.x, c.y = e.border[3]+ox+x, e.border[0]+oy+y
 		layoutBox(c, w, h)

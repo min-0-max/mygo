@@ -368,13 +368,20 @@ func reveal(e *node, o ScrollIntoViewOptions) {
 				// The start is at the right.
 				inline = inline.flip()
 			}
-			lx := max(0, min(inline.offset(left, cx, w, p.border[3], p.w-p.border[1]), mx))
+			// The view, inside the border and beside classic scroll bars.
+			viewL, viewR, viewB := p.border[3], p.w-p.border[1], p.h-p.border[2]-p.gutter.h
+			if p.rtl() {
+				viewL += p.gutter.v
+			} else {
+				viewR -= p.gutter.v
+			}
+			lx := max(0, min(inline.offset(left, cx, w, viewL, viewR), mx))
 			sx := lx
 			if rtl {
 				// Right to left, offsets count from the right.
 				sx = mx - sx
 			}
-			sy := max(0, min(o.Block.offset(st.scrollY, cy, h, p.border[0], p.h-p.border[2]), my))
+			sy := max(0, min(o.Block.offset(st.scrollY, cy, h, p.border[0], viewB), my))
 			if smooth {
 				// The containers around go to where it will be.
 				rt.glideScroll(st, sx, sy, *o.Animation, e.c.now)

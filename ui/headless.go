@@ -498,7 +498,8 @@ func (t *Tester) SetPreferences(p Preferences) {
 func platformPreferences(p Preferences) platform.Preferences {
 	return platform.Preferences{Accent: platform.Color{R: p.Accent.R, G: p.Accent.G, B: p.Accent.B, A: p.Accent.A}, ReduceMotion: p.ReduceMotion,
 		ReduceTransparency: p.ReduceTransparency, HighContrast: p.HighContrast, TextScale: float64(p.TextScale),
-		Pointer: platform.PointerAccuracy(p.Pointer), AnyPointer: platform.PointerAccuracy(p.AnyPointer), NoHover: p.NoHover, NoAnyHover: p.NoAnyHover}
+		Pointer: platform.PointerAccuracy(p.Pointer), AnyPointer: platform.PointerAccuracy(p.AnyPointer), NoHover: p.NoHover, NoAnyHover: p.NoAnyHover,
+		ClassicScrollbars: p.ClassicScrollbars, ClassicScrollbarWidth: float64(p.ClassicScrollbarWidth), ThinClassicScrollbarWidth: float64(p.ThinClassicScrollbarWidth)}
 }
 
 // SetLocale makes tag the language the app shows, as mygo.App.SetLocale
@@ -618,7 +619,7 @@ func (t *Tester) targetCenter(s string, button int) (float32, float32, error) {
 			}
 			lx, ly := st.local(cx, cy)
 			lx, ly = lx+st.x, ly+st.y
-			g := scrollBars(Rect{st.x, st.y, st.w, st.h}, st.barInset, float32(st.contentW), float32(st.contentH),
+			g := containerBars(Rect{st.x, st.y, st.w, st.h}, st.barInset, st.gutter, float32(st.contentW), float32(st.contentH),
 				float32(st.scrollX), float32(st.scrollY), st.flags, st.barWidth, st.rtl)
 			if g.vertical && g.vTrack.Contains(lx, ly) || g.horizontal && g.hTrack.Contains(lx, ly) {
 				return 0, 0, fmt.Errorf("ui: %q is covered by a scroll bar", s)

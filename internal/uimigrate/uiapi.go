@@ -376,6 +376,7 @@ var elementChains = map[string]bool{
 	"TextRanges":           true,
 	"TextShadow":           true,
 	"TextStroke":           true,
+	"ThinScrollbars":       true,
 	"Tooltip":              true,
 	"Top":                  true,
 	"TopPercent":           true,

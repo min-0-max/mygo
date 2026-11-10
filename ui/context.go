@@ -801,9 +801,11 @@ type state struct {
 	contentW         float64
 	contentH         float64
 	// barInset is the element's ScrollbarInsets, and barWidth the width
-	// of its scroll bars, its theme's ScrollbarWidth.
+	// of its scroll bars, its theme's ScrollbarWidth; gutter is the room
+	// its classic scroll bars take (classicscroll.go).
 	barInset [4]float32
 	barWidth float32
+	gutter   scrollGutter
 	// barsShown reports whether the last frame painted the element's
 	// scroll bars: they show only while it is hovered or a bar is
 	// dragged, unless it keeps them (KeepScrollbars).

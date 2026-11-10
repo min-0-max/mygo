@@ -194,8 +194,8 @@ func (theme) UIFont() string { return "" }
 
 func (theme) FontRendering() platform.FontRendering { return platform.FontRendering{} }
 
-// Preferences reads the accent color and the display settings of
-// accessibility.
+// Preferences reads the accent color, the display settings of
+// accessibility and the scroller style.
 func (t theme) Preferences() platform.Preferences {
 	var p platform.Preferences
 	withPool(func() {
@@ -203,6 +203,16 @@ func (t theme) Preferences() platform.Preferences {
 		p.ReduceMotion = sendBool(ws, "accessibilityDisplayShouldReduceMotion")
 		p.ReduceTransparency = sendBool(ws, "accessibilityDisplayShouldReduceTransparency")
 		p.HighContrast = sendBool(ws, "accessibilityDisplayShouldIncreaseContrast")
+		// Legacy scrollers (NSScrollerStyleLegacy, 0) take room beside
+		// what they scroll, as wide as AppKit draws them at the regular
+		// and the small control size (NSControlSizeRegular, Small).
+		scroller := class("NSScroller")
+		if sendInt(scroller, "preferredScrollerStyle") == 0 {
+			width := sel("scrollerWidthForControlSize:scrollerStyle:")
+			p.ClassicScrollbars = true
+			p.ClassicScrollbarWidth = msgFloatInts(scroller, width, 0, 0)
+			p.ThinClassicScrollbarWidth = msgFloatInts(scroller, width, 1, 0)
+		}
 		// The accent, as the app's appearance draws it.
 		var c id
 		appearance := class("NSAppearance")

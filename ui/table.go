@@ -298,7 +298,8 @@ func table(c *context, s *ListState, columns []TableColumn, n int, cell func(row
 		list.widget = "List"
 		list.flags |= flagScrollX
 		list.rowMinW = least
-		// The table's Scrollbars and KeepScrollbars are its rows'.
+		// The table's Scrollbars, KeepScrollbars and ThinScrollbars are
+		// its rows'.
 		list.barsFrom = table
 		head.followX = list
 		buildList(c, list, table, s, n, func(i int) {

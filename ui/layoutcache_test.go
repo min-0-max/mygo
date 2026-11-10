@@ -450,13 +450,14 @@ func TestLayoutInputs(t *testing.T) {
 	// or made volatile by sameLayout, and those it writes.
 	read := "flags ts cols rows spans image svg placeOn list form colFit overflow gridFit leaving ghosts attach popover " +
 		"first last next nchild parent st c measured tl lay laid x y w h contentW contentH frags runes paragraph " +
-		"ownText merged spansKey collapsed rowMinW field hidden placed flips originAttached originX originY originSet edgeMargin edgeMarginSet"
+		"ownText merged spansKey collapsed rowMinW field hidden placed flips originAttached originX originY originSet edgeMargin edgeMarginSet " +
+		"hideScrollbars thinScrollbars barsFrom gutter"
 	// Fields the layout never reads.
 	other := "epoch key valueInput id depth track transform translatePct world content contentSet " +
 		"pose poseAnim poseSet poseM poseFade reposed ink noCull backface bg fill grad stripes borderC borderStyle radius " +
 		"shadows material effect effecting cache grads blur opacity opacitySet undimmed cursor paintFn hitFn objectFn styleFn paintAfterFn " +
 		"inputFn observeFn textClient caret takesText noIME copyData webView maximizeButton fit gray objectPos dismissed rotate label widget role " +
-		"checked expanded busy current autoComplete orient tip highlighted focusHighlights keepOpen accValue accRange hasRange accFill accStep barInset scrollBase hideScrollbars keepScrollbars barsFrom snap snapAlign " +
+		"checked expanded busy current autoComplete orient tip highlighted focusHighlights keepOpen accValue accRange hasRange accFill accStep barInset scrollBase keepScrollbars snap snapAlign " +
 		"listRow rowIndex rowsOf focusGroup groupSelects segment activeDescendant nameFrom nameJoin labelledBy focusTo " +
 		"keyShortcuts accGrid accSet " +
 		"setPos setSize choosesItems search description invalid describedBy errorMessage followX sort level expandable " +

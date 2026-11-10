@@ -1243,6 +1243,15 @@ type Preferences struct {
 	// touch screen, and NoAnyHover that none can (hover and any-hover:
 	// none).
 	NoHover, NoAnyHover bool
+	// ClassicScrollbars tells that scroll bars take room beside the
+	// content they scroll and show while it overflows, rather than
+	// overlaying it as it scrolls: macOS's legacy scroller style
+	// (NSScrollerStyleLegacy), as "Show scroll bars: Always" asks.
+	// ClassicScrollbarWidth and ThinClassicScrollbarWidth are how wide
+	// they are then, in points, at the regular and the small control
+	// size, as AppKit draws them; 0 where they overlay.
+	ClassicScrollbars                                bool
+	ClassicScrollbarWidth, ThinClassicScrollbarWidth float64
 }
 
 // PointerAccuracy is how accurately a pointing device points.

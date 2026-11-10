@@ -813,7 +813,7 @@ func dragTo(from float64, moved, travel float32, reach, now float64) float64 {
 // content's size as the drag started.
 func (d *scrollDrag) bars(width float32) scrollGeometry {
 	s := d.st
-	return scrollBars(Rect{s.x, s.y, s.w, s.h}, s.barInset, float32(d.contentW), float32(d.contentH), float32(s.scrollX), float32(s.scrollY), s.flags, width, s.rtl)
+	return containerBars(Rect{s.x, s.y, s.w, s.h}, s.barInset, s.gutter, float32(d.contentW), float32(d.contentH), float32(s.scrollX), float32(s.scrollY), s.flags, width, s.rtl)
 }
 
 // scrollBy scrolls a container by dx, dy within its content, and reports
@@ -1927,7 +1927,7 @@ func (rt *engine) scrollbarPress(chain []uint64, x, y float32) bool {
 		lx, ly := s.local(x, y)
 		lx += s.x
 		ly += s.y
-		g := scrollBars(Rect{s.x, s.y, s.w, s.h}, s.barInset, float32(s.contentW), float32(s.contentH), float32(s.scrollX), float32(s.scrollY), s.flags, s.barWidth, s.rtl)
+		g := containerBars(Rect{s.x, s.y, s.w, s.h}, s.barInset, s.gutter, float32(s.contentW), float32(s.contentH), float32(s.scrollX), float32(s.scrollY), s.flags, s.barWidth, s.rtl)
 		d := &rt.scrollDrag
 		w, h := float64(s.w), float64(s.h)
 		s.wheel = nil
@@ -1935,6 +1935,9 @@ func (rt *engine) scrollbarPress(chain []uint64, x, y float32) bool {
 		switch {
 		case g.vertical && g.vTrack.Contains(lx, ly):
 			switch {
+			case g.v.H <= 0:
+				// A classic bar kept where the content fits: its track
+				// takes the press, which scrolls nothing.
 			case ly >= g.v.Y && ly < g.v.Y+g.v.H:
 				d.st, d.start, d.from, d.horizontal = s, ly, s.scrollY, false
 				if s.track != nil {
@@ -1957,6 +1960,7 @@ func (rt *engine) scrollbarPress(chain []uint64, x, y float32) bool {
 				page = -page
 			}
 			switch {
+			case g.h.W <= 0:
 			case lx >= g.h.X && lx < g.h.X+g.h.W:
 				d.st, d.start, d.from, d.horizontal = s, lx, s.scrollX, true
 				if s.track != nil {
