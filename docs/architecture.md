@@ -403,6 +403,14 @@ a goroutine locked to a thread other than the main thread.
   class registered with `objc.RegisterClass` instead of
   `mainthread.RegisterClass`.
 
+With `mainthreadcheck`, forwarded calls first enter a native assembly gate
+that compares the dispatching thread's identity with the main thread's recorded
+identity. The gate calls the original native record only on a match; otherwise
+it returns the actual identity without executing the target. The forwarding Go
+caller reports that failure after the record returns. The check itself never
+enters Go on the main thread, preserving its native stack while JavaScriptCore
+may scan it. Without the tag, no gate or result check is linked into dispatch.
+
 ### Linux (`internal/linux`)
 
 - `ffi.go` `dlopen`s GLib, GObject, GIO, GDK, GTK 3, cairo, GdkPixbuf

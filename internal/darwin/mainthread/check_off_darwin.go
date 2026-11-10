@@ -28,3 +28,6 @@ func checkCalling(fn uintptr, args []uintptr) {}
 
 // checkedOnMain returns the record to forward for rec.
 func checkedOnMain(rec *record) *record { return rec }
+
+// checkForwarded has no work without the runtime checker.
+func checkForwarded(rec *record) {}
