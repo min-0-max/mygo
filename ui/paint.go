@@ -1381,7 +1381,7 @@ func (p *Painter) drawBitmap(img *Bitmap, box Rect, fit Fit, pos [2]float32, rad
 }
 
 // scrollbars draws the thumbs of a scroll container whose content
-// overflows it.
+// overflows it, or its classic bars, which show while it does.
 func (p *Painter) scrollbars(e *node) {
 	st := e.st
 	rt := e.c.rt
@@ -1398,7 +1398,7 @@ func (p *Painter) scrollbars(e *node) {
 	// (scrollbarPress). Kept, they show as on hover, the same thumb on no
 	// track, so that the pointer coming over changes nothing.
 	hide, keep := e.scrollbars()
-	st.barsShown = !hide && (keep || hovered || dragging)
+	st.barsShown = !hide && (keep || hovered || dragging || e.gutter.classic())
 	if !st.barsShown {
 		return
 	}
@@ -1413,7 +1413,11 @@ func (p *Painter) scrollbars(e *node) {
 		x = rescale(x, e.contentW-float64(e.w), w-float64(e.w))
 		y = rescale(y, e.contentH-float64(e.h), h-float64(e.h))
 	}
-	g := scrollBars(Rect{e.x, e.y, e.w, e.h}, e.barInset, float32(w), float32(h), float32(x), float32(y), e.flags, theme.scrollbarWidth(), e.rtl())
+	g := containerBars(Rect{e.x, e.y, e.w, e.h}, e.barInset, e.gutter, float32(w), float32(h), float32(x), float32(y), e.flags, theme.scrollbarWidth(), e.rtl())
+	if e.gutter.classic() {
+		p.classicScrollbars(e, g, dragging, rt.scrollDrag.horizontal)
+		return
+	}
 	if g.vertical {
 		p.scrollThumbFill(g.v, false, dragging && !rt.scrollDrag.horizontal, color)
 	}

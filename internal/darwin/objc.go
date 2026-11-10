@@ -70,6 +70,9 @@ func msgFloat(obj id, sel objc.SEL) float64 {
 func msgFloat32(obj id, sel objc.SEL) float32 {
 	return mainthread.Forward[float32](msgSendAddr, obj, sel)
 }
+func msgFloatInts(obj id, sel objc.SEL, a, b int) float64 {
+	return mainthread.Forward[float64](msgSendAddr, obj, sel, a, b)
+}
 func msgSetFloat(obj id, sel objc.SEL, v float64) {
 	mainthread.Forward[struct{}](msgSendAddr, obj, sel, v)
 }

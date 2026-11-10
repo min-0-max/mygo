@@ -7986,6 +7986,21 @@ func (_handle Element) TextStroke(width float32, c Color) Element {
 	return wrapElement(_node.TextStroke(width, c))
 }
 
+// ThinScrollbars makes this scroll container's classic scroll bars thin,
+// as CSS's scrollbar-width: thin: the system's small scroll bars, which
+// take less room beside the content (Preferences.ClassicScrollbars,
+// ThinClassicScrollbarWidth). Bars that overlay the content stay as they
+// are. It applies where Scrollbars does, and is not inherited.
+func (_handle Element) ThinScrollbars(thin bool) Element {
+	_node := _handle.node()
+	if _node == nil {
+		return Element{}
+	}
+	_ctx := _node.c
+	_ = _ctx
+	return wrapElement(_node.ThinScrollbars(thin))
+}
+
 // Timeline returns the timeline the element keeps under key, playing it
 // as o says. Every tween added to it shares one playhead, and returns the
 // value it shows in this frame.

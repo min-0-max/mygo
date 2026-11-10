@@ -79,6 +79,8 @@ type layoutRecord struct {
 	spans      string
 	media      [2]float32
 	placeOn    uint64
+	// bars is how its scroll bars lay out (barStyle).
+	bars uint8
 	// parent is the ID of its parent, index its place among its siblings
 	// and nchild how many children it had.
 	parent        uint64
@@ -92,6 +94,7 @@ type layoutRecord struct {
 	w, h               float32
 	tl                 *text.Layout
 	contentW, contentH float64
+	gutter             scrollGutter
 	// box is the box its parent gave it, relative to the parent, which
 	// laid it out in it when boxed.
 	box   Rect
@@ -104,16 +107,21 @@ func (rt *engine) beginLayout(root *node) {
 	rt.layouts++
 	// The text system let go of the layouts and fonts it had, or the
 	// cache is off: lay everything out anew.
-	changed := rt.noLayoutCache || !rt.layGenOK || rt.layGen != rt.gen
-	rt.layGen, rt.layGenOK = rt.gen, true
-	sameLayout(root, 0, 0, changed)
+	// Or classic scroll bars came or went, or changed their width
+	// (classicscroll.go), which every scroll container lays out by.
+	bars := rt.classicBars()
+	changed := rt.noLayoutCache || !rt.layGenOK || rt.layGen != rt.gen || rt.layBars != bars
+	rt.layGen, rt.layGenOK, rt.layBars = rt.gen, true, bars
+	sameLayout(root, 0, 0, changed, bars != [2]float32{})
 }
 
 // sameLayout reports whether e, the index-th child of the element parent,
 // and the elements inside it lay out as in the last layout, keeping what
 // they are for the next. changed tells that something around it that it
 // inherits changed.
-func sameLayout(e *node, parent uint64, index int, changed bool) bool {
+// classic is whether scroll bars take room (classicscroll.go): only then
+// does how an element's scroll bars lay out change its layout.
+func sameLayout(e *node, parent uint64, index int, changed, classic bool) bool {
 	r := &e.st.lay
 	n := e.c.rt.layouts
 	if r.layout == n {
@@ -122,7 +130,7 @@ func sameLayout(e *node, parent uint64, index int, changed bool) bool {
 		r.ok, r.sized, r.boxed, r.measuredOK = false, false, false, false
 		e.lay = 0
 		for c, i := e.first, 0; c != nil; c, i = c.next, i+1 {
-			sameLayout(c, e.id, i, true)
+			sameLayout(c, e.id, i, true, classic)
 		}
 		return false
 	}
@@ -146,6 +154,10 @@ func sameLayout(e *node, parent uint64, index int, changed bool) bool {
 	if e.placeOn != nil {
 		placeOn = e.placeOn.id
 	}
+	var bars uint8
+	if classic && e.scrolls() {
+		bars = e.barStyle()
+	}
 	// What lays it out, against what the last layout saw.
 	fresh := r.ok && r.layout == n-1
 	sameText := fresh && r.ts.same(&e.ts)
@@ -153,7 +165,7 @@ func sameLayout(e *node, parent uint64, index int, changed bool) bool {
 		r.ts = layoutOfText(&e.ts)
 	}
 	equal := fresh && r.style == e.layoutStyle && r.flags == e.flags&layoutFlags && r.hidden == e.hidden &&
-		r.spans == spans && r.media == media && r.placeOn == placeOn &&
+		r.spans == spans && r.media == media && r.placeOn == placeOn && r.bars == bars &&
 		r.parent == parent && r.index == int32(index) && r.nchild == int32(e.nchild) &&
 		slices.Equal(r.cols, e.cols) && slices.Equal(r.rows, e.rows)
 	if !equal {
@@ -162,7 +174,7 @@ func sameLayout(e *node, parent uint64, index int, changed bool) bool {
 		if !slices.Equal(r.cols, e.cols) || !slices.Equal(r.rows, e.rows) {
 			r.cols, r.rows = append(r.cols[:0], e.cols...), append(r.rows[:0], e.rows...)
 		}
-		r.spans, r.media, r.placeOn = spans, media, placeOn
+		r.spans, r.media, r.placeOn, r.bars = spans, media, placeOn, bars
 		r.parent, r.index, r.nchild = parent, int32(index), int32(e.nchild)
 	}
 	r.layout = n
@@ -185,7 +197,7 @@ func sameLayout(e *node, parent uint64, index int, changed bool) bool {
 	} else {
 		inner := changed || !sameText
 		for c, i := e.first, 0; c != nil; c, i = c.next, i+1 {
-			if !sameLayout(c, e.id, i, inner) {
+			if !sameLayout(c, e.id, i, inner, classic) {
 				same = false
 			}
 		}
@@ -310,7 +322,7 @@ func reuseBox(e *node, r *layoutRecord) {
 	case kindImage, kindIcon:
 		return
 	}
-	e.contentW, e.contentH = r.contentW, r.contentH
+	e.contentW, e.contentH, e.gutter = r.contentW, r.contentH, r.gutter
 	for c := e.first; c != nil; c = c.next {
 		b := &c.st.lay
 		c.x, c.y = b.box.X, b.box.Y
@@ -328,7 +340,7 @@ func keepBox(e *node, w, h float32, start uint64) {
 	r := &e.st.lay
 	r.sized, r.w, r.h = true, w, h
 	r.tl = e.tl
-	r.contentW, r.contentH = e.contentW, e.contentH
+	r.contentW, r.contentH, r.gutter = e.contentW, e.contentH, e.gutter
 	r.measured, r.measuredOK = e.measured, true
 	for c := e.first; c != nil; c = c.next {
 		if c.lay&layOwner != 0 {

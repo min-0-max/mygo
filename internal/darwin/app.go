@@ -163,6 +163,10 @@ func (b *Backend) Init(h platform.AppHandler, opts platform.AppOptions) error {
 		uintptr(nsString("NSSystemColorsDidChangeNotification")), 0)
 	send(send(workspace(), "notificationCenter"), "addObserver:selector:name:object:", uintptr(b.delegate), uintptr(sel("preferencesChanged:")),
 		uintptr(nsString("NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification")), 0)
+	// The scroller style, as a mouse is plugged in or "Show scroll bars"
+	// changes.
+	send(center, "addObserver:selector:name:object:", uintptr(b.delegate), uintptr(sel("preferencesChanged:")),
+		uintptr(nsString("NSPreferredScrollerStyleDidChangeNotification")), 0)
 	// The languages and regional formats of the user: Foundation tells of
 	// a new current locale, and System Settings of new languages, a new
 	// time and date format, which the current locale may not change.

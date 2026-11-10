@@ -195,13 +195,15 @@ type engine struct {
 	// layouts counts the frames laid out, laySeq the elements laid out
 	// (layoutBox) and computed those of them not as in the frame before;
 	// layGen is the text system's generation of the last layout, when
-	// layGenOK. noLayoutCache lays every element out anew, measuring
-	// all there is to measure and keeping nothing of their text
+	// layGenOK, and layBars the widths of classic scroll bars it laid
+	// out by (classicBars). noLayoutCache lays every element out anew,
+	// measuring all there is to measure and keeping nothing of their text
 	// (heldText), as TestLayoutCacheMatches compares (layoutcache.go).
 	layouts, laySeq uint64
 	computed        uint32
 	layGen          uint64
 	layGenOK        bool
+	layBars         [2]float32
 	noLayoutCache   bool
 
 	states map[uint64]*state
@@ -1463,6 +1465,7 @@ func (rt *engine) commitElement(e *node, clip Rect, hidden bool) {
 		s.contentW, s.contentH = e.contentW, e.contentH
 		s.barInset = e.barInset
 		s.barWidth = e.theme().scrollbarWidth()
+		s.gutter = e.gutter
 	}
 	s.hideScrollbars, _ = e.scrollbars()
 	// What is invisible keeps its box but takes neither the pointer nor
@@ -1655,7 +1658,7 @@ func (rt *engine) overScrollbar(id uint64) bool {
 	x, y := s.local(rt.pointerX, rt.pointerY)
 	x += s.x
 	y += s.y
-	g := scrollBars(Rect{s.x, s.y, s.w, s.h}, s.barInset, float32(s.contentW), float32(s.contentH), float32(s.scrollX), float32(s.scrollY), s.flags, s.barWidth, s.rtl)
+	g := containerBars(Rect{s.x, s.y, s.w, s.h}, s.barInset, s.gutter, float32(s.contentW), float32(s.contentH), float32(s.scrollX), float32(s.scrollY), s.flags, s.barWidth, s.rtl)
 	return g.vertical && g.vTrack.Contains(x, y) || g.horizontal && g.hTrack.Contains(x, y)
 }
 

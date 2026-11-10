@@ -545,8 +545,11 @@ type node struct {
 	// contentW and contentH are the size of a scroll container's content.
 	contentW, contentH float64
 	// barInset moves a scroll container's scroll bars in from its edges
-	// (ScrollbarInsets): top, right, bottom, left.
+	// (ScrollbarInsets): top, right, bottom, left. gutter is the room its
+	// classic scroll bars take, which its layout gives them
+	// (classicscroll.go).
 	barInset [4]float32
+	gutter   scrollGutter
 	// scrollBase is the offset of a List's content that its rows were
 	// placed at: placing moves them by how far the offset moved since.
 	scrollBase float64
@@ -554,15 +557,16 @@ type node struct {
 	// listRow is set on the elements holding its rows, rowIndex their row.
 	// rowsOf is the list whose rows the element holds for assistive
 	// technology, and takes the keys for: the list, or its Table.
-	// popover is the anchor of the panel of a popover. hideScrollbars and
-	// keepScrollbars are the element's Scrollbars and KeepScrollbars, and
-	// barsFrom the element whose they are instead, as a table's for the
-	// list of its rows.
+	// popover is the anchor of the panel of a popover. hideScrollbars,
+	// keepScrollbars and thinScrollbars are the element's Scrollbars,
+	// KeepScrollbars and ThinScrollbars, and barsFrom the element whose
+	// they are instead, as a table's for the list of its rows.
 	popover        *node
 	list           *listFrame
 	listRow        bool
 	hideScrollbars bool
 	keepScrollbars bool
+	thinScrollbars bool
 	barsFrom       *node
 	rowIndex       int
 	rowsOf         *listFrame
@@ -1002,6 +1006,13 @@ func (e *node) Scrollbars(visible bool) *node { e.hideScrollbars = !visible; ret
 // them still. It applies where Scrollbars does (a code editor's State has
 // KeepScrollbars), and is not inherited.
 func (e *node) KeepScrollbars(keep bool) *node { e.keepScrollbars = keep; return e }
+
+// ThinScrollbars makes this scroll container's classic scroll bars thin,
+// as CSS's scrollbar-width: thin: the system's small scroll bars, which
+// take less room beside the content (Preferences.ClassicScrollbars,
+// ThinClassicScrollbarWidth). Bars that overlay the content stay as they
+// are. It applies where Scrollbars does, and is not inherited.
+func (e *node) ThinScrollbars(thin bool) *node { e.thinScrollbars = thin; return e }
 
 // scrollbars returns whether the element hides its scroll bars
 // (Scrollbars(false)) and whether it keeps them showing (KeepScrollbars),

@@ -1322,7 +1322,80 @@ func (s *ListState) focusedRow(e *node, n int) (int, bool) {
 // sets the size of the content and the offset. Without rows, what else was
 // built in the list shows, as a scroll container's content: a message that
 // it is empty, say.
+//
+// Classic scroll bars (classicscroll.go) take their room first where the
+// heights known tell that the rows overflow the list, as a scroll
+// container's do, and where the rows laid out tell so then, which lays
+// them out again beside the bars. A bar the rows then fit beside stays
+// for this frame, and the next lays the list out without it, from the
+// heights the rows have beside it: rows wider than the bar leaves them are
+// no taller, and fit there too.
 func (e *node) layoutList(w, h float32) {
+	e.gutter.border = e.border
+	bar := e.classicBarWidth()
+	overflowsX := func(g scrollGutter) bool {
+		return e.flags&flagScrollX != 0 && overflows(e.rowMinW+e.padX(), w, g.v)
+	}
+	if bar > 0 {
+		f := e.list
+		hs, gap := &f.s.heights, max(e.gapY, 0)
+		known := e.contentY() + e.pad[2] + e.border[2]
+		if f.n > 0 {
+			known += float32(hs.top(f.n, float64(gap))) - gap
+		}
+		g := e.gutter
+		for range 2 {
+			if e.flags&flagScrollY != 0 && g.v == 0 && overflows(known, h, g.h) {
+				g.v = bar
+			}
+			if g.h == 0 && overflowsX(g) {
+				g.h = bar
+			}
+		}
+		e.gutter = g
+	}
+	for first := e.gutter; ; {
+		e.layoutRows(w-e.gutter.v, h-e.gutter.h)
+		if bar <= 0 {
+			break
+		}
+		// The rows overflow the height they were laid out in; a
+		// horizontal bar the vertical one brings leaves the vertical one
+		// as it is.
+		g := e.gutter
+		over := e.contentH > float64(h-g.h)+0.5
+		if e.flags&flagScrollY != 0 && g.v == 0 && over {
+			g.v = bar
+		}
+		if g.h == 0 && overflowsX(g) {
+			g.h = bar
+		}
+		if g == e.gutter {
+			if first.v > 0 && !over {
+				// Laid out with a bar the rows fit beside: the next frame
+				// lays them out without it.
+				e.c.rt.animating = true
+			}
+			break
+		}
+		e.gutter = g
+	}
+	e.contentW += float64(e.gutter.v)
+	e.contentH += float64(e.gutter.h)
+	if e.gutter.v > 0 && e.rtl() {
+		// Right of the vertical bar, on the left: the rows, the header
+		// pinned among them, and what shows without rows.
+		for c := e.first; c != nil; c = c.next {
+			if c.listRow || c.flags&flagAbsolute == 0 {
+				c.x += e.gutter.v
+			}
+		}
+	}
+}
+
+// layoutRows lays the rows of a List out w×h, beside its classic scroll
+// bars (layoutList).
+func (e *node) layoutRows(w, h float32) {
 	f := e.list
 	s, n := f.s, f.n
 	hs := &s.heights

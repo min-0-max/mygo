@@ -45,6 +45,18 @@ type Preferences struct {
 	// the opposite. Tooltips and what shows on hover alone want a pointer
 	// that hovers.
 	NoHover, NoAnyHover bool
+	// ClassicScrollbars tells that scroll bars take room beside the
+	// content they scroll, and show while it overflows, rather than
+	// overlaying it only as it scrolls or the pointer is over it: macOS's
+	// legacy scroller style, as "Show scroll bars: Always" asks, or
+	// "Automatically" with a mouse. Scroll containers then lay their
+	// content out beside their bars, as a web page's do, and draw the
+	// bars with a track. ClassicScrollbarWidth is how wide a bar is in
+	// DIPs, and ThinClassicScrollbarWidth that of a thin one
+	// (ThinScrollbars), as the system draws its own; both are 0 where
+	// bars overlay.
+	ClassicScrollbars                                bool
+	ClassicScrollbarWidth, ThinClassicScrollbarWidth float32
 }
 
 // PointerAccuracy is how accurately a pointing device points.
@@ -87,6 +99,11 @@ func (rt *engine) preferences() Preferences {
 			AnyPointer:         PointerAccuracy(p.AnyPointer),
 			NoHover:            p.NoHover,
 			NoAnyHover:         p.NoAnyHover,
+		}
+		if p.ClassicScrollbars {
+			rt.prefs.ClassicScrollbars = true
+			rt.prefs.ClassicScrollbarWidth = float32(p.ClassicScrollbarWidth)
+			rt.prefs.ThinClassicScrollbarWidth = float32(p.ThinClassicScrollbarWidth)
 		}
 		if rt.prefs.TextScale <= 0 {
 			rt.prefs.TextScale = 1

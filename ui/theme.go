@@ -60,9 +60,14 @@ type Theme struct {
 	Inverse     Color
 	InverseText Color
 	// Scrollbar colors scroll bar thumbs, ScrollbarWidth DIPs wide (6 by
-	// default; 0 is 6).
+	// default; 0 is 6) where they overlay the content. ScrollbarTrack
+	// fills the track of classic scroll bars, which take room beside the
+	// content as wide as the system's (Preferences.ClassicScrollbars),
+	// and Border the line between a track and the content; left zero, it
+	// is Surface.
 	Scrollbar      Color
 	ScrollbarWidth float32
+	ScrollbarTrack Color
 	// Radius rounds the corners of controls.
 	Radius float32
 	// Spacing is the unit of the room widgets leave inside and between
