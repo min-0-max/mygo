@@ -210,3 +210,103 @@ func TestPartialFramesApart(t *testing.T) {
 		t.Errorf("redrew rectangles %v, want [2 2 2 2]", rects)
 	}
 }
+
+// TestLayerLifecyclePixelsMatchWhole checks pixels acquired from the actual
+// CAMetalLayer after direct lifecycle transitions. It does not establish which
+// drawable Core Animation displayed, or reproduce an intermittent compositor
+// failure. The readback copies the presented texture, not a substituted target.
+func TestLayerLifecyclePixelsMatchWhole(t *testing.T) {
+	r := layerRenderer(t)
+	ref, err := newRenderer()
+	if err != nil {
+		unavailable(t, err)
+	}
+	defer ref.Release()
+	var texture id
+	previous := TestPresenting
+	TestPresenting = func(layer, drawable uintptr) {
+		if id(layer) != r.layer {
+			return
+		}
+		if texture != 0 {
+			panic("a frame presented more than one drawable")
+		}
+		texture = send(send(id(drawable), "texture"), "retain")
+	}
+	defer func() {
+		TestPresenting = previous
+		pool(func() { release(&texture) })
+	}()
+
+	width := 64
+	step := 0
+	check := func(transition string) {
+		t.Helper()
+		s := squareAt(step % 8)
+		s.Width = width
+		// Fixed chrome at opposite edges survives changes confined to the
+		// moving square, so clearing without restoring it is observable.
+		s.Ops = append(s.Ops,
+			scene.Op{Kind: scene.OpFill, Rect: scene.Rect{X: 2, Y: 20, W: 8, H: 8}, Color: scene.Color{G: 255, A: 255}},
+			scene.Op{Kind: scene.OpFill, Rect: scene.Rect{X: float32(width - 10), Y: 20, W: 8, H: 8}, Color: scene.Color{B: 255, A: 255}})
+		pool(func() {
+			tx := class("CATransaction")
+			sendMain(tx, "begin")
+			err = r.Render(s)
+			sendMain(tx, "commit")
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if texture == 0 {
+			t.Fatalf("%s frame %d presented no drawable", transition, step)
+		}
+		var got []byte
+		pool(func() {
+			// Drawable storage can be private. Copy into a CPU-readable
+			// texture on the same command queue, after the frame's writes.
+			readback := r.newTexture(s.Width, s.Height, pixelFormatBGRA8Unorm, usageRenderTarget|usageShaderRead, nil, 0)
+			if readback == 0 {
+				err = errors.New("no readback texture")
+				return
+			}
+			defer release(&readback)
+			cb := send(r.queue, "commandBuffer")
+			blit := send(cb, "blitCommandEncoder")
+			send(blit, "copyFromTexture:toTexture:", texture, readback)
+			send(blit, "synchronizeResource:", readback)
+			send(blit, "endEncoding")
+			send(cb, "commit")
+			send(cb, "waitUntilCompleted")
+			if int(send(cb, "status")) == statusError {
+				err = fmt.Errorf("readback failed: %s", describe(send(cb, "error")))
+				return
+			}
+			got = make([]byte, s.Width*s.Height*4)
+			msgGetBytes(readback, sel("getBytes:bytesPerRow:fromRegion:mipmapLevel:"), unsafe.Pointer(&got[0]), uint(s.Width*4),
+				mtlRegion{W: uint(s.Width), H: uint(s.Height), D: 1}, 0)
+			release(&texture)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := renderRaw(t, ref, s, false)
+		if n := differing(got, want); n != 0 {
+			t.Fatalf("%s frame %d: actual layer drawable differs from whole scene in %d bytes", transition, step, n)
+		}
+		step++
+	}
+	check("initial")
+	width = 80 // The renderer's normal fit path changes drawable size.
+	check("fit larger")
+	width = 64
+	check("fit original")
+	r.trim() // Direct transition; no idle timer or elapsed-time criterion.
+	check("trim restore")
+	r.pre.wait()
+	r.setDrawables(3)
+	check("two to three")
+	r.pre.wait()
+	r.setDrawables(2)
+	check("three to two")
+}
