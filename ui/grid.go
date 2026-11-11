@@ -6,7 +6,9 @@ type Track struct {
 	kind trackKind
 	// minContent makes an Fr track no smaller than its items' content.
 	minContent bool
-	v, min     float32
+	// fill repeats the track as many times as the room holds (AutoFill).
+	fill   bool
+	v, min float32
 }
 
 type trackKind uint8
@@ -50,6 +52,60 @@ func (t Track) Min(v float32) Track { t.min = max(v, 0); return t }
 // spanning several tracks widen the MinContent Fr tracks among them, in
 // proportion to their shares. Other tracks are unchanged by it.
 func (t Track) MinContent() Track { t.minContent = t.kind == trackFr; return t }
+
+// AutoFill repeats the track as many times as the room the grid's other
+// tracks leave holds it by its least size, its Fixed size or its Min, and
+// at least once, as CSS's repeat(auto-fill, …): cards that take as many
+// columns of a least width as the grid is wide, sharing what is left.
+//
+//	ui.Grid(c).ColumnTracks(ui.Fr(1).Min(240).AutoFill()).Gap(12)
+//
+// Where the room is not known, as for the grid's max-content width, it is
+// repeated once. A grid repeats one such track; another AutoFill counts
+// once.
+func (t Track) AutoFill() Track { t.fill = true; return t }
+
+// least returns the size a track repeated by AutoFill is counted at.
+func (t Track) least() float32 {
+	if t.kind == trackFixed {
+		return t.v
+	}
+	return t.min
+}
+
+// filled returns the tracks with the one AutoFill repeats repeated as many
+// times as room avail holds with gaps gap between tracks, in the scratch:
+// the room less the other tracks, their least sizes, and the gaps beside
+// them, as CSS finds the number of repetitions of auto-fill.
+func filled(tracks []Track, avail, gap float32, s *gridScratch) []Track {
+	at := -1
+	for i, t := range tracks {
+		if t.fill {
+			at = i
+			break
+		}
+	}
+	if at < 0 {
+		return tracks
+	}
+	n := 1
+	if size := tracks[at].least(); finite(avail) && size+gap > 0 {
+		room := avail
+		for i, t := range tracks {
+			if i != at {
+				room -= t.least() + gap
+			}
+		}
+		n = max(1, int((room+gap)/(size+gap)))
+	}
+	first := len(s.t)
+	s.t = append(s.t, tracks[:at]...)
+	for range n {
+		s.t = append(s.t, tracks[at])
+	}
+	s.t = append(s.t, tracks[at+1:]...)
+	return s.t[first:]
+}
 
 // gridCell is where an element goes in its grid: lines from 1, 0 for
 // automatic placement, and spans, 0 for 1 and negative to the last line.
@@ -186,13 +242,16 @@ type gridScratch struct {
 	occ   []bool
 	cs    []contrib
 	f     []float32
+	// t holds the columns a grid repeats a track to (filled).
+	t []Track
 }
 
-// gridPlace places the in-flow children of a grid in its cells, in the
-// scratch, and returns them with the number of columns and rows.
-func gridPlace(e *node, s *gridScratch) (items []gridItem, nc, nr int) {
+// gridPlace places the in-flow children of a grid with columns cols in its
+// cells, in the scratch, and returns them with the number of columns and
+// rows.
+func gridPlace(e *node, s *gridScratch, cols []Track) (items []gridItem, nc, nr int) {
 	first := len(s.items)
-	nc = max(len(e.cols), 1)
+	nc = max(len(cols), 1)
 	for c := e.first; c != nil; c = c.next {
 		if c.flags&flagAbsolute != 0 || c.hidden {
 			continue
@@ -200,7 +259,7 @@ func gridPlace(e *node, s *gridScratch) (items []gridItem, nc, nr int) {
 		it := gridItem{e: c, col: int(c.cell.col) - 1, row: int(c.cell.row) - 1, colSpan: int(c.cell.colSpan), rowSpan: int(c.cell.rowSpan)}
 		switch {
 		case it.colSpan < 0:
-			it.colSpan = max(len(e.cols)-max(it.col, 0), 1)
+			it.colSpan = max(len(cols)-max(it.col, 0), 1)
 		case it.colSpan == 0:
 			it.colSpan = 1
 		}
@@ -560,9 +619,9 @@ func sizeTracks(tracks []Track, n int, avail, gap float32, cs []contrib, minCont
 	}
 }
 
-// gridColumns sizes the columns of a grid placed in items, with room avail
-// (inf when unknown), in the scratch.
-func gridColumns(e *node, s *gridScratch, items []gridItem, nc int, avail float32, minContent bool) []float32 {
+// gridColumns sizes the columns cols of a grid placed in items, with room
+// avail (inf when unknown), in the scratch.
+func gridColumns(e *node, s *gridScratch, cols []Track, items []gridItem, nc int, avail float32, minContent bool) []float32 {
 	first, cfirst := len(s.f), len(s.cs)
 	for range 2 * nc {
 		s.f = append(s.f, 0)
@@ -582,12 +641,12 @@ func gridColumns(e *node, s *gridScratch, items []gridItem, nc int, avail float3
 		if v, ok := c.width.resolve(-1); ok {
 			w := c.clampW(v, inf) + c.marginX()
 			cs[i].min, cs[i].max = w, w
-		} else if contributes(e.cols, it.col, it.colSpan, avail, minContent) || e.c.rt.noLayoutCache {
+		} else if contributes(cols, it.col, it.colSpan, avail, minContent) || e.c.rt.noLayoutCache {
 			cs[i].min = intrinsic(c, false) + c.marginX()
 			cs[i].max = intrinsic(c, true) + c.marginX()
 		}
 	}
-	sizeTracks(e.cols, nc, avail, e.gapX, cs, minContent, e.justify == alignAuto, sizes, limits)
+	sizeTracks(cols, nc, avail, e.gapX, cs, minContent, e.justify == alignAuto, sizes, limits)
 	s.cs = s.cs[:cfirst]
 	return sizes
 }
@@ -596,14 +655,15 @@ func gridColumns(e *node, s *gridScratch, items []gridItem, nc int, avail float3
 // content box.
 func gridIntrinsic(e *node, maxContent bool) float32 {
 	s := &e.c.rt.grid
-	firstItem, firstF := len(s.items), len(s.f)
+	firstItem, firstF, firstT := len(s.items), len(s.f), len(s.t)
 	defer func() {
 		// Laid out again only when it changed, it lets go of its elements.
 		clear(s.items[firstItem:])
-		s.items, s.f = s.items[:firstItem], s.f[:firstF]
+		s.items, s.f, s.t = s.items[:firstItem], s.f[:firstF], s.t[:firstT]
 	}()
-	items, nc, _ := gridPlace(e, s)
-	sizes := gridColumns(e, s, items, nc, inf, !maxContent)
+	tracks := filled(e.cols, inf, e.gapX, s)
+	items, nc, _ := gridPlace(e, s, tracks)
+	sizes := gridColumns(e, s, tracks, items, nc, inf, !maxContent)
 	w := e.gapX * float32(max(nc-1, 0))
 	for _, v := range sizes {
 		w += v
@@ -617,13 +677,14 @@ func gridIntrinsic(e *node, maxContent bool) float32 {
 // out in turn.
 func gridLayout(e *node, cw, ch float32, commit bool) (usedW, usedH float32) {
 	s := &e.c.rt.grid
-	firstItem, firstF, firstC := len(s.items), len(s.f), len(s.cs)
+	firstItem, firstF, firstC, firstT := len(s.items), len(s.f), len(s.cs), len(s.t)
 	defer func() {
 		clear(s.items[firstItem:])
-		s.items, s.f, s.cs = s.items[:firstItem], s.f[:firstF], s.cs[:firstC]
+		s.items, s.f, s.cs, s.t = s.items[:firstItem], s.f[:firstF], s.cs[:firstC], s.t[:firstT]
 	}()
-	items, nc, nr := gridPlace(e, s)
-	cols := gridColumns(e, s, items, nc, cw, false)
+	tracks := filled(e.cols, cw, e.gapX, s)
+	items, nc, nr := gridPlace(e, s, tracks)
+	cols := gridColumns(e, s, tracks, items, nc, cw, false)
 
 	// The rows, from the heights of the items at the widths their columns
 	// give them.
