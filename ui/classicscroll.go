@@ -76,6 +76,43 @@ func (rt *engine) classicBars() [2]float32 {
 	return [2]float32{p.ClassicScrollbarWidth, p.ThinClassicScrollbarWidth}
 }
 
+// intrinsicBar returns the room the classic vertical bar of the element, a
+// scroll container, adds to its max-content and min-content widths: the
+// bar's width where its last layout gave the bar room, else 0. WebKit
+// counts so the bar of a box of overflow auto that had scrollable overflow
+// after its last layout in its preferred widths (RenderBox's
+// intrinsicScrollbarLogicalWidthIncludingGutter), which makes a box sized
+// by its content, as a menu, as much wider than its content.
+func (e *node) intrinsicBar() float32 {
+	if e.flags&flagScrollY == 0 || !e.st.vbar {
+		return 0
+	}
+	return e.classicBarWidth()
+}
+
+// keepBar keeps whether the layout of the element, a scroll container,
+// gave a classic vertical bar room, which its intrinsic widths count
+// (intrinsicBar). Where that changed after they were measured, the widths
+// measured of it and of the elements around it counted the bar as it was:
+// those elements forget them and lay out again in the next frame, as a
+// List lays out again without a bar its rows came to fit beside.
+func (e *node) keepBar() {
+	shown := e.gutter.v > 0
+	if shown == e.st.vbar {
+		return
+	}
+	e.st.vbar = shown
+	if e.intrOK == 0 {
+		return
+	}
+	for p := e; p != nil; p = p.parent {
+		p.intrOK = 0
+		p.keepMeasured()
+		p.st.lay.ok = false
+	}
+	e.c.rt.animating = true
+}
+
 // overflows reports whether content of a container of size view, padding
 // and border included, overflows it with room taken by a bar across it.
 func overflows(content, view, taken float32) bool { return content > view-taken+0.5 }
