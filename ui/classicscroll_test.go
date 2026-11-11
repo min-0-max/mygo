@@ -215,3 +215,37 @@ func TestClassicScrollbarsList(t *testing.T) {
 		t.Fatalf("a row of a list that fits is %g wide with gutter %+v, want 200 and none", row.w, list.gutter)
 	}
 }
+
+// A scroll container sized by its content, as a menu is, counts the classic
+// vertical bar its content overflows it with in its width, as a box of
+// overflow auto does on a web page: its content keeps its width beside the
+// bar, and the container is as much wider. Content that fits, and bars that
+// overlay, add nothing.
+func TestClassicScrollbarsWidenAContainerSizedByItsContent(t *testing.T) {
+	tall := float32(300)
+	var scroll, content *state
+	view := func(c *context) {
+		s := coreScroll(c).Absolute().Left(10).Top(10).MaxHeight(100).ThinScrollbars(true)
+		scroll = s.st
+		s.Children(func() {
+			content = coreBox(c).Width(100).Height(tall).st
+		})
+	}
+	tt := coreNewTesterWith(view, 300, 200, TesterOptions{Preferences: classic})
+	defer tt.rt.close()
+	if scroll.w != 113 || content.w != 100 || scroll.gutter.v != 13 {
+		t.Fatalf("a container sized by content overflowing it is %g wide, its content %g, with gutter %+v; want 113, 100 and a thin bar",
+			scroll.w, content.w, scroll.gutter)
+	}
+	tall = 50
+	tt.Frame()
+	if scroll.w != 100 || scroll.gutter.classic() {
+		t.Fatalf("a container sized by content that fits it is %g wide with gutter %+v; want 100 and none", scroll.w, scroll.gutter)
+	}
+	tall = 300
+	tt.Frame()
+	tt.SetPreferences(Preferences{})
+	if scroll.w != 100 || content.w != 100 {
+		t.Fatalf("a container sized by its content under overlay bars is %g wide, its content %g; want 100 and 100", scroll.w, content.w)
+	}
+}

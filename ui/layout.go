@@ -444,7 +444,7 @@ func measureIntrinsic(e *node, maxContent bool) float32 {
 			w = 0
 		}
 	}
-	return w + e.padX()
+	return w + e.padX() + e.intrinsicBar()
 }
 
 // autoMinWidth returns the least width of an item of a row whose width
@@ -597,6 +597,7 @@ func computeBox(e *node, w, h float32) {
 	}
 	if e.list != nil {
 		e.layoutList(w, h)
+		e.keepBar()
 		return
 	}
 	if e.overflow != nil {
@@ -671,6 +672,7 @@ func computeBox(e *node, w, h float32) {
 		// beside them.
 		e.contentW = float64(max(uw, vw) + e.padX() + e.gutter.v)
 		e.contentH = float64(max(uh, vh) + e.padY() + e.gutter.h)
+		e.keepBar()
 	}
 	layoutAbsolute(e)
 }

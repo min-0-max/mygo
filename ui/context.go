@@ -806,6 +806,10 @@ type state struct {
 	barInset [4]float32
 	barWidth float32
 	gutter   scrollGutter
+	// vbar tells that the last layout of the element, a scroll container,
+	// gave a classic vertical bar room (keepBar), which its intrinsic
+	// widths count (intrinsicBar).
+	vbar bool
 	// barsShown reports whether the last frame painted the element's
 	// scroll bars: they show only while it is hovered or a bar is
 	// dragged, unless it keeps them (KeepScrollbars).
