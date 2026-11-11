@@ -246,6 +246,70 @@ func TestGridTrackMinimums(t *testing.T) {
 
 // Percentages of a grid's children are of their cells, and count as
 // automatic sizes while the tracks are sized (#906).
+// A track that AutoFill repeats is repeated as many times as the room the
+// other tracks leave holds it by its least size, at least once, as CSS's
+// repeat(auto-fill, minmax(<least>, 1fr)): beside a classic scroll bar
+// that room is less, and holds fewer.
+func TestGridAutoFill(t *testing.T) {
+	check := func(t *testing.T, b, want map[string]Rect) {
+		t.Helper()
+		for k, w := range want {
+			if !nearRect(b[k], w) {
+				t.Errorf("%s at %v, want %v", k, b[k], w)
+			}
+		}
+	}
+	five := func(c *context, prefix string) {
+		for i := range 5 {
+			coreBox(c).Height(10).Label(prefix + string(rune('0'+i)))
+		}
+	}
+	t.Run("as many as the width holds", func(t *testing.T) {
+		b := boxes(t, func(c *context) {
+			coreGrid(c).ColumnTracks(Fr(1).Min(100).AutoFill()).GapX(10).Width(330).Children(func() { five(c, "a") })
+			coreGrid(c).ColumnTracks(Fr(1).Min(100).AutoFill()).GapX(10).Width(200).Children(func() { five(c, "b") })
+			coreGrid(c).ColumnTracks(Fr(1).Min(100).AutoFill()).GapX(10).Width(50).Children(func() { five(c, "c") })
+		}, 500, 200, "a0", "a2", "a3", "b0", "b1", "c0")
+		check(t, b, map[string]Rect{
+			"a0": {0, 0, 103.333, 10}, "a2": {226.667, 0, 103.333, 10}, "a3": {0, 10, 103.333, 10},
+			"b0": {0, 20, 200, 10}, "b1": {0, 30, 200, 10},
+			"c0": {0, 70, 100, 10},
+		})
+	})
+	t.Run("beside the other tracks", func(t *testing.T) {
+		b := boxes(t, func(c *context) {
+			coreGrid(c).ColumnTracks(Fixed(50), Fr(1).Min(100).AutoFill()).GapX(10).Width(330).Children(func() {
+				coreBox(c).Height(10).Label("a")
+				coreBox(c).Height(10).Label("b")
+				coreBox(c).Height(10).Label("c")
+				coreBox(c).Height(10).Label("d")
+			})
+		}, 500, 200, "a", "b", "c", "d")
+		check(t, b, map[string]Rect{"a": {0, 0, 50, 10}, "b": {60, 0, 130, 10}, "c": {200, 0, 130, 10}, "d": {0, 10, 50, 10}})
+	})
+	t.Run("beside a classic scroll bar", func(t *testing.T) {
+		var grid, first *state
+		tt := coreNewTesterWith(func(c *context) {
+			coreScroll(c).Size(330, 100).Children(func() {
+				g := coreGrid(c).ColumnTracks(Fr(1).Min(100).AutoFill()).GapX(10).FillWidth()
+				grid = g.st
+				g.Children(func() {
+					for i := range 9 {
+						b := coreBox(c).Height(40)
+						if i == 0 {
+							first = b.st
+						}
+					}
+				})
+			})
+		}, 400, 200, TesterOptions{Preferences: classic})
+		defer tt.rt.close()
+		if grid.w != 313 || !near(first.w, 151.5) {
+			t.Fatalf("an auto-filled grid beside a classic bar is %g wide with columns %g wide, want 313 and two of 151.5", grid.w, first.w)
+		}
+	})
+}
+
 func TestGridPercentages(t *testing.T) {
 	check := func(t *testing.T, b, want map[string]Rect) {
 		t.Helper()
