@@ -34,8 +34,10 @@ type FrameRecord struct {
 	// last build pass of the window.
 	Damage, Nodes int
 	Outcome       FrameOutcome
-	// CommandBuffer tells that the frame committed a command buffer.
+	// CommandBuffer tells that the frame committed a command buffer, and
+	// Committed when it did, 0 when it did not.
 	CommandBuffer bool
+	Committed     uint64
 	// After the frame, the window asks for a frame, animates, paints again,
 	// or has a timer armed for a frame.
 	AsksFrame, Animates, Repaints, Timer bool
@@ -64,19 +66,29 @@ type CommitRecord struct {
 	At   uint64
 }
 
+// CompleteRecord reports a command buffer that completed, a frame's or one
+// committed outside a frame: Committed is the Committed of its frame or the
+// At of its CommitRecord, and Completed when its completed handler ran.
+type CompleteRecord struct {
+	Committed, Completed uint64
+}
+
 // FrameRecorder hears the frames of a window, each on the thread that drew it.
 // Frame must not keep its record, which the next frame writes over. Clock gives
-// the time of the records.
+// the time of the records. Complete, when set, hears each command buffer
+// complete, on the thread that runs its completed handler, which is none of
+// the frame's.
 type FrameRecorder struct {
-	Clock  func() uint64
-	Frame  func(*FrameRecord)
-	Commit func(CommitRecord)
+	Clock    func() uint64
+	Frame    func(*FrameRecord)
+	Commit   func(CommitRecord)
+	Complete func(CompleteRecord)
 }
 
 // frameReporter is a GPU renderer that tells what came of a frame (Metal's), and
 // reports each command buffer it commits outside a frame.
 type frameReporter interface {
-	ReportFrames(clock func() uint64, commit func(gpu.CommitKind, uint64))
+	ReportFrames(clock func() uint64, commit func(gpu.CommitKind, uint64), complete func(committed, completed uint64))
 	FrameFacts() gpu.FrameFacts
 }
 
@@ -102,9 +114,15 @@ func (h *windowHost) reportFrames() {
 	if !ok || r == nil {
 		return
 	}
+	var complete func(committed, completed uint64)
+	if r.Complete != nil {
+		complete = func(committed, completed uint64) {
+			r.Complete(CompleteRecord{Committed: committed, Completed: completed})
+		}
+	}
 	f.ReportFrames(r.Clock, func(kind gpu.CommitKind, at uint64) {
 		r.Commit(CommitRecord{Kind: CommitKind(kind), At: at})
-	})
+	}, complete)
 }
 
 // frameFacts tells what came of the frame presented last.
@@ -143,7 +161,7 @@ func (rt *engine) reportFrame() {
 		facts := rt.host.frameFacts()
 		f.Outcome = FrameOutcome(facts.Outcome)
 		f.Request, f.DrawableWait = facts.Request, facts.DrawableWait
-		f.Damage, f.CommandBuffer = facts.Damage, facts.CommandBuffer
+		f.Damage, f.CommandBuffer, f.Committed = facts.Damage, facts.CommandBuffer, facts.Committed
 		if f.Request == 0 && (facts.Outcome == gpu.FrameTransaction || facts.Outcome == gpu.FrameImmediate) {
 			f.Request = rt.recordAsked
 		}

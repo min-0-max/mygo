@@ -3,6 +3,7 @@
 package metal
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -323,17 +324,31 @@ func TestStalePost(t *testing.T) {
 	}
 }
 
-// commits keeps the commits that a renderer reports outside its frames.
+// commits keeps the commits that a renderer reports outside its frames, and
+// hears each command buffer complete, which Metal reports on a thread of its
+// own, so the clock counts atomically.
 type commits struct {
-	kinds []gpu.CommitKind
-	times []uint64
-	clock uint64
+	kinds     []gpu.CommitKind
+	times     []uint64
+	clock     atomic.Uint64
+	completed chan [2]uint64
 }
 
 func (c *commits) watch(r *Renderer) {
-	r.ReportFrames(func() uint64 { c.clock++; return c.clock }, func(kind gpu.CommitKind, at uint64) {
+	c.completed = make(chan [2]uint64, 16)
+	r.ReportFrames(func() uint64 { return c.clock.Add(1) }, func(kind gpu.CommitKind, at uint64) {
 		c.kinds, c.times = append(c.kinds, kind), append(c.times, at)
-	})
+	}, func(committed, completed uint64) { c.completed <- [2]uint64{committed, completed} })
+}
+
+// complete checks that the next command buffer that completes is the one
+// committed at committed, and that it completed after it committed.
+func (c *commits) complete(t *testing.T, what string, committed uint64) {
+	t.Helper()
+	got := wait.For(t, what+" completes", c.completed)
+	if got[0] != committed || got[1] <= committed {
+		t.Errorf("%s committed at %d reported the completion %v", what, committed, got)
+	}
 }
 
 // TestFrameFacts checks what a renderer tells of each kind of frame: one that
@@ -374,22 +389,24 @@ func TestFrameFacts(t *testing.T) {
 		return r.FrameFacts()
 	}
 	f := frame(0)
-	if f.Outcome != gpu.FrameTransaction || !f.CommandBuffer || f.Request == 0 || f.Damage != 64*32 {
+	if f.Outcome != gpu.FrameTransaction || !f.CommandBuffer || f.Committed == 0 || f.Request < f.Committed || f.Damage != 64*32 {
 		t.Errorf("a frame that changes the layer: %+v", f)
 	}
+	c.complete(t, "the frame that changes the layer", f.Committed)
 	f = frame(1)
-	if f.Outcome != gpu.FrameImmediate || !f.CommandBuffer || f.Request == 0 || f.Damage == 0 || f.Damage >= 64*32 {
+	if f.Outcome != gpu.FrameImmediate || !f.CommandBuffer || f.Request == 0 || f.Committed < f.Request || f.Damage == 0 || f.Damage >= 64*32 {
 		t.Errorf("a frame that presents at once: %+v", f)
 	}
+	c.complete(t, "the frame that presents at once", f.Committed)
 	f = frame(1)
-	if f.Outcome != gpu.FrameUndamaged || f.CommandBuffer || f.Request != 0 || f.Damage != 0 {
+	if f.Outcome != gpu.FrameUndamaged || f.CommandBuffer || f.Committed != 0 || f.Request != 0 || f.Damage != 0 {
 		t.Errorf("a frame that changed nothing: %+v", f)
 	}
 	if !r.pre.fetching {
 		t.Fatal("no drawable being fetched")
 	}
 	f = frame(2)
-	if f.Outcome != gpu.FrameStashed || f.CommandBuffer || f.Request != 0 || f.Damage == 0 {
+	if f.Outcome != gpu.FrameStashed || f.CommandBuffer || f.Committed != 0 || f.Request != 0 || f.Damage == 0 {
 		t.Errorf("a frame that waits for its drawable: %+v", f)
 	}
 	if len(c.kinds) != 0 {
@@ -398,8 +415,9 @@ func TestFrameFacts(t *testing.T) {
 	gate <- struct{}{}
 	wait.For(t, "the post", posted)()
 	if len(c.kinds) != 1 || c.kinds[0] != gpu.CommitStashed || c.times[0] == 0 {
-		t.Errorf("the frame that waited committed %v at %v", c.kinds, c.times)
+		t.Fatalf("the frame that waited committed %v at %v", c.kinds, c.times)
 	}
+	c.complete(t, "the frame that waited", c.times[0])
 }
 
 // TestDrawableWaitOfAFrame checks that a frame tells how long it waited for its
@@ -447,8 +465,9 @@ func TestPixelsCommitOutsideAFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(c.kinds) != 1 || c.kinds[0] != gpu.CommitPixels || c.times[0] == 0 {
-		t.Errorf("a render to pixels committed %v at %v", c.kinds, c.times)
+		t.Fatalf("a render to pixels committed %v at %v", c.kinds, c.times)
 	}
+	c.complete(t, "the render to pixels", c.times[0])
 }
 
 // TestAFrameAloneFetchesNoDrawable draws a frame after a pause, as a key or
