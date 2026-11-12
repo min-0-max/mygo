@@ -328,6 +328,44 @@ func (g *waitingGPU) Ready(wake func()) bool {
 	return false
 }
 
+// TestHeldFrameDrawsOnRelease checks that a frame that a paced surface
+// asked for while the window held its frames draws once the window lets
+// go, through the main thread, rather than at a later refresh, and that a
+// release with no frame asked for draws none.
+func TestHeldFrameDrawsOnRelease(t *testing.T) {
+	g := &testGPU{}
+	h, _, frame := gpuHost(t, func() (gpuRenderer, error) { return g, nil })
+	s := &pacedSurface{h: h}
+	var posted []func()
+	h.conn.Surface = s
+	h.conn.Post = func(fn func()) { posted = append(posted, fn) }
+	frame()
+	drawn := g.frames
+	h.holdFrames(true)
+	h.rt.changed()
+	frame()
+	if g.frames != drawn {
+		t.Fatal("a frame drew while the window holds its frames")
+	}
+	h.holdFrames(false)
+	if g.frames != drawn || len(posted) != 1 {
+		t.Fatalf("released: %d frames drawn, %d posted, want 0 and 1", g.frames-drawn, len(posted))
+	}
+	fns := posted
+	posted = nil
+	for _, fn := range fns {
+		fn()
+	}
+	if g.frames != drawn+1 || s.now != 1 {
+		t.Fatalf("after the release: %d frames drawn, %d at once, want 1 and 1", g.frames-drawn, s.now)
+	}
+	h.holdFrames(true)
+	h.holdFrames(false)
+	if len(posted) != 0 || s.now != 1 {
+		t.Fatalf("a release with no frame asked for posted %d and drew %d at once", len(posted), s.now-1)
+	}
+}
+
 // TestPacedFrameWaitsForTheDisplay checks that a frame paced by the
 // display waits, without drawing, for the GPU renderer to be able to draw
 // it, and draws once it wakes the window, through the main thread.
