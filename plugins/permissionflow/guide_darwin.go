@@ -132,11 +132,11 @@ func registerClasses() error {
 			{Cmd: sel("mouseDown:"), Fn: cardMouseDown},
 			{Cmd: sel("mouseDragged:"), Fn: cardMouseDragged},
 			{Cmd: sel("mouseUp:"), Fn: cardMouseUp},
-			{Cmd: sel("acceptsFirstMouse:"), Fn: func(objc.ID, objc.SEL, objc.ID) bool { return true }},
-			{Cmd: sel("mouseDownCanMoveWindow"), Fn: func(objc.ID, objc.SEL) bool { return false }},
+			{Cmd: sel("acceptsFirstMouse:"), Fn: mainthread.Constant{Fn: func(objc.ID, objc.SEL, objc.ID) bool { return true }, Value: true}},
+			{Cmd: sel("mouseDownCanMoveWindow"), Fn: mainthread.Constant{Fn: func(objc.ID, objc.SEL) bool { return false }}},
 			{Cmd: sel("resetCursorRects"), Fn: cardResetCursorRects},
 			{Cmd: sel("draggingSession:sourceOperationMaskForDraggingContext:"), Fn: func(objc.ID, objc.SEL, objc.ID, int) uint { return nsDragOperationCopy }},
-			{Cmd: sel("ignoreModifierKeysForDraggingSession:"), Fn: func(objc.ID, objc.SEL, objc.ID) bool { return true }},
+			{Cmd: sel("ignoreModifierKeysForDraggingSession:"), Fn: mainthread.Constant{Fn: func(objc.ID, objc.SEL, objc.ID) bool { return true }, Value: true}},
 		})
 		if classesErr != nil {
 			return

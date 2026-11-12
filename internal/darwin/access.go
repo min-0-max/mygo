@@ -1314,7 +1314,7 @@ func registerAccessClass() {
 			}
 			return attributedAccessString(&el.node, r)
 		}),
-		method("accessibilityLineForIndex:", func(self id, _ objc.SEL, i int) int { return 0 }),
+		constant("accessibilityLineForIndex:", false, func(self id, _ objc.SEL, i int) int { return 0 }),
 		method("accessibilityRangeForLine:", func(self id, _ objc.SEL, line int) nsRange {
 			if el := b().accessElementOf(self); el != nil {
 				return nsRange{Length: uint(units([]rune(el.node.Value)))}
@@ -1335,7 +1335,7 @@ func registerAccessClass() {
 func accessViewMethods() []objc.MethodDef {
 	b := func() *Backend { return theBackend }
 	return []objc.MethodDef{
-		method("isAccessibilityElement", func(self id, _ objc.SEL) bool { return false }),
+		constant("isAccessibilityElement", false, func(self id, _ objc.SEL) bool { return false }),
 		method("accessibilityChildren", func(self id, _ objc.SEL) id {
 			s := b().surfaceOf(self)
 			if s == nil {

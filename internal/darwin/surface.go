@@ -1224,7 +1224,7 @@ func registerSurfaceClass() {
 				s.nativeDataEvent(info, platform.DataDragLeave)
 			}
 		}),
-		method("prepareForDragOperation:", func(self id, _ objc.SEL, info id) bool { return true }),
+		constant("prepareForDragOperation:", true, func(self id, _ objc.SEL, info id) bool { return true }),
 		method("performDragOperation:", func(self id, _ objc.SEL, info id) bool {
 			s := b().surfaceOf(self)
 			if s == nil {
@@ -1234,7 +1234,7 @@ func registerSurfaceClass() {
 		}),
 	}
 	classDef("MyGoSurfaceView", "NSView", []string{"NSTextInputClient"}, append(append(methods, accessViewMethods()...), []objc.MethodDef{
-		method("isFlipped", func(self id, _ objc.SEL) bool { return true }),
+		constant("isFlipped", true, func(self id, _ objc.SEL) bool { return true }),
 		// The pointer goes through to the web views under the surface
 		// where the content shows them (webview.go), and to the native
 		// view where a view inside it takes it (native_view.go).
@@ -1247,10 +1247,10 @@ func registerSurfaceClass() {
 			}
 			return sendSuperPoint(self, "MyGoSurfaceView", cmd, p)
 		}),
-		method("acceptsFirstResponder", func(self id, _ objc.SEL) bool { return true }),
-		method("acceptsFirstMouse:", func(self id, _ objc.SEL, ev id) bool { return true }),
-		method("mouseDownCanMoveWindow", func(self id, _ objc.SEL) bool { return false }),
-		method("wantsUpdateLayer", func(self id, _ objc.SEL) bool { return true }),
+		constant("acceptsFirstResponder", true, func(self id, _ objc.SEL) bool { return true }),
+		constant("acceptsFirstMouse:", true, func(self id, _ objc.SEL, ev id) bool { return true }),
+		constant("mouseDownCanMoveWindow", false, func(self id, _ objc.SEL) bool { return false }),
+		constant("wantsUpdateLayer", true, func(self id, _ objc.SEL) bool { return true }),
 		method("updateLayer", func(self id, _ objc.SEL) {
 			s := b().surfaceOf(self)
 			if s == nil {
@@ -1551,7 +1551,7 @@ func registerSurfaceClass() {
 			screen := msgRectToRect(s.w.win, sel("convertRectToScreen:"), inWindow)
 			return cgRect{X: screen.Origin.X, Y: screen.Origin.Y, W: screen.Size.Width, H: screen.Size.Height}
 		}),
-		method("doCommandBySelector:", func(self id, _ objc.SEL, cmd objc.SEL) {}),
+		constant("doCommandBySelector:", false, func(self id, _ objc.SEL, cmd objc.SEL) {}),
 	}...))
 }
 

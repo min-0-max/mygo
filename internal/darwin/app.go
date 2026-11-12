@@ -406,8 +406,8 @@ func registerAppDelegate() {
 				theBackend.h.OpenURLs(links)
 			}
 		}),
-		method("applicationSupportsSecureRestorableState:", func(self id, _ objc.SEL, app id) bool { return true }),
-		method("applicationShouldTerminateAfterLastWindowClosed:", func(self id, _ objc.SEL, app id) bool { return false }),
+		constant("applicationSupportsSecureRestorableState:", true, func(self id, _ objc.SEL, app id) bool { return true }),
+		constant("applicationShouldTerminateAfterLastWindowClosed:", false, func(self id, _ objc.SEL, app id) bool { return false }),
 		method("observeValueForKeyPath:ofObject:change:context:", func(self id, _ objc.SEL, keyPath, object, change id, ctx uintptr) {
 			if goString(keyPath) == "effectiveAppearance" {
 				theBackend.refreshSystemBackings()

@@ -30,7 +30,7 @@ var (
 func TestNewView(noHit bool) uintptr {
 	testNativeOnce.Do(func() {
 		classDef("MyGoTestHostView", "NSView", nil, []objc.MethodDef{
-			method("isFlipped", func(self id, _ objc.SEL) bool { return true }),
+			constant("isFlipped", true, func(self id, _ objc.SEL) bool { return true }),
 			method("hitTest:", func(self id, cmd objc.SEL, p NSPoint) id {
 				if testNoHit[self] {
 					return 0
