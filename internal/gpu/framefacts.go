@@ -31,8 +31,11 @@ type FrameFacts struct {
 	Request, DrawableWait uint64
 	// Damage is the pixels the frame changed.
 	Damage int
-	// CommandBuffer tells that the frame committed a command buffer.
+	// CommandBuffer tells that the frame committed a command buffer, and
+	// Committed when it did, on the clock the renderer reports with, 0
+	// without one.
 	CommandBuffer bool
+	Committed     uint64
 }
 
 // CommitKind is what a command buffer committed outside a frame drew.

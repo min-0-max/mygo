@@ -379,8 +379,7 @@ func (r *Renderer) finishPending(prefetch bool) error {
 		// None came within a second: the frame is skipped, what it drew
 		// before its drawable committed.
 		r.forgetFrames()
-		byReceiver(p.cb, "commit")
-		r.committedOutside(gpu.CommitStashed)
+		r.commitOutside(p.cb, gpu.CommitStashed)
 		r.track(p.cb)
 		release(&p.cb)
 		p.done(platform.PresentNoDrawable, nil)
@@ -399,15 +398,13 @@ func (r *Renderer) finishPending(prefetch bool) error {
 	}
 	r.presenting(drawable)
 	if p.sync {
-		byReceiver(p.cb, "commit")
-		r.committedOutside(gpu.CommitStashed)
+		r.commitOutside(p.cb, gpu.CommitStashed)
 		send(p.cb, "waitUntilScheduled")
 		r.bind()
 		sendMain(drawable, "present")
 	} else {
 		send(p.cb, "presentDrawable:", drawable)
-		byReceiver(p.cb, "commit")
-		r.committedOutside(gpu.CommitStashed)
+		r.commitOutside(p.cb, gpu.CommitStashed)
 		if prefetch {
 			r.pre.start(r.layer)
 		}
@@ -429,8 +426,7 @@ func (r *Renderer) dropPending() {
 		return
 	}
 	r.forgetFrames()
-	byReceiver(r.pending.cb, "commit")
-	r.committedOutside(gpu.CommitStashed)
+	r.commitOutside(r.pending.cb, gpu.CommitStashed)
 	r.track(r.pending.cb)
 	release(&r.pending.cb)
 	again := r.pending.again

@@ -9,16 +9,18 @@ import (
 
 // recorded keeps the records of a window.
 type recorded struct {
-	frames  []FrameRecord
-	commits []CommitRecord
-	clock   uint64
+	frames    []FrameRecord
+	commits   []CommitRecord
+	completes []CompleteRecord
+	clock     uint64
 }
 
 func (r *recorded) recorder() *FrameRecorder {
 	return &FrameRecorder{
-		Clock:  func() uint64 { r.clock++; return r.clock },
-		Frame:  func(f *FrameRecord) { r.frames = append(r.frames, *f) },
-		Commit: func(c CommitRecord) { r.commits = append(r.commits, c) },
+		Clock:    func() uint64 { r.clock++; return r.clock },
+		Frame:    func(f *FrameRecord) { r.frames = append(r.frames, *f) },
+		Commit:   func(c CommitRecord) { r.commits = append(r.commits, c) },
+		Complete: func(c CompleteRecord) { r.completes = append(r.completes, c) },
 	}
 }
 
@@ -186,20 +188,21 @@ func TestFrameRecordsAllocateNothing(t *testing.T) {
 // factsGPU is a GPU renderer that tells what came of its frames.
 type factsGPU struct {
 	testGPU
-	facts  gpu.FrameFacts
-	clock  func() uint64
-	commit func(gpu.CommitKind, uint64)
+	facts    gpu.FrameFacts
+	clock    func() uint64
+	commit   func(gpu.CommitKind, uint64)
+	complete func(committed, completed uint64)
 }
 
-func (g *factsGPU) ReportFrames(clock func() uint64, commit func(gpu.CommitKind, uint64)) {
-	g.clock, g.commit = clock, commit
+func (g *factsGPU) ReportFrames(clock func() uint64, commit func(gpu.CommitKind, uint64), complete func(committed, completed uint64)) {
+	g.clock, g.commit, g.complete = clock, commit, complete
 }
 func (g *factsGPU) FrameFacts() gpu.FrameFacts { return g.facts }
 
 // TestAWindowTellsTheFactsOfItsRenderer checks the record of a frame that a GPU
 // renderer drew, and that each commit outside a frame reaches the recorder.
 func TestAWindowTellsTheFactsOfItsRenderer(t *testing.T) {
-	g := &factsGPU{facts: gpu.FrameFacts{Outcome: gpu.FrameTransaction, Request: 7, Damage: 30, DrawableWait: 9, CommandBuffer: true}}
+	g := &factsGPU{facts: gpu.FrameFacts{Outcome: gpu.FrameTransaction, Request: 7, Damage: 30, DrawableWait: 9, CommandBuffer: true, Committed: 6}}
 	h, _, frame := gpuHost(t, func() (gpuRenderer, error) { return g, nil })
 	var r recorded
 	h.record(r.recorder())
@@ -208,15 +211,24 @@ func TestAWindowTellsTheFactsOfItsRenderer(t *testing.T) {
 		t.Fatalf("one frame reported %d records", len(r.frames))
 	}
 	f := r.frames[0]
-	if f.Outcome != FrameTransaction || f.Request != 7 || f.Damage != 30 || f.DrawableWait != 9 || !f.CommandBuffer {
+	if f.Outcome != FrameTransaction || f.Request != 7 || f.Damage != 30 || f.DrawableWait != 9 || !f.CommandBuffer || f.Committed != 6 {
 		t.Errorf("the record %+v, the renderer told %+v", f, g.facts)
 	}
-	if g.clock == nil || g.commit == nil {
+	if g.clock == nil || g.commit == nil || g.complete == nil {
 		t.Fatal("the renderer was not told of the recorder")
 	}
 	g.commit(gpu.CommitStashed, 11)
 	if len(r.commits) != 1 || r.commits[0].Kind != CommitStashed || r.commits[0].At != 11 {
 		t.Errorf("the commits %+v", r.commits)
+	}
+	g.complete(6, 13)
+	if len(r.completes) != 1 || r.completes[0] != (CompleteRecord{Committed: 6, Completed: 13}) {
+		t.Errorf("the completions %+v", r.completes)
+	}
+	// A recorder that hears no completions has the renderer report none.
+	h.record(&FrameRecorder{Clock: func() uint64 { return 1 }, Frame: func(*FrameRecord) {}, Commit: func(CommitRecord) {}})
+	if g.complete != nil {
+		t.Error("a recorder without Complete has the renderer report completions")
 	}
 }
 

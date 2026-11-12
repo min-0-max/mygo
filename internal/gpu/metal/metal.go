@@ -114,6 +114,7 @@ var (
 
 	msgSend           uintptr
 	poolPush, poolPop uintptr
+	blockRelease      uintptr // _Block_release, through mainthread.ByReceiver
 	msgSendStret      uintptr // the messages returning structs over 16 bytes
 	createDevice      uintptr // MTLCreateSystemDefaultDevice, on the main thread
 	srgb              uintptr
@@ -178,6 +179,7 @@ func load() error {
 		msgSend = sym(objcLib, "objc_msgSend")
 		poolPush = sym(objcLib, "objc_autoreleasePoolPush")
 		poolPop = sym(objcLib, "objc_autoreleasePoolPop")
+		blockRelease = sym(objcLib, "_Block_release")
 		createDevice = sym(metalLib, "MTLCreateSystemDefaultDevice")
 		name := sym(cg, "kCGColorSpaceSRGB")
 		extendedName := sym(cg, "kCGColorSpaceExtendedSRGB")
@@ -428,11 +430,13 @@ type formatState struct {
 
 // Renderer draws scenes into a CAMetalLayer it adds to a view's layer.
 type Renderer struct {
-	// facts is what came of the last frame given to render; reportClock and
-	// reportCommit report it and the commits outside a frame (ReportFrames).
+	// facts is what came of the last frame given to render; reportClock,
+	// reportCommit and reportComplete report it, the commits outside a
+	// frame and the completion of each command buffer (ReportFrames).
 	facts                  gpu.FrameFacts
 	reportClock            func() uint64
 	reportCommit           func(gpu.CommitKind, uint64)
+	reportComplete         func(committed, completed uint64)
 	device, queue, sampler id
 	// shaderBytes holds the uniforms of the shader being drawn, laid out.
 	shaderBytes []byte
@@ -1890,7 +1894,7 @@ func (r *Renderer) render(s *scene.Scene, done func(platform.Presentation, error
 	if drawable == 0 {
 		// None came within a second: the frame is skipped, its canvases
 		// drawn.
-		byReceiver(cb, "commit")
+		r.facts.Committed = r.commit(cb)
 		r.facts.Outcome, r.facts.CommandBuffer = gpu.FrameSkipped, true
 		r.track(cb)
 		done(platform.PresentNoDrawable, nil)
@@ -1899,7 +1903,7 @@ func (r *Renderer) render(s *scene.Scene, done func(platform.Presentation, error
 	r.facts.CommandBuffer = true
 	if sync {
 		r.facts.Outcome = gpu.FrameTransaction
-		byReceiver(cb, "commit")
+		r.facts.Committed = r.commit(cb)
 		send(cb, "waitUntilScheduled")
 		r.presenting(drawable)
 		r.facts.Request = r.reportNow()
@@ -1911,7 +1915,7 @@ func (r *Renderer) render(s *scene.Scene, done func(platform.Presentation, error
 		r.presenting(drawable)
 		r.facts.Request = r.reportNow()
 		send(cb, "presentDrawable:", drawable)
-		byReceiver(cb, "commit")
+		r.facts.Committed = r.commit(cb)
 		// The next frame's drawable, while this one is shown, when frames
 		// follow each other. For a frame alone, the display still shows the
 		// last and the GPU has this one, so the system would make a third
@@ -1933,10 +1937,13 @@ func (r *Renderer) render(s *scene.Scene, done func(platform.Presentation, error
 	return nil
 }
 
-// ReportFrames has the renderer read clock for the times of FrameFacts, and tell
-// commit of each command buffer it commits outside a frame, at the time it did.
-func (r *Renderer) ReportFrames(clock func() uint64, commit func(gpu.CommitKind, uint64)) {
-	r.reportClock, r.reportCommit = clock, commit
+// ReportFrames has the renderer read clock for the times of FrameFacts, tell
+// commit of each command buffer it commits outside a frame, at the time it
+// did, and tell complete of each command buffer it commits, a frame's or
+// another, the time it committed it and the time the command buffer ran its
+// completed handler, on the thread that runs that handler.
+func (r *Renderer) ReportFrames(clock func() uint64, commit func(gpu.CommitKind, uint64), complete func(committed, completed uint64)) {
+	r.reportClock, r.reportCommit, r.reportComplete = clock, commit, complete
 }
 
 // FrameFacts tells what came of the last frame given to Render or RenderNotice.
@@ -1950,15 +1957,33 @@ func (r *Renderer) reportNow() uint64 {
 	return r.reportClock()
 }
 
-// committedOutside reports a command buffer committed outside a frame.
-func (r *Renderer) committedOutside(kind gpu.CommitKind) {
+// commit commits cb and returns when, on the clock of ReportFrames, 0
+// without one. While the clock reports, cb reports that time with the time
+// its completed handler runs (ReportFrames), which it adds before the
+// commit, as Metal takes handlers only until then.
+func (r *Renderer) commit(cb id) uint64 {
+	at := r.reportNow()
+	if at != 0 && r.reportComplete != nil {
+		complete, clock := r.reportComplete, r.reportClock
+		block := mainthread.Block(objc.NewBlock(func(_ objc.Block, _ id) { complete(at, clock()) }))
+		send(cb, "addCompletedHandler:", uintptr(block))
+		mainthread.ByReceiver(blockRelease, uintptr(block))
+	}
+	byReceiver(cb, "commit")
+	return at
+}
+
+// commitOutside commits cb, a command buffer outside a frame, and reports
+// the commit.
+func (r *Renderer) commitOutside(cb id, kind gpu.CommitKind) {
+	at := r.commit(cb)
 	if r.reportCommit != nil {
-		r.reportCommit(kind, r.reportNow())
+		r.reportCommit(kind, at)
 	}
 }
 
-// committedOffscreen reports the commit of an offscreen canvas.
-func (r *Renderer) committedOffscreen() { r.committedOutside(gpu.CommitOffscreen) }
+// commitOffscreen commits cb, an offscreen canvas, and reports the commit.
+func (r *Renderer) commitOffscreen(cb id) { r.commitOutside(cb, gpu.CommitOffscreen) }
 
 // TestPresenting, when set, is called with the layer and the drawable of
 // each frame before the frame requests the drawable's presentation, on
@@ -2271,8 +2296,7 @@ func (r *Renderer) renderOffscreen(s *scene.Scene) (pix []byte, err error) {
 		blit := send(cb, "blitCommandEncoder")
 		send(blit, "synchronizeResource:", tex)
 		send(blit, "endEncoding")
-		byReceiver(cb, "commit")
-		r.committedOutside(gpu.CommitPixels)
+		r.commitOutside(cb, gpu.CommitPixels)
 		send(cb, "waitUntilCompleted")
 		if int(send(cb, "status")) == statusError {
 			err = fmt.Errorf("metal: the frame failed: %s", describe(send(cb, "error")))

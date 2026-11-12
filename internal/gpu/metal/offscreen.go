@@ -87,8 +87,7 @@ func (o *Offscreen) Render(s *scene.Scene) (gpu time.Duration, err error) {
 			return
 		}
 		o.encoded = time.Since(start)
-		byReceiver(cb, "commit")
-		r.committedOffscreen()
+		r.commitOffscreen(cb)
 		send(cb, "waitUntilCompleted")
 		if int(send(cb, "status")) == statusError {
 			err = fmt.Errorf("metal: the frame failed: %s", describe(send(cb, "error")))
@@ -117,8 +116,7 @@ func (o *Offscreen) Pixels() (pix []byte, err error) {
 		blit := send(cb, "blitCommandEncoder")
 		send(blit, "synchronizeResource:", o.tex)
 		send(blit, "endEncoding")
-		byReceiver(cb, "commit")
-		o.r.committedOutside(gpu.CommitPixels)
+		o.r.commitOutside(cb, gpu.CommitPixels)
 		send(cb, "waitUntilCompleted")
 		if int(send(cb, "status")) == statusError {
 			err = fmt.Errorf("metal: reading the frame failed: %s", describe(send(cb, "error")))
