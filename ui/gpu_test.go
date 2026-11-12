@@ -567,6 +567,24 @@ func (g *sceneGPU) Render(s *scene.Scene) error {
 	return g.testGPU.Render(s)
 }
 
+// TestClosedWindowStopsItsTimers checks that a window closing stops the
+// timers of After and Painter.After, which would otherwise fire on its
+// closed host and keep it until then.
+func TestClosedWindowStopsItsTimers(t *testing.T) {
+	h, _, frame := gpuHost(t, func() (gpuRenderer, error) { return &sceneGPU{}, nil })
+	frame()
+	later := time.Now().Add(time.Hour)
+	h.afterTimer(later)
+	h.repaintTimer(later)
+	h.detach()
+	if h.afterT.Stop() {
+		t.Error("the timer of After still runs once the window closed")
+	}
+	if h.repaintT.Stop() {
+		t.Error("the timer of Painter.After still runs once the window closed")
+	}
+}
+
 // TestClosedWindowKeepsNoFrame checks issue #1281: a closed window's host
 // lets go of its view, the elements and the scene of its last frame, and
 // the bitmaps they drew, in case something still holds the host (a

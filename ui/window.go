@@ -714,8 +714,12 @@ func (h *windowHost) fit() bool {
 
 func (h *windowHost) detach() {
 	h.detached = true
-	if h.idleTimer != nil {
-		h.idleTimer.Stop()
+	// A timer that fires once the window closed would draw a window no
+	// more, and keep its host until then.
+	for _, t := range []*time.Timer{h.idleTimer, h.afterT, h.repaintT} {
+		if t != nil {
+			t.Stop()
+		}
 	}
 	h.rt.close()
 	h.soft.Release()
