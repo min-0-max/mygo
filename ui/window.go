@@ -601,6 +601,14 @@ type frameHolder interface{ HoldFrames(hold bool) }
 // those that the system asks for among them, and draws one once it is not
 // if one was asked for meanwhile (surface.Conn.HoldFrames). The notices
 // waiting hear that the window holds its frames.
+//
+// A frame that the surface asked for while the window held its frames
+// drew nothing, and the surface paces the next from it: asked for again,
+// it would come a refresh after the one it was asked at, and a window that
+// holds its frames for most of a refresh after each, as one placing native
+// views does until they show, would draw at every other refresh. A paced
+// surface draws it once the window lets go, through the main thread, as a
+// frame waiting for the display does (waitDisplay).
 func (h *windowHost) holdFrames(hold bool) {
 	if h.holding == hold {
 		return
@@ -613,8 +621,20 @@ func (h *windowHost) holdFrames(hold bool) {
 	case hold:
 		h.framesHeld()
 	case h.detached:
-	case h.heldFrame || h.frameAsked:
+	case h.heldFrame:
 		h.heldFrame = false
+		p, paced := h.conn.Surface.(platform.PacedSurface)
+		if !paced || h.conn.Post == nil {
+			h.requestFrame()
+			return
+		}
+		h.frameAsked = true
+		h.conn.Post(func() {
+			if !h.holding && !h.detached && h.frameAsked {
+				p.FrameNow()
+			}
+		})
+	case h.frameAsked:
 		h.requestFrame()
 	}
 }
