@@ -2278,8 +2278,8 @@ func registerWindowClasses() {
 	}
 	classDef("MyGoWindow", "NSWindow", nil, []objc.MethodDef{
 		method("orderWindow:relativeTo:", orderWindowRelativeTo("MyGoWindow")),
-		method("canBecomeKeyWindow", func(self id, _ objc.SEL) bool { return true }),
-		method("canBecomeMainWindow", func(self id, _ objc.SEL) bool { return true }),
+		constant("canBecomeKeyWindow", true, func(self id, _ objc.SEL) bool { return true }),
+		constant("canBecomeMainWindow", true, func(self id, _ objc.SEL) bool { return true }),
 		method("selectKeyViewFollowingView:", selectKeyView("MyGoWindow", false)),
 		method("selectKeyViewPrecedingView:", selectKeyView("MyGoWindow", true)),
 	})
@@ -2288,12 +2288,12 @@ func registerWindowClasses() {
 	// activating the app, and is never the main window.
 	classDef("MyGoPanel", "NSPanel", nil, []objc.MethodDef{
 		method("orderWindow:relativeTo:", orderWindowRelativeTo("MyGoPanel")),
-		method("canBecomeKeyWindow", func(self id, _ objc.SEL) bool { return true }),
-		method("canBecomeMainWindow", func(self id, _ objc.SEL) bool { return false }),
+		constant("canBecomeKeyWindow", true, func(self id, _ objc.SEL) bool { return true }),
+		constant("canBecomeMainWindow", false, func(self id, _ objc.SEL) bool { return false }),
 		// NSPanel closes on an Escape its content leaves (cancelOperation:),
 		// past windowShouldClose: MyGo closes it then, as the user closing
 		// it, which OnClose listeners may prevent.
-		method("cancelOperation:", func(self id, _ objc.SEL, sender id) {}),
+		constant("cancelOperation:", false, func(self id, _ objc.SEL, sender id) {}),
 		method("selectKeyViewFollowingView:", selectKeyView("MyGoPanel", false)),
 		method("selectKeyViewPrecedingView:", selectKeyView("MyGoPanel", true)),
 	})
@@ -2305,7 +2305,7 @@ func registerWindowClasses() {
 			w := theBackend.byNSWindow[self]
 			return w != nil && w.flyout.Focusable
 		}),
-		method("canBecomeMainWindow", func(self id, _ objc.SEL) bool { return false }),
+		constant("canBecomeMainWindow", false, func(self id, _ objc.SEL) bool { return false }),
 		method("selectKeyViewFollowingView:", selectKeyView("MyGoFlyout", false)),
 		method("selectKeyViewPrecedingView:", selectKeyView("MyGoFlyout", true)),
 	})

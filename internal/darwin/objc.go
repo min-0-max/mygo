@@ -641,3 +641,13 @@ func classDef(name, super string, protocols []string, methods []objc.MethodDef) 
 func method(selector string, fn any) objc.MethodDef {
 	return objc.MethodDef{Cmd: sel(selector), Fn: fn}
 }
+
+// constant is a method that answers value for every receiver and
+// argument, as an isFlipped that is always true. The main thread that
+// calls it gets the answer from a native implementation on its own thread
+// and does not wait for the worker (mainthread.Constant). fn is the Go
+// function of the method, which gives the method its type and is not
+// called.
+func constant(selector string, value bool, fn any) objc.MethodDef {
+	return objc.MethodDef{Cmd: sel(selector), Fn: mainthread.Constant{Fn: fn, Value: value}}
+}

@@ -446,7 +446,7 @@ func webViewMethods() []objc.MethodDef {
 		// The first click in a window that is not key is the page's, as it
 		// is native UI's (MyGoSurfaceView): WKWebView answers no, which
 		// spends the click on making the window key.
-		method("acceptsFirstMouse:", func(self id, _ objc.SEL, ev id) bool { return true }),
+		constant("acceptsFirstMouse:", true, func(self id, _ objc.SEL, ev id) bool { return true }),
 		method("scrollWheel:", func(self id, cmd objc.SEL, ev id) {
 			w := theBackend.byWebView[self]
 			if w == nil || w.host == nil || w.host.surface == nil || w.opts == nil || !w.opts.ScrollToContainer {
@@ -529,7 +529,7 @@ func clipWebView(clip id) *window {
 
 func registerClipViewClass() {
 	classDef("MyGoClipView", "NSView", nil, []objc.MethodDef{
-		method("isFlipped", func(self id, _ objc.SEL) bool { return true }),
+		constant("isFlipped", true, func(self id, _ objc.SEL) bool { return true }),
 		method("keyDown:", func(self id, cmd objc.SEL, ev id) {
 			if !unhandledKey(self, ev) {
 				sendSuper(self, "MyGoClipView", cmd, uintptr(ev))
