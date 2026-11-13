@@ -206,8 +206,14 @@ func (e *node) textParams(width float32) text.Params {
 		Family: ts.family, Size: ts.size, Weight: ts.weight, Italic: ts.italic, LineHeight: ts.lineHeight,
 		LetterSpacing: ts.spacing, Features: ts.features, Lang: ts.lang, TabSize: ts.tabSize,
 	}
-	if ts.fixedLine && ts.lineHeight > 0 {
-		style.LineHeight = ts.lineHeight / style.FontSize()
+	if ts.lineHeight > 0 {
+		// A line box takes the whole points of its line height, as a line
+		// box of WebKit does: 1.45 of 12 DIPs (17.4) is a line of 17.
+		height := ts.lineHeight
+		if !ts.fixedLine {
+			height *= style.FontSize()
+		}
+		style.LineHeight = float32(math.Floor(float64(height)+1e-3)) / style.FontSize()
 	}
 	p := text.Params{Text: e.text, Width: width, MaxLines: e.maxLines, Style: style, Spans: e.textSpans(), NoWrap: e.noWrap, KeepAll: ts.keepAll, Balance: e.balance, Pretty: e.pretty, KeepSpaces: e.keepSpaces, Ellipsis: e.ellipsis, RTL: e.rtl()}
 	switch {
