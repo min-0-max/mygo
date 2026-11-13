@@ -22,6 +22,10 @@ type headless struct {
 	// maxButton is where the view shows the maximize button.
 	maxButton Rect
 	img       raster.Renderer
+	// shown is the last frame as Image returns it, converted at the first
+	// read after the frame and dropped by the next frame, so the reads of
+	// one frame copy its pixels once.
+	shown *image.RGBA
 	// requested is set when the view asks for a frame, from any goroutine
 	// for invalidate.
 	requested atomic.Bool
@@ -108,6 +112,7 @@ func (h *headless) present(s *scene.Scene) {
 	h.last = s
 	// What the frame changed, as a window drawn in memory tells it.
 	damage := h.img.Render(s)
+	h.shown = nil
 	h.facts = gpu.FrameFacts{Outcome: gpu.FrameImmediate, Damage: gpu.DamageArea(damage, true, 0, 0)}
 	if len(damage) == 0 {
 		h.facts.Outcome = gpu.FrameUndamaged
@@ -249,8 +254,11 @@ func (h *headless) placeGlass([]platform.GlassPlacement) bool      { return true
 func (h *headless) tabIntoWebView(v NativeWebView, back bool)      { h.tabbedInto, h.tabbedBack = v, back }
 func (h *headless) platformWebView(NativeWebView) platform.WebView { return nil }
 func (h *headless) image() *image.RGBA {
-	m := &h.img.Image
-	return &image.RGBA{Pix: m.RGBA(), Stride: 4 * m.W, Rect: image.Rect(0, 0, m.W, m.H)}
+	if h.shown == nil {
+		m := &h.img.Image
+		h.shown = &image.RGBA{Pix: m.RGBA(), Stride: 4 * m.W, Rect: image.Rect(0, 0, m.W, m.H)}
+	}
+	return h.shown
 }
 
 // Render draws a frame of view in a window of width×height DIPs at scale
@@ -573,7 +581,8 @@ func (t *Tester) Frame() { t.h.requested.Store(true); t.settle() }
 // time, as the clock stands still until then.
 func (t *Tester) FramePending() bool { return t.asked() }
 
-// Image returns the last frame.
+// Image returns the last frame. The reads of one frame return the same
+// image, which the caller does not change; the next frame gives a new one.
 func (t *Tester) Image() *image.RGBA { return t.h.image() }
 
 // Find returns the box of the first element showing text s, or labeled s,
