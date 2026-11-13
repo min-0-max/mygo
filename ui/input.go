@@ -17,6 +17,17 @@ func (rt *engine) event(ev platform.SurfaceEvent) (taken bool) {
 		// A menu asking about its item changes nothing.
 		return rt.commandEnabled(ev.Text)
 	}
+	if rt.inFrame && pointerEvent(ev.Kind) {
+		// A pointer event that comes while the frame builds, as a nested step
+		// of the main thread delivers it, would change the elements and the
+		// state the view is reading: it waits for the end of the frame
+		// (endFrame), as a release waits for its press (endDown). The window
+		// takes it; the platform does not ask what a pointer event did. Keys,
+		// text and drags of data answer whether the window took them, which
+		// the platform needs at once, so they do not wait.
+		rt.later = append(rt.later, ev)
+		return true
+	}
 	if ev.Kind != platform.SurfaceFrame {
 		// Whatever the event changes, the next frame builds anew.
 		rt.redraw = false
@@ -2130,4 +2141,15 @@ func (c *context) KeysDown() []Key {
 		}
 	}
 	return keys
+}
+
+// pointerEvent reports whether kind is an event of the pointer, which waits
+// for the end of a frame that builds as it comes (engine.event).
+func pointerEvent(kind platform.SurfaceEventKind) bool {
+	switch kind {
+	case platform.PointerMove, platform.PointerDown, platform.PointerUp, platform.PointerCancel, platform.PointerLeave,
+		platform.PointerScroll, platform.PointerZoom, platform.WebViewPress:
+		return true
+	}
+	return false
 }
