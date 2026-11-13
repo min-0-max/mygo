@@ -115,3 +115,31 @@ func TestBaselineShiftObjects(t *testing.T) {
 		t.Errorf("objects %+v on a baseline at %v", objs, line.Baseline)
 	}
 }
+
+// TestALineBoxTakesTheWholePointsOfItsLineHeight gives each line of a text
+// the whole points of its line height, as the line boxes of WebKit are: a
+// line of 12 DIPs at 1.45 (17.4) is 17 high, three such lines are 51, a
+// line of 12.5 DIPs at 1.45 (18.125) is 18 and a fixed line of 20.7 is 20.
+// The values are those of WebKit 21624.5.1.11.3 on macOS 26.6.2.
+func TestALineBoxTakesTheWholePointsOfItsLineHeight(t *testing.T) {
+	tt := coreNewTester(func(c *context) {
+		coreColumn(c).Width(400).Children(func() {
+			coreText(c, "Abc").FontSize(12).LineHeight(1.45).Label("one")
+			coreText(c, "Abc\ndef\nghi").FontSize(12).LineHeight(1.45).Label("three")
+			coreText(c, "Abc").FontSize(12.5).LineHeight(1.45).Label("half")
+			coreText(c, "Abc").FontSize(12).FixedLineHeight(20.7).Label("fixed")
+		})
+	}, 500, 300)
+	for _, c := range []struct {
+		name string
+		want float32
+	}{{"one", 17}, {"three", 51}, {"half", 18}, {"fixed", 20}} {
+		r, ok := tt.Find(c.name)
+		if !ok {
+			t.Fatalf("no %s", c.name)
+		}
+		if r.H < c.want-0.01 || r.H > c.want+0.01 {
+			t.Errorf("the text %s is %v high, want %v", c.name, r.H, c.want)
+		}
+	}
+}
