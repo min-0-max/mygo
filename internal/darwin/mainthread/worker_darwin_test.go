@@ -388,3 +388,46 @@ func TestRunOnMainRunsOnTheWorker(t *testing.T) {
 		}
 	})
 }
+
+// The main thread waits for the worker in each step, so the worker runs at
+// the quality of service of the main thread; at a lower class the system
+// runs it after other work when the machine is loaded, and each step of the
+// main thread waits for that.
+func TestTheWorkerRunsAtTheQualityOfServiceOfTheMainThread(t *testing.T) {
+	var self func() uint32
+	var set func(class uint32, priority int32) int32
+	lib, err := purego.Dlopen(libSystem, purego.RTLD_NOW|purego.RTLD_GLOBAL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	purego.RegisterLibFunc(&self, lib, "qos_class_self")
+	purego.RegisterLibFunc(&set, lib, "pthread_set_qos_class_self_np")
+	const userInteractive = 0x21
+	done := make(chan struct{})
+	var main, worker, after uint32
+	go func() {
+		defer close(done)
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		if code := set(userInteractive, 0); code != 0 {
+			t.Errorf("pthread_set_qos_class_self_np answered %d", code)
+			return
+		}
+		main = self()
+		if err := Start(); err != nil {
+			t.Error(err)
+			return
+		}
+		RunOnWorker(func() { worker = self() })
+		Stop()
+		link.mainThread = 0
+		after = self()
+	}()
+	<-done
+	if worker != main {
+		t.Errorf("the worker ran at the class %#x, the main thread at %#x", worker, main)
+	}
+	if after != main {
+		t.Errorf("the main thread ran at the class %#x after the worker stopped, %#x before", after, main)
+	}
+}

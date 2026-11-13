@@ -470,7 +470,7 @@ var CallingThreadFunctions = []FunctionGroup{
 	{
 		Name: "libSystem",
 		Names: []string{
-			"pthread_main_np", "pthread_set_qos_class_self_np",
+			"pthread_main_np", "pthread_set_qos_class_self_np", "qos_class_self",
 			"proc_listallpids", "proc_pidpath", "proc_pid_rusage",
 			"responsibility_get_pid_responsible_for_pid",
 			"realpath", "realpath$DARWIN_EXTSN", "CACurrentMediaTime",
