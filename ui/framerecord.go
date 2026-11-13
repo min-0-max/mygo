@@ -41,6 +41,10 @@ type FrameRecord struct {
 	// After the frame, the window asks for a frame, animates, paints again,
 	// or has a timer armed for a frame.
 	AsksFrame, Animates, Repaints, Timer bool
+	// Deferred is the inputs that reached the window while the frame built,
+	// as a nested step of the main thread delivers them, which the window
+	// applied after the frame.
+	Deferred int
 }
 
 // Settled reports that the window has nothing left that draws a frame.

@@ -359,6 +359,10 @@ type engine struct {
 	// handler ran nested, for it to apply once the press is recorded.
 	downing int
 	ups     []pendingUp
+	// later holds the pointer events that reached the engine while a frame
+	// built, as a nested step of the main thread delivers them, for endFrame
+	// to apply once the frame ends.
+	later []platform.SurfaceEvent
 	// listMenu and listDrag are the parts of lists a right-click and a
 	// drag reach, set as the first list builds, and cellClick and
 	// cellInBlock the parts of tables choosing cells a click and a press
@@ -1336,7 +1340,18 @@ func (rt *engine) endFrame() {
 	} else if len(rt.dropped) > 0 {
 		rt.closeDropped()
 	}
+	later := rt.later
+	rt.later = nil
+	rt.record.Deferred = len(later)
 	rt.reportFrame()
+	// The pointer events that came while the frame built apply now, in their
+	// order, on the elements of the frame; a window that closed takes none.
+	for _, ev := range later {
+		if rt.closed {
+			break
+		}
+		rt.event(ev)
+	}
 }
 
 // commit records the laid out frame in the elements' states: their
