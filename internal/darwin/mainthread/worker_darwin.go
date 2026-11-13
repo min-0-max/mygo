@@ -122,6 +122,8 @@ var native struct {
 	once                sync.Once
 	err                 error
 	pthreadMainNP       func() int32
+	qosClassSelf        func() uint32
+	setQoSClassSelf     func(class uint32, priority int32) int32
 	semaphoreCreate     func(task uintptr, sem *uint32, policy, value int32) int32
 	semaphoreWait       func(sem uint32) int32
 	semaphoreSignal     func(sem uint32) int32
@@ -174,6 +176,8 @@ func resolve() error {
 		return p
 	}
 	purego.RegisterLibFunc(&native.pthreadMainNP, libSystem, "pthread_main_np")
+	purego.RegisterLibFunc(&native.qosClassSelf, libSystem, "qos_class_self")
+	purego.RegisterLibFunc(&native.setQoSClassSelf, libSystem, "pthread_set_qos_class_self_np")
 	purego.RegisterLibFunc(&native.semaphoreCreate, libSystem, "semaphore_create")
 	purego.RegisterLibFunc(&native.semaphoreWait, libSystem, "semaphore_wait")
 	purego.RegisterLibFunc(&native.semaphoreSignal, libSystem, "semaphore_signal")
@@ -273,6 +277,7 @@ func Start() error {
 		return errors.New("mainthread: the worker runs already")
 	}
 	link.mainThread = threadPointer()
+	mainQoS = native.qosClassSelf()
 	mainSem, err := newSemaphore()
 	if err != nil {
 		return err
@@ -289,20 +294,40 @@ func Start() error {
 		native.source = native.runLoopSourceCreate(0, 0, unsafe.Pointer(&native.sourceContext))
 		native.runLoopAddSource(native.mainLoop, native.source, native.runLoopCommonModes)
 	}
-	ready := make(chan struct{})
+	ready := make(chan error)
 	go serve(ready)
-	<-ready
+	if err := <-ready; err != nil {
+		link.mainThread = 0
+		putSemaphore(mainSem)
+		putSemaphore(workerSem)
+		return err
+	}
 	return nil
 }
 
 // serve is the worker: a goroutine locked to a thread of its own that
 // waits for steps in exchange until the step of Stop ends it.
-func serve(ready chan<- struct{}) {
+func serve(ready chan<- error) {
 	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
+	// The main thread waits for the worker in each step, so the worker runs
+	// at the quality of service of the main thread: at a lower class the
+	// system runs it after other work while the machine is loaded, and each
+	// step of the main thread waits for that. The thread goes back to the
+	// runtime at its own class; a thread whose class cannot be set back
+	// stays locked, and the runtime ends it with the goroutine.
+	own := native.qosClassSelf()
+	if code := native.setQoSClassSelf(mainQoS, 0); code != 0 {
+		ready <- fmt.Errorf("mainthread: the worker cannot take the quality of service %#x of the main thread: pthread_set_qos_class_self_np answered %d", mainQoS, code)
+		return
+	}
+	defer func() {
+		if native.setQoSClassSelf(own, 0) == 0 {
+			runtime.UnlockOSThread()
+		}
+	}()
 	link.workerThread = threadPointer()
 	atomic.StoreUintptr(&link.running, 1)
-	close(ready)
+	ready <- nil
 	purego.SyscallN(exchangeAddress(), 0)
 	atomic.StoreUintptr(&link.running, 0)
 	link.workerThread = 0
@@ -310,6 +335,10 @@ func serve(ready chan<- struct{}) {
 }
 
 var stopped = make(chan struct{})
+
+// mainQoS is the quality of service class of the thread that started the
+// worker, at which the worker runs.
+var mainQoS uint32
 
 // Stop ends the worker, on the main thread, and returns once it ended.
 func Stop() {
