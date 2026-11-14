@@ -98,6 +98,9 @@ func msgInitRect(obj id, sel objc.SEL, r NSRect) id {
 func msgInitRectID(obj id, sel objc.SEL, r NSRect, a id) id {
 	return mainthread.Forward[id](msgSendAddr, obj, sel, r, a)
 }
+func msgRectIDVoid(obj id, sel objc.SEL, r NSRect, a id) {
+	mainthread.Forward[struct{}](msgSendAddr, obj, sel, r, a)
+}
 func msgRectIDUint(obj id, sel objc.SEL, r NSRect, a id, n uint) {
 	mainthread.Forward[struct{}](msgSendAddr, obj, sel, r, a, n)
 }

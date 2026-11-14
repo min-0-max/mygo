@@ -20,6 +20,7 @@ var helpers = map[string]func() int{
 	notifyDelegateEnv:  notifyDelegateMain,
 	windowScaleEnv:     windowScaleMain,
 	windowOcclusionEnv: windowOcclusionMain,
+	cursorRectEnv:      cursorRectMain,
 }
 
 func init() {

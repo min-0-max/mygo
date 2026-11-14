@@ -712,18 +712,19 @@ var cursorFallbacks = map[platform.Cursor]string{
 	platform.CursorCell:         "crosshairCursor",
 }
 
-// applyCursor sets the content's cursor, unless the pointer is over a
-// web view, whose page sets its own, or where the native view takes it,
-// which sets its own too.
-func (s *surface) applyCursor() {
+// applyCursor sets the content's cursor and reports whether it did: not
+// where the pointer is over a web view, whose page sets its own, or where
+// the native view takes it, which sets its own too.
+func (s *surface) applyCursor() bool {
 	if len(s.placed) > 0 || s.native != nil {
 		p := msgPoint(class("NSEvent"), sel("mouseLocation"))
 		inWindow := msgRectToRect(s.w.win, sel("convertRectFromScreen:"), NSRect{Origin: p})
 		if s.leavesCursor(inWindow.Origin) {
-			return
+			return false
 		}
 	}
 	send(nsCursor(s.cursor), "set")
+	return true
 }
 
 // leavesCursor reports whether a web view or the native view takes the
@@ -828,8 +829,14 @@ func noCursor() id {
 	return hiddenCursor
 }
 
+// SetCursor sets the content's cursor, and declares it as the cursor
+// rect of the view (resetCursorRects): AppKit builds the rect again and,
+// in the key window, sets its cursor at the pointer.
 func (s *surface) SetCursor(c platform.Cursor) {
-	s.cursor = c
+	if c != s.cursor {
+		s.cursor = c
+		send(s.w.win, "invalidateCursorRectsForView:", uintptr(s.view))
+	}
 	if s.inside {
 		s.applyCursor()
 	}
@@ -1370,9 +1377,22 @@ func registerSurfaceClass() {
 				s.send(platform.SurfaceEvent{Kind: platform.PointerLeave})
 			}
 		}),
-		method("cursorUpdate:", func(self id, _ objc.SEL, ev id) {
+		// A page's cursor comes from the web process, as late as it
+		// answers a move, and WebKit sets it wherever the pointer is in
+		// the window, unless AppKit has a cursor rect's cursor there
+		// (PageClientImpl::setCursor): the content's cursor is the cursor
+		// rect of the whole view, and NSView's cursorUpdate: sets it and
+		// keeps it as that. AppKit's tracking, in the process, sends
+		// cursorUpdate: to the view hitTest: finds, so the rect does not
+		// hold over a web view or where the native view takes the pointer.
+		method("resetCursorRects", func(self id, _ objc.SEL) {
 			if s := b().surfaceOf(self); s != nil {
-				s.applyCursor()
+				msgRectIDVoid(self, sel("addCursorRect:cursor:"), msgRect(self, sel("bounds")), nsCursor(s.cursor))
+			}
+		}),
+		method("cursorUpdate:", func(self id, cmd objc.SEL, ev id) {
+			if s := b().surfaceOf(self); s != nil && s.applyCursor() {
+				sendSuper(self, "MyGoSurfaceView", cmd, uintptr(ev))
 			}
 		}),
 		method("scrollWheel:", func(self id, _ objc.SEL, ev id) {
