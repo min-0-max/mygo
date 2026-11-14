@@ -4137,8 +4137,17 @@ either.
     `mouseEntered:` and `cursorUpdate:` where the content painted over it,
     and as the pointer goes there from the page sends WebKit an exit
     outside the view, which WebKit takes as a move there, unhovering the
-    page; WebKit sets its cursor only where `hitTest:` finds the web view,
-    and the surface sets none over a page. `TabInto` puts the web view
+    page. The surface sets no cursor over a page. WebKit sets a page's
+    cursor as the web process answers a move, which can come after the
+    pointer went on to what the content draws, and checks only that the
+    window is under the pointer; it yields to the cursor of an AppKit
+    cursor rect (`PageClientImpl::setCursor`). The surface declares the
+    content's cursor as the cursor rect of its bounds (`resetCursorRects`,
+    again as `SetCursor` changes it), and its `cursorUpdate:` lets
+    `NSView`'s set it, so AppKit keeps it as the cursor rect's cursor;
+    AppKit's tracking sends `cursorUpdate:` to the view that `hitTest:`
+    finds, so the rect holds only where the surface takes the pointer.
+    `TabInto` puts the web view
     after (before) the surface in the window's key view loop and selects
     it, so WebKit focuses the page's first (last) element; as Tab leaves
     the page WebKit selects the next key view, which `MyGoWindow` turns
