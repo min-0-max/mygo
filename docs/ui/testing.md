@@ -113,8 +113,10 @@ panics where the second key was given, as apps only log it.
 
 `tt.ElementTree()` returns the elements of the last frame as assistive
 technology reads them, each an `ui.ElementNode`: its `Key`, `Role`,
-`Label`, `Bounds` in the window's DIPs, `Actions` (`ui.ActionPress`,
-`ui.ActionSetValue`, …) and `Children`. A test walks it to check what
+`Label`, `Text`, its text content as the DOM's `textContent` (the texts
+inside it in tree order, which a `Label` leaves), `Bounds` in the
+window's DIPs, `Actions` (`ui.ActionPress`, `ui.ActionSetValue`, …) and
+`Children`. A test walks it to check what
 the view gives every element, as a key on each control that acts:
 
 ```go
