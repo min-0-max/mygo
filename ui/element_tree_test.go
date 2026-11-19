@@ -308,3 +308,31 @@ func TestElementTreeMarksWhatIsBehindADialog(t *testing.T) {
 		t.Fatalf("after the dialog the button is inert: %+v", after)
 	}
 }
+
+// TestElementTreeText checks that an element of the tree carries its text
+// content, the texts inside it in tree order, as the DOM's textContent of
+// an element: a label names an element for assistive technology and leaves
+// its text, which the tree reports apart.
+func TestElementTreeText(t *testing.T) {
+	tt := NewTester(func(c *Context) {
+		Column(c).Fill().Children(func() {
+			Row(c).Label("Tab").Key("tab").Children(func() {
+				Text(c, "Terminal")
+				Button(c, "✕").Label("Close").Key("close")
+			})
+			Row(c).Label("Empty").Key("empty").Children(func() {
+				Box(c).Size(10, 10)
+			})
+		})
+	}, 400, 300)
+	tree := tt.ElementTree()
+	if tab := findElement(t, tree, "Tab"); tab.Text != "Terminal✕" {
+		t.Errorf("the labeled row holds the text %q, want its texts Terminal✕", tab.Text)
+	}
+	if button := findElement(t, tree, "Close"); button.Text != "✕" {
+		t.Errorf("the labeled button holds the text %q, want ✕", button.Text)
+	}
+	if empty := findElement(t, tree, "Empty"); empty.Text != "" {
+		t.Errorf("the row without a text holds the text %q", empty.Text)
+	}
+}

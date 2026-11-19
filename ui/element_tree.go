@@ -3,6 +3,7 @@ package ui
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/egoist/mygo/internal/platform"
 )
@@ -23,6 +24,10 @@ type ElementNode struct {
 	// Label names the element as assistive technology reads it: its
 	// Label, or the text inside it.
 	Label string
+	// Text is the text content of the element, as the DOM's textContent
+	// of an element: the texts of the text elements inside it and its
+	// own, in tree order, joined. A Label leaves it as it is.
+	Text string
 	// Bounds is the element's visible box, in the window's DIPs.
 	Bounds Rect
 	// Actions are the actions the element takes.
@@ -168,6 +173,7 @@ func (rt *engine) elementTree() []ElementNode {
 		}
 	}
 	keys := rt.elementKeys()
+	texts := rt.elementTexts()
 	// Nodes come in tree order, a parent before its children.
 	children := make([][]int, len(tree.Nodes))
 	var top []int
@@ -191,6 +197,7 @@ func (rt *engine) elementTree() []ElementNode {
 				Key:      keys[n.ID],
 				Role:     Role(n.Role) + RoleGroup,
 				Label:    n.Label,
+				Text:     texts[n.ID],
 				Bounds:   Rect{X: float32(n.Bounds.X), Y: float32(n.Bounds.Y), W: float32(n.Bounds.W), H: float32(n.Bounds.H)},
 				Actions:  Actions(n.Actions),
 				Inert:    seen != nil && !seen[n.ID],
@@ -200,6 +207,30 @@ func (rt *engine) elementTree() []ElementNode {
 		return out
 	}
 	return build(top)
+}
+
+// elementTexts returns the text contents of the elements of the last
+// frame that hold a text, by element ID: a text element's text with its
+// inline pieces, and the texts inside an element in tree order.
+func (rt *engine) elementTexts() map[uint64]string {
+	texts := map[uint64]string{}
+	var walk func(e *node) string
+	walk = func(e *node) string {
+		var all strings.Builder
+		for ; e != nil; e = e.next {
+			text := e.text
+			if e.kind != kindText {
+				text = walk(e.first)
+			}
+			if text != "" {
+				texts[e.id] = text
+				all.WriteString(text)
+			}
+		}
+		return all.String()
+	}
+	walk(rt.c.root)
+	return texts
 }
 
 // elementKeys returns the keys the app gave the elements of the last
