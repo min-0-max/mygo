@@ -91,6 +91,13 @@ type InputEvent struct {
 	Caret int
 	// X and Y locate the pointer relative to the element's box.
 	X, Y float32
+	// WindowX and WindowY locate the pointer in the window as the system
+	// reported it, in the DIPs of Bounds: the content's when zoomed
+	// (fromWindow). A
+	// handler that the build made holds the Bounds of the frame before,
+	// which the element may have left, so it places the event in the window
+	// by these, not by its Bounds and X and Y.
+	WindowX, WindowY float32
 	// Button is 0 for the primary button, 1 the secondary and 2 the
 	// middle.
 	Button int
@@ -229,6 +236,7 @@ func (rt *engine) deliver(s *state, ev InputEvent) bool {
 		return false
 	}
 	ev.X, ev.Y = s.local(rt.pointerX, rt.pointerY)
+	ev.WindowX, ev.WindowY = rt.pointerX, rt.pointerY
 	ev.Time = rt.now()
 	switch ev.Kind {
 	case InputPointerDown, InputPointerUp, InputPointerMove:
@@ -273,6 +281,7 @@ func (rt *engine) observe(chain []uint64, ev InputEvent) {
 	rt.observeBuf = nil
 	defer func() { rt.observeBuf = chain[:0] }()
 	ev.Time = rt.now()
+	ev.WindowX, ev.WindowY = rt.pointerX, rt.pointerY
 	seen := false
 	for i := len(chain) - 1; i >= 0; i-- {
 		s := rt.states[chain[i]]
