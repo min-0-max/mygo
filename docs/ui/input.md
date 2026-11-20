@@ -488,8 +488,13 @@ Scroll containers scroll with the wheel and the touchpad on their own. An
 element that does something else with them, as a chart zooming and
 panning its candles, gets them with `HandleInput`: `ui.InputScroll`
 scrolls by `DX` and `DY` DIPs, positive down and to the right of the
-content, with `X` and `Y` the pointer relative to the element; `Precise`
+content, with `X` and `Y` the pointer relative to the element and
+`WindowX` and `WindowY` the pointer in the window; `Precise`
 tells a touchpad, which scrolls by pixels, from a mouse wheel's notches.
+A handler places an event in the window by `WindowX` and `WindowY`, not
+by `Bounds` and `X` and `Y`: the build made the handler with the
+`Bounds` of the frame before, and `X` and `Y` count from where the
+element stands when the event comes.
 `ui.InputZoom` is a touchpad's pinch, at `X` and `Y`, zooming by `Scale`:
 2 shows the content twice as large as it was. macOS, Linux on Wayland and
 browsers report pinches; Windows sends them as scrolling with Ctrl held,
