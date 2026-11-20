@@ -17,6 +17,9 @@ const (
 	StepSelector
 	// StepBlock is a block.
 	StepBlock
+	// StepClosure is a closure that a goroutine posted to a queue of the
+	// main thread: its Callback names the function that posted it.
+	StepClosure
 )
 
 // Step is what the main thread records of a step that entered through a
@@ -78,22 +81,32 @@ func RecordSteps(on bool) {
 }
 
 // DrainSteps reports the steps in the ring in the order of their returns,
-// and returns how many steps it lost since the last drain because the ring
-// was full.
+// with the closure steps (RunClosure) merged by their returns, and returns
+// how many steps it lost since the last drain because the ring or the record
+// of the closures was full. A closure that returns while a drain runs is
+// reported by the next drain, which can follow a step that contains it.
 func DrainSteps(report func(Step)) uint64 {
 	stepDrain.Lock()
 	defer stepDrain.Unlock()
 	head := atomic.LoadUintptr(&stepRing.head)
+	closures, closuresLost := takeClosures()
 	for tail := stepRing.tail; tail != head; tail++ {
 		slot := &stepRing.slots[tail&(stepSlots-1)]
+		for len(closures) > 0 && closures[0].Return <= uint64(slot.ret) {
+			report(closures[0])
+			closures = closures[1:]
+		}
 		report(Step{
 			Kind: StepKind(targetKinds[slot.index]), Callback: targetNames[slot.index],
 			Entry: uint64(slot.entry), Return: uint64(slot.ret), Forwarded: uint64(slot.forwarded), Wait: uint64(slot.wait),
 		})
 		atomic.StoreUintptr(&stepRing.tail, tail+1)
 	}
+	for _, closure := range closures {
+		report(closure)
+	}
 	lost := atomic.LoadUintptr(&stepRing.lost)
 	missed := lost - stepDrain.lost
 	stepDrain.lost = lost
-	return uint64(missed)
+	return uint64(missed) + closuresLost
 }

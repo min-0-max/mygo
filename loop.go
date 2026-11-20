@@ -8,8 +8,15 @@ import (
 // backend drains it (AppHandler.Dispatch) whenever it has been signaled.
 type mainLoop struct {
 	mu     sync.Mutex
-	queue  []func()
+	queue  []queuedClosure
 	closed bool
+}
+
+// queuedClosure is a function waiting in the queue with the function that
+// posted it, which is "" while the steps are not recorded (RecordSteps).
+type queuedClosure struct {
+	fn     func()
+	sender string
 }
 
 var loop mainLoop
@@ -17,12 +24,13 @@ var loop mainLoop
 // post schedules fn on the main thread. It reports false when the event
 // loop has already shut down and fn will never run.
 func (l *mainLoop) post(fn func()) bool {
+	sender := closureSender()
 	l.mu.Lock()
 	if l.closed {
 		l.mu.Unlock()
 		return false
 	}
-	l.queue = append(l.queue, fn)
+	l.queue = append(l.queue, queuedClosure{fn, sender})
 	first := len(l.queue) == 1
 	l.mu.Unlock()
 	if first {
@@ -42,15 +50,15 @@ func (l *mainLoop) drain() {
 			l.mu.Unlock()
 			return
 		}
-		fn := l.queue[0]
-		l.queue[0] = nil
+		next := l.queue[0]
+		l.queue[0] = queuedClosure{}
 		l.queue = l.queue[1:]
 		more := len(l.queue) > 0
 		l.mu.Unlock()
 		if more {
 			backend().Signal()
 		}
-		fn()
+		runClosure(next.sender, next.fn)
 	}
 }
 
