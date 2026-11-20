@@ -12,6 +12,10 @@ const (
 	StepSelector
 	// StepBlock is a block.
 	StepBlock
+	// StepClosure is a closure that a goroutine posted to a queue of the
+	// main thread, as RunOnMain and Window.Update do: its Callback names
+	// the first function outside the framework that posted it.
+	StepClosure
 )
 
 // StepRecord is what the main thread records of a step that it handed to

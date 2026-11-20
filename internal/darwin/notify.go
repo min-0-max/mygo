@@ -7,6 +7,7 @@ import (
 
 	"github.com/ebitengine/purego/objc"
 
+	"github.com/egoist/mygo/internal/darwin/mainthread"
 	"github.com/egoist/mygo/internal/platform"
 )
 
@@ -15,7 +16,9 @@ import (
 
 var (
 	mainQueueMu sync.Mutex
-	mainQueue   []func()
+	// mainQueue holds each posted function with the function that posted
+	// it, which is "" while the steps are not recorded.
+	mainQueue []postedClosure
 	// Registered by NewNotification so apps without senders do not link Intents.
 	prepareCommunication func(*Backend, *platform.Notification, id, func(error)) bool
 )
@@ -33,8 +36,9 @@ func (b *Backend) runOnMain(fn func()) {
 // post runs fn on the main thread after the current event, even when
 // called there.
 func (b *Backend) post(fn func()) {
+	sender := mainthread.ClosureSender()
 	mainQueueMu.Lock()
-	mainQueue = append(mainQueue, fn)
+	mainQueue = append(mainQueue, postedClosure{fn, sender})
 	mainQueueMu.Unlock()
 	b.Signal()
 }
@@ -49,16 +53,23 @@ func drainMainQueue() {
 			mainQueueMu.Unlock()
 			return
 		}
-		fn := mainQueue[0]
-		mainQueue[0] = nil
+		next := mainQueue[0]
+		mainQueue[0] = postedClosure{}
 		mainQueue = mainQueue[1:]
 		more := len(mainQueue) > 0
 		mainQueueMu.Unlock()
 		if more {
 			theBackend.Signal()
 		}
-		fn()
+		mainthread.RunClosure(next.sender, next.fn)
 	}
+}
+
+// postedClosure is a function of the main queue with the function that
+// posted it.
+type postedClosure struct {
+	fn     func()
+	sender string
 }
 
 func registerNotificationDelegate() {
